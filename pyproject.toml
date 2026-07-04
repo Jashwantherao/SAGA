@@ -1,0 +1,22 @@
+[project]
+name = "saga"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Jashwanth", email = "jashwantherao2@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.116.0",
+    "langgraph>=1.2.7",
+    "pydantic>=2.13.4",
+    "python-dotenv>=1.2.2",
+]
+
+[project.scripts]
+saga = "saga:main"
+
+[build-system]
+requires = ["uv_build>=0.11.26,<0.12.0"]
+build-backend = "uv_build"
