@@ -14,3 +14,5 @@ class DesignDoc(TypedDict):
 class GraphState(TypedDict):
     user_prompt: str
     design_doc: Optional[DesignDoc]
+    sprite_paths: Optional[list[str]]
+    bgm_path: Optional[str]
