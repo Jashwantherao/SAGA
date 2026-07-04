@@ -33,6 +33,11 @@ def main() -> None:
     OUTPUT_PATH.write_text(json.dumps(design_doc, indent=2), encoding="utf-8")
     print(f"\nSaved to {OUTPUT_PATH}", file=sys.stderr)
 
+    for path in result.get("sprite_paths") or []:
+        print(f"Sprite/background: {path}", file=sys.stderr)
+    if result.get("bgm_path"):
+        print(f"BGM: {result['bgm_path']}", file=sys.stderr)
+
 
 if __name__ == "__main__":
     main()
