@@ -37,6 +37,12 @@ def main() -> None:
         print(f"Sprite/background: {path}", file=sys.stderr)
     if result.get("bgm_path"):
         print(f"BGM: {result['bgm_path']}", file=sys.stderr)
+    if result.get("godot_project_path"):
+        print(f"Godot project: {result['godot_project_path']}", file=sys.stderr)
+    if result.get("qa_passed"):
+        print(f"QA: PASSED (after {result.get('retry_count') or 0} retries)", file=sys.stderr)
+    else:
+        print(f"QA: FAILED after {result.get('retry_count') or 0} retries: {result.get('qa_errors')}", file=sys.stderr)
 
 
 if __name__ == "__main__":

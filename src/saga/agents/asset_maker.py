@@ -1,7 +1,8 @@
 """Asset Maker agent — generates sprites/backgrounds via a local ComfyUI + Flux.1 schnell service.
 
 Derives its asset list directly from the Game Designer's design doc (no
-Art Director agent yet): one hero sprite plus one background per level.
+Art Director agent yet): one hero sprite, one collectible/pickup icon, plus
+one background per level.
 """
 
 import time
@@ -15,11 +16,20 @@ COMFYUI_URL = "http://127.0.0.1:8188"
 OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent.parent / "output" / "assets"
 
 STEPS = 4  # Flux schnell's distilled step count
-WIDTH = 512
-HEIGHT = 512
+
+# Icon size for the hero sprite and collectible pickup - small enough to use
+# at native resolution in-game with no extra scaling in the Coder's GDScript.
+ICON_WIDTH = 128
+ICON_HEIGHT = 128
+
+# Backgrounds are generated at exactly the Coder's fixed viewport size
+# (see coder.py's PROJECT_GODOT_TEMPLATE) so they can fill the screen
+# edge-to-edge with no scaling or letterboxing.
+VIEWPORT_WIDTH = 1024
+VIEWPORT_HEIGHT = 576
 
 
-def _build_workflow(prompt: str, filename_prefix: str, seed: int) -> dict:
+def _build_workflow(prompt: str, filename_prefix: str, seed: int, width: int, height: int) -> dict:
     return {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "flux1-schnell-fp8.safetensors", "weight_dtype": "default"}},
         "2": {
@@ -28,7 +38,7 @@ def _build_workflow(prompt: str, filename_prefix: str, seed: int) -> dict:
         },
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": "ae.safetensors"}},
         "4": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["2", 0]}},
-        "5": {"class_type": "EmptyLatentImage", "inputs": {"width": WIDTH, "height": HEIGHT, "batch_size": 1}},
+        "5": {"class_type": "EmptyLatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
         "6": {
             "class_type": "KSampler",
             "inputs": {
@@ -59,8 +69,10 @@ def _check_comfyui_reachable() -> None:
         ) from e
 
 
-def _generate_image(prompt: str, filename_prefix: str, seed: int, timeout: float = 120) -> Path:
-    workflow = _build_workflow(prompt, filename_prefix, seed)
+def _generate_image(
+    prompt: str, filename_prefix: str, seed: int, width: int, height: int, timeout: float = 120
+) -> Path:
+    workflow = _build_workflow(prompt, filename_prefix, seed, width, height)
     resp = httpx.post(f"{COMFYUI_URL}/prompt", json={"prompt": workflow}, timeout=30)
     resp.raise_for_status()
     prompt_id = resp.json()["prompt_id"]
@@ -91,14 +103,27 @@ def asset_maker(state: GraphState) -> GraphState:
     art_style = design_doc["art_style"]
 
     requests = [
-        (f"{design_doc['title']} hero character, {art_style}, game sprite, transparent background", "hero_sprite"),
+        (
+            f"{design_doc['title']} hero character, {art_style}, game sprite, transparent background",
+            "hero_sprite",
+            ICON_WIDTH,
+            ICON_HEIGHT,
+        ),
+        (
+            f"{design_doc['collectible']}, small pickup icon, centered, {art_style}, transparent background",
+            "collectible",
+            ICON_WIDTH,
+            ICON_HEIGHT,
+        ),
     ]
     for i, level in enumerate(design_doc["levels"]):
-        requests.append((f"{level['description']}, {art_style}, game background", f"level_{i}_bg"))
+        requests.append(
+            (f"{level['description']}, {art_style}, game background", f"level_{i}_bg", VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
+        )
 
     sprite_paths = []
-    for seed, (prompt, name) in enumerate(requests):
-        path = _generate_image(prompt, name, seed=seed)
+    for seed, (prompt, name, width, height) in enumerate(requests):
+        path = _generate_image(prompt, name, seed=seed, width=width, height=height)
         sprite_paths.append(str(path))
         print(f"[Asset Maker] Generated {name} -> {path}")
 

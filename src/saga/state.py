@@ -9,6 +9,7 @@ class DesignDoc(TypedDict):
     levels: list[dict[str, str]]  # each: {"name": ..., "description": ...}
     art_style: str
     audio_mood: str
+    collectible: str
 
 
 class GraphState(TypedDict):
@@ -16,3 +17,7 @@ class GraphState(TypedDict):
     design_doc: Optional[DesignDoc]
     sprite_paths: Optional[list[str]]
     bgm_path: Optional[str]
+    godot_project_path: Optional[str]
+    qa_passed: Optional[bool]
+    qa_errors: Optional[list[str]]
+    retry_count: int
