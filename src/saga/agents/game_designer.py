@@ -29,6 +29,7 @@ DESIGN_DOC_SCHEMA = {
         },
         "art_style": {"type": "string"},
         "audio_mood": {"type": "string"},
+        "collectible": {"type": "string"},
     },
     "required": [
         "title",
@@ -38,6 +39,7 @@ DESIGN_DOC_SCHEMA = {
         "levels",
         "art_style",
         "audio_mood",
+        "collectible",
     ],
     "additionalProperties": False,
 }
@@ -46,8 +48,10 @@ SYSTEM_PROMPT = (
     "You are the Game Designer agent in an automated indie-game studio pipeline. "
     "Given a one-line game idea, produce a complete, playable game design: core "
     "mechanics, a short story premise, 3-5 levels with a name and one-sentence "
-    "description each, an art style, and an audio mood. Keep scope achievable for "
-    "a small 2D Godot game."
+    "description each, an art style, an audio mood, and a short description of "
+    "one collectible/pickup item central to the core mechanic (e.g. 'a small "
+    "glowing ember'). Keep scope achievable for a small 2D Godot game built "
+    "around collecting that item."
 )
 
 
