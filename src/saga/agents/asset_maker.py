@@ -1,8 +1,9 @@
 """Asset Maker agent — generates sprites/backgrounds via a local ComfyUI + Flux.1 schnell service.
 
 Derives its asset list directly from the Game Designer's design doc (no
-Art Director agent yet): one hero sprite, one collectible/pickup icon, plus
-one background per level.
+Art Director agent yet): one hero sprite, one key-item icon (its gameplay
+role - pickup, hazard, switch, creature, or zone marker - is decided by the
+design doc, not here), plus one background per level.
 """
 
 import time
@@ -110,8 +111,8 @@ def asset_maker(state: GraphState) -> GraphState:
             ICON_HEIGHT,
         ),
         (
-            f"{design_doc['collectible']}, small pickup icon, centered, {art_style}, transparent background",
-            "collectible",
+            f"{design_doc['key_item']['description']}, small game icon, centered, {art_style}, transparent background",
+            "key_item",
             ICON_WIDTH,
             ICON_HEIGHT,
         ),
