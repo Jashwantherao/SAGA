@@ -9,8 +9,10 @@ class KeyItem(TypedDict):
 class DesignDoc(TypedDict):
     title: str
     genre: str
-    # collect | survive_hazards | ordered_switches | depletion | herd_to_goal | capture_zones
+    # collect | survive_hazards | ordered_switches | depletion | herd_to_goal
+    # | capture_zones | survive_and_deplete
     mechanic_template: str
+    hero_description: str  # concrete, high-contrast visual description of the hero sprite
     core_mechanics: list[str]
     story_premise: str
     theme_thread: str  # one sentence: how the mechanic embodies the premise
@@ -31,3 +33,7 @@ class GraphState(TypedDict):
     qa_passed: Optional[bool]
     qa_errors: Optional[list[str]]
     retry_count: int
+    # Numeric tuning instructions from the playtest feedback loop; consumed
+    # (and cleared) by the Coder's tune path.
+    tune_notes: Optional[list[str]]
+    screenshot_path: Optional[str]

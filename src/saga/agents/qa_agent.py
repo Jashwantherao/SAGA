@@ -2,7 +2,11 @@
 
 Three checks, cheapest first: import assets, parse-only syntax check on
 Main.gd, then an actual bounded headless run of the scene. Cheap checks fail
-fast without wasting time on a full scene run.
+fast without wasting time on a full scene run. After all three pass, a
+non-blocking windowed pass captures a screenshot (via the harness-owned
+screenshot.gd autoload) so a human - or later, a vision model - can check
+the build's look without launching it. The screenshot is a lens, not a
+gate: its failure never fails QA.
 """
 
 import re
@@ -76,5 +80,21 @@ def qa_agent(state: GraphState) -> GraphState:
             "retry_count": retry_count + 1,
         }
 
+    # 4. Non-blocking windowed screenshot pass (a window flashes for ~1.5s).
+    # screenshot.gd saves frame 60 to res://screenshot.png; it no-ops in the
+    # headless runs above.
+    screenshot_path = None
+    screenshot_file = Path(project_dir) / "screenshot.png"
+    try:
+        screenshot_file.unlink(missing_ok=True)  # never report a stale frame
+        _run(["--path", project_dir, "--quit-after", "90"], timeout=30)
+        if screenshot_file.exists():
+            screenshot_path = str(screenshot_file)
+            print(f"[QA Agent] Screenshot captured -> {screenshot_path}")
+        else:
+            print("[QA Agent] Screenshot pass produced no image (non-blocking)")
+    except Exception as e:
+        print(f"[QA Agent] Screenshot pass failed (non-blocking): {e}")
+
     print("[QA Agent] PASSED - scene ran headlessly with no errors")
-    return {"qa_passed": True, "qa_errors": []}
+    return {"qa_passed": True, "qa_errors": [], "screenshot_path": screenshot_path}

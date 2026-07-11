@@ -15,6 +15,7 @@ MECHANIC_TEMPLATES = [
     "depletion",
     "herd_to_goal",
     "capture_zones",
+    "survive_and_deplete",
 ]
 
 KEY_ITEM_ROLES = ["pickup", "hazard", "switch", "creature", "zone_marker"]
@@ -25,6 +26,7 @@ DESIGN_DOC_SCHEMA = {
         "title": {"type": "string"},
         "genre": {"type": "string"},
         "mechanic_template": {"type": "string", "enum": MECHANIC_TEMPLATES},
+        "hero_description": {"type": "string"},
         "core_mechanics": {"type": "array", "items": {"type": "string"}},
         "story_premise": {"type": "string"},
         "theme_thread": {"type": "string"},
@@ -58,6 +60,7 @@ DESIGN_DOC_SCHEMA = {
         "title",
         "genre",
         "mechanic_template",
+        "hero_description",
         "core_mechanics",
         "story_premise",
         "theme_thread",
@@ -75,11 +78,14 @@ SYSTEM_PROMPT = (
     "You are the Game Designer agent in an automated indie-game studio pipeline. "
     "Given a one-line game idea, design a small, complete 2D Godot game.\n\n"
     "First, choose the mechanic_template whose fantasy best matches the idea - do "
-    "NOT default to 'collect': survive_hazards (outlast moving dangers), "
-    "ordered_switches (activate triggers in sequence), depletion (a resource "
-    "drains unless replenished), herd_to_goal (corner a fleeing creature), "
-    "capture_zones (claim regions while a patroller un-claims them), or collect "
-    "(gather items) only when gathering genuinely is the idea's core fantasy.\n\n"
+    "NOT default to 'collect': survive_and_deplete (a draining resource, refill "
+    "zones with finite fuel, AND roaming hazards - the richest option; prefer it "
+    "whenever the fantasy supports both a fading resource and an active threat), "
+    "survive_hazards (outlast moving dangers), ordered_switches (activate "
+    "triggers in sequence), depletion (a resource drains unless replenished), "
+    "herd_to_goal (corner a fleeing creature), capture_zones (claim regions "
+    "while a patroller un-claims them), or collect (gather items) only when "
+    "gathering genuinely is the idea's core fantasy.\n\n"
     "The mechanic must EMBODY the premise, not decorate it: state in theme_thread "
     "how the mechanic is the story ('the fading warmth IS the depleting "
     "resource'). Choose art_style and audio_mood to match the mechanic's "
@@ -88,7 +94,9 @@ SYSTEM_PROMPT = (
     "one lose_condition (write 'none' if losing is impossible). The key_item is "
     "the one generated icon asset; describe it concretely and visually, and give "
     "it the role the mechanic needs (pickup, hazard, switch, creature, or "
-    "zone_marker).\n\n"
+    "zone_marker). The hero_description drives the hero sprite generation: make "
+    "it concrete, characterful, and HIGH CONTRAST against the level's palette - "
+    "a dark hero on a dark background disappears.\n\n"
     "Hard constraints: single-scene game, playable entirely with HELD arrow-key "
     "movement - never require a discrete button press to win. All interactions "
     "are touch-based (moving into things). One key_item icon, one hero sprite, "
