@@ -32,6 +32,9 @@ config/name="{title}"
 run/main_scene="res://Main.tscn"
 config/features=PackedStringArray("4.7")
 
+[autoload]
+Screenshot="*res://screenshot.gd"
+
 [display]
 window/size/viewport_width=1024
 window/size/viewport_height=576
@@ -39,6 +42,22 @@ window/stretch/mode="canvas_items"
 
 [rendering]
 renderer/rendering_method="gl_compatibility"
+"""
+
+# Harness-owned QA helper: saves one frame so a human (or later, a vision
+# model) can check the build's look without launching it. Must no-op in
+# headless runs or its save errors would trip the QA error patterns.
+SCREENSHOT_GD = """extends Node
+
+var frame = 0
+
+func _process(_delta):
+    if DisplayServer.get_name() == "headless":
+        return
+    frame += 1
+    if frame == 60:
+        var img = get_viewport().get_texture().get_image()
+        img.save_png("res://screenshot.png")
 """
 
 
@@ -94,9 +113,11 @@ SYSTEM_PROMPT_BASE = (
     "invent a new action name. The scene starts bare, so create every node "
     "in code and never use $NodeName or get_node() for nodes you did not "
     "create. Load image assets with load(\"res://assets/<filename>\"). Do "
-    "not load or play audio - background music is handled separately. "
-    "Respond with ONLY a single ```gdscript fenced code block, no "
-    "explanation before or after it."
+    "not load or play audio - background music is handled separately. Put "
+    "every gameplay-tuning number - speeds, rates, durations, counts, radii "
+    "- in a named variable at the top of the script so a human playtester "
+    "can retune it later. Respond with ONLY a single ```gdscript fenced "
+    "code block, no explanation before or after it."
 )
 
 TEMPLATE_REQUIREMENTS = {
@@ -145,6 +166,21 @@ TEMPLATE_REQUIREMENTS = {
         "un-claims any zone it touches (reset tint and flag); show the "
         "claimed count in the label; win when all zones are claimed at the "
         "same time."
+    ),
+    "survive_and_deplete": (
+        "Structure for this game: combine depletion with roaming hazards. A "
+        "resource drains every frame, and the drain accelerates as time "
+        "passes (a ramp variable). Refill zone Area2Ds restore the resource, "
+        "but each zone has finite fuel that burns while it is used - when a "
+        "zone's fuel runs out, dim its sprite via modulate and stop it "
+        "refilling. Roaming hazard Area2Ds bounce off the viewport edges "
+        "every frame; build them from the key_item sprite tinted via "
+        "modulate and scaled down so they read as a different object. "
+        "Touching a hazard costs a chunk of the resource and starts a brief "
+        "hit-cooldown during which the player flashes red and cannot be hit "
+        "again. Win when the timer reaches zero, lose the moment the "
+        "resource hits zero. Show resource, time, and remaining active "
+        "zones in the label."
     ),
 }
 
@@ -265,8 +301,11 @@ SURVIVE_EXAMPLE_RESPONSE = """```gdscript
 extends Node2D
 
 @export var speed = 240.0
-var lives = 3
-var time_left = 30.0
+var hazard_speed = 180.0
+var starting_lives = 3
+var survival_time = 30.0
+var lives = starting_lives
+var time_left = survival_time
 var game_over = false
 var player: Area2D
 var status_label: Label
@@ -340,7 +379,7 @@ func _process(delta):
 
     for i in hazards.size():
         var hazard = hazards[i]
-        hazard.position += hazard_dirs[i] * 180.0 * delta
+        hazard.position += hazard_dirs[i] * hazard_speed * delta
         var dir = hazard_dirs[i]
         if hazard.position.x < 0.0 or hazard.position.x > 1024.0:
             dir.x = -dir.x
@@ -381,8 +420,11 @@ DEPLETION_EXAMPLE_RESPONSE = """```gdscript
 extends Node2D
 
 @export var speed = 240.0
+var drain_rate = 8.0
+var refill_rate = 15.0
+var survival_time = 30.0
 var light = 100.0
-var time_left = 30.0
+var time_left = survival_time
 var zones_inside = 0
 var game_over = false
 var player: Area2D
@@ -444,9 +486,9 @@ func _process(delta):
     if game_over:
         return
     if zones_inside > 0:
-        light += 15.0 * delta
+        light += refill_rate * delta
     else:
-        light -= 8.0 * delta
+        light -= drain_rate * delta
     light = clamp(light, 0.0, 100.0)
     time_left -= delta
 
@@ -474,10 +516,206 @@ func _process(delta):
     status_label.text = "Light: %d%%   Time: %ds" % [int(light), int(ceil(time_left))]
 ```"""
 
+HYBRID_EXAMPLE_USER = (
+    "Title: Reactor Dive\n"
+    "Genre: tense survival\n"
+    "Mechanic template: survive_and_deplete\n"
+    "Core mechanics: power drains faster over time, charging pads have finite charge, dodge security drones\n"
+    "Story premise: A maintenance robot must keep its power alive in a failing reactor until rescue arrives.\n"
+    "Win condition: survive for 60 seconds\n"
+    "Lose condition: power reaches zero\n"
+    "Key item: a glowing charging pad (role: zone_marker)\n"
+    "Levels:\n"
+    "- The Core Floor: a dim reactor hall lit by scattered charging pads\n"
+    "Available image assets: hero_sprite.png, key_item.png, level_0_bg.png\n"
+)
+
+HYBRID_EXAMPLE_RESPONSE = """```gdscript
+extends Node2D
+
+@export var speed = 240.0
+var drain_rate = 5.0
+var drain_ramp = 0.08
+var refill_rate = 18.0
+var fuel_burn = 12.0
+var zone_fuel_max = 40.0
+var hazard_speed = 140.0
+var hazard_hit_cost = 15.0
+var hit_cooldown_time = 1.2
+var survival_time = 60.0
+
+var power = 100.0
+var time_left = survival_time
+var elapsed = 0.0
+var hit_cooldown = 0.0
+var game_over = false
+var player: Area2D
+var status_label: Label
+var zones = []
+var zone_fuel = []
+var zone_sprites = []
+var inside_zones = []
+var hazards = []
+var hazard_dirs = []
+
+func _ready():
+    var background = Sprite2D.new()
+    background.texture = load("res://assets/level_0_bg.png")
+    background.centered = false
+    background.position = Vector2.ZERO
+    background.z_index = -1
+    add_child(background)
+
+    player = Area2D.new()
+    player.position = Vector2(512, 300)
+    var player_sprite = Sprite2D.new()
+    player_sprite.texture = load("res://assets/hero_sprite.png")
+    player.add_child(player_sprite)
+    var player_shape = CollisionShape2D.new()
+    var player_circle = CircleShape2D.new()
+    player_circle.radius = 18.0
+    player_shape.shape = player_circle
+    player.add_child(player_shape)
+    player.area_entered.connect(_on_player_touched)
+    add_child(player)
+
+    var zone_positions = [Vector2(160, 420), Vector2(512, 470), Vector2(870, 400)]
+    for i in zone_positions.size():
+        _spawn_zone(i, zone_positions[i])
+
+    var hazard_starts = [Vector2(200, 150), Vector2(800, 250)]
+    var hazard_headings = [Vector2(1, 0.6), Vector2(-1, 0.4)]
+    for i in hazard_starts.size():
+        _spawn_hazard(hazard_starts[i], hazard_headings[i])
+
+    var canvas = CanvasLayer.new()
+    add_child(canvas)
+    status_label = Label.new()
+    status_label.position = Vector2(20, 20)
+    status_label.text = "Power: 100%   Time: 60s   Pads: 3"
+    canvas.add_child(status_label)
+
+func _spawn_zone(index: int, pos: Vector2):
+    var zone = Area2D.new()
+    zone.position = pos
+    var sprite = Sprite2D.new()
+    sprite.texture = load("res://assets/key_item.png")
+    zone.add_child(sprite)
+    var shape = CollisionShape2D.new()
+    var circle = CircleShape2D.new()
+    circle.radius = 65.0
+    shape.shape = circle
+    zone.add_child(shape)
+    zone.area_entered.connect(_on_zone_entered.bind(index))
+    zone.area_exited.connect(_on_zone_exited.bind(index))
+    add_child(zone)
+    zones.append(zone)
+    zone_fuel.append(zone_fuel_max)
+    zone_sprites.append(sprite)
+    inside_zones.append(false)
+
+func _spawn_hazard(pos: Vector2, heading: Vector2):
+    var hazard = Area2D.new()
+    hazard.position = pos
+    var sprite = Sprite2D.new()
+    sprite.texture = load("res://assets/key_item.png")
+    sprite.modulate = Color(0.5, 0.7, 1.4)
+    sprite.scale = Vector2(0.7, 0.7)
+    hazard.add_child(sprite)
+    var shape = CollisionShape2D.new()
+    var circle = CircleShape2D.new()
+    circle.radius = 14.0
+    shape.shape = circle
+    hazard.add_child(shape)
+    add_child(hazard)
+    hazards.append(hazard)
+    hazard_dirs.append(heading.normalized())
+
+func _on_zone_entered(area: Area2D, index: int):
+    if area == player:
+        inside_zones[index] = true
+
+func _on_zone_exited(area: Area2D, index: int):
+    if area == player:
+        inside_zones[index] = false
+
+func _on_player_touched(area: Area2D):
+    if game_over or hit_cooldown > 0.0:
+        return
+    if area in hazards:
+        power -= hazard_hit_cost
+        hit_cooldown = hit_cooldown_time
+        player.modulate = Color(1.0, 0.45, 0.45)
+
+func _process(delta):
+    if game_over:
+        return
+    elapsed += delta
+    time_left -= delta
+
+    if hit_cooldown > 0.0:
+        hit_cooldown -= delta
+        if hit_cooldown <= 0.0:
+            player.modulate = Color(1, 1, 1)
+
+    var refilling = false
+    for i in zones.size():
+        if inside_zones[i] and zone_fuel[i] > 0.0:
+            refilling = true
+            zone_fuel[i] -= fuel_burn * delta
+            if zone_fuel[i] <= 0.0:
+                zone_fuel[i] = 0.0
+                zone_sprites[i].modulate = Color(0.35, 0.35, 0.45)
+
+    if refilling:
+        power += refill_rate * delta
+    else:
+        power -= (drain_rate + elapsed * drain_ramp) * delta
+    power = clamp(power, 0.0, 100.0)
+
+    if power <= 0.0:
+        game_over = true
+        status_label.text = "Systems dark. The reactor wins..."
+        return
+    if time_left <= 0.0:
+        game_over = true
+        status_label.text = "Rescue arrives - you held on!"
+        return
+
+    for i in hazards.size():
+        var hazard = hazards[i]
+        hazard.position += hazard_dirs[i] * hazard_speed * delta
+        var dir = hazard_dirs[i]
+        if hazard.position.x < 0.0 or hazard.position.x > 1024.0:
+            dir.x = -dir.x
+        if hazard.position.y < 0.0 or hazard.position.y > 576.0:
+            dir.y = -dir.y
+        hazard_dirs[i] = dir
+
+    var velocity = Vector2.ZERO
+    if Input.is_action_pressed("ui_right"):
+        velocity.x += 1.0
+    if Input.is_action_pressed("ui_left"):
+        velocity.x -= 1.0
+    if Input.is_action_pressed("ui_down"):
+        velocity.y += 1.0
+    if Input.is_action_pressed("ui_up"):
+        velocity.y -= 1.0
+    player.position += velocity.normalized() * speed * delta
+    player.position = player.position.clamp(Vector2.ZERO, Vector2(1024, 576))
+
+    var pads_left = 0
+    for f in zone_fuel:
+        if f > 0.0:
+            pads_left += 1
+    status_label.text = "Power: %d%%   Time: %ds   Pads: %d" % [int(power), int(ceil(time_left)), pads_left]
+```"""
+
 FEW_SHOTS = {
     "collect": (COLLECT_EXAMPLE_USER, COLLECT_EXAMPLE_RESPONSE),
     "survive_hazards": (SURVIVE_EXAMPLE_USER, SURVIVE_EXAMPLE_RESPONSE),
     "depletion": (DEPLETION_EXAMPLE_USER, DEPLETION_EXAMPLE_RESPONSE),
+    "survive_and_deplete": (HYBRID_EXAMPLE_USER, HYBRID_EXAMPLE_RESPONSE),
 }
 
 # Structurally nearest authored example per template: ordered_switches shares
@@ -491,6 +729,7 @@ TEMPLATE_TO_FEW_SHOT = {
     "herd_to_goal": "survive_hazards",
     "depletion": "depletion",
     "capture_zones": "depletion",
+    "survive_and_deplete": "survive_and_deplete",
 }
 
 FIX_SYSTEM_PROMPT = (
@@ -504,6 +743,18 @@ FIX_SYSTEM_PROMPT = (
     "a new action name. Respond with ONLY a single ```gdscript fenced code "
     "block containing the complete corrected script, no explanation before or "
     "after it."
+)
+
+TUNE_SYSTEM_PROMPT = (
+    "You are the Coder agent in an automated game studio. A human playtester "
+    "reviewed the current build and a feedback interpreter produced specific "
+    "tuning changes to apply to your previous GDScript. Apply exactly the "
+    "listed changes - do not rewrite the script from scratch or change any "
+    "unrelated behavior. No custom InputMap actions are defined in this "
+    "project, so only use Godot's built-in default input actions (ui_up, "
+    "ui_down, ui_left, ui_right) - never invent a new action name. Respond "
+    "with ONLY a single ```gdscript fenced code block containing the complete "
+    "updated script, no explanation before or after it."
 )
 
 
@@ -542,6 +793,7 @@ def coder(state: GraphState) -> GraphState:
     example_user, example_response = FEW_SHOTS[TEMPLATE_TO_FEW_SHOT.get(template, "collect")]
 
     qa_errors = state.get("qa_errors") or []
+    tune_notes = state.get("tune_notes") or []
 
     if qa_errors:
         previous_script = (PROJECT_DIR / "Main.gd").read_text(encoding="utf-8")
@@ -551,6 +803,14 @@ def coder(state: GraphState) -> GraphState:
             f"Godot reported these errors:\n{errors_desc}\n"
         )
         system_prompt = FIX_SYSTEM_PROMPT
+    elif tune_notes:
+        previous_script = (PROJECT_DIR / "Main.gd").read_text(encoding="utf-8")
+        notes_desc = "\n".join(f"- {n}" for n in tune_notes)
+        user_prompt = (
+            f"Previous Main.gd:\n```gdscript\n{previous_script}\n```\n\n"
+            f"Apply these tuning changes:\n{notes_desc}\n"
+        )
+        system_prompt = TUNE_SYSTEM_PROMPT
     else:
         key_item = design_doc["key_item"]
         levels_desc = "\n".join(f"- {lvl['name']}: {lvl['description']}" for lvl in design_doc["levels"])
@@ -583,9 +843,12 @@ def coder(state: GraphState) -> GraphState:
     (PROJECT_DIR / "project.godot").write_text(
         PROJECT_GODOT_TEMPLATE.format(title=design_doc["title"]), encoding="utf-8"
     )
+    (PROJECT_DIR / "screenshot.gd").write_text(SCREENSHOT_GD, encoding="utf-8")
     (PROJECT_DIR / "Main.tscn").write_text(_build_main_tscn(bgm_filename), encoding="utf-8")
     (PROJECT_DIR / "Main.gd").write_text(gdscript, encoding="utf-8")
 
-    action = "Fixed" if qa_errors else "Generated"
+    action = "Fixed" if qa_errors else ("Tuned" if tune_notes else "Generated")
     print(f"[Coder] {action} Godot project ({template}) -> {PROJECT_DIR}")
-    return {"godot_project_path": str(PROJECT_DIR)}
+    # tune_notes are consumed by this pass; clear them so a subsequent QA
+    # retry takes the fix path against the already-tuned script.
+    return {"godot_project_path": str(PROJECT_DIR), "tune_notes": None}

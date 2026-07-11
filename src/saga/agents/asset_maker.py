@@ -70,8 +70,23 @@ def _check_comfyui_reachable() -> None:
         ) from e
 
 
+def _strip_background(png_bytes: bytes) -> bytes:
+    """Flux cannot emit an alpha channel no matter what the prompt says, so
+    every icon arrives with an opaque background square baked in. rembg
+    (U2-Net, fully local) cuts the subject out."""
+    from rembg import remove  # lazy: onnxruntime import is slow
+
+    return remove(png_bytes)
+
+
 def _generate_image(
-    prompt: str, filename_prefix: str, seed: int, width: int, height: int, timeout: float = 120
+    prompt: str,
+    filename_prefix: str,
+    seed: int,
+    width: int,
+    height: int,
+    strip_bg: bool = False,
+    timeout: float = 120,
 ) -> Path:
     workflow = _build_workflow(prompt, filename_prefix, seed, width, height)
     resp = httpx.post(f"{COMFYUI_URL}/prompt", json={"prompt": workflow}, timeout=30)
@@ -92,6 +107,8 @@ def _generate_image(
             ).content
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             out_path = OUTPUT_DIR / image_info["filename"]
+            if strip_bg:
+                image_bytes = _strip_background(image_bytes)
             out_path.write_bytes(image_bytes)
             return out_path
 
@@ -103,28 +120,40 @@ def asset_maker(state: GraphState) -> GraphState:
     design_doc = state["design_doc"]
     art_style = design_doc["art_style"]
 
+    # Icons get the rembg pass (strip_bg); level backgrounds keep every pixel.
+    # "plain solid background" in the icon prompts gives rembg a clean subject
+    # boundary to cut along - asking Flux for "transparent background" is
+    # futile (no alpha channel) and produces busy checkerboard fakes.
     requests = [
         (
-            f"{design_doc['title']} hero character, {art_style}, game sprite, transparent background",
+            f"{design_doc['hero_description']}, game sprite, centered, plain solid background",
             "hero_sprite",
             ICON_WIDTH,
             ICON_HEIGHT,
+            True,
         ),
         (
-            f"{design_doc['key_item']['description']}, small game icon, centered, {art_style}, transparent background",
+            f"{design_doc['key_item']['description']}, small game icon, centered, {art_style}, plain solid background",
             "key_item",
             ICON_WIDTH,
             ICON_HEIGHT,
+            True,
         ),
     ]
     for i, level in enumerate(design_doc["levels"]):
         requests.append(
-            (f"{level['description']}, {art_style}, game background", f"level_{i}_bg", VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
+            (
+                f"{level['description']}, {art_style}, game background",
+                f"level_{i}_bg",
+                VIEWPORT_WIDTH,
+                VIEWPORT_HEIGHT,
+                False,
+            )
         )
 
     sprite_paths = []
-    for seed, (prompt, name, width, height) in enumerate(requests):
-        path = _generate_image(prompt, name, seed=seed, width=width, height=height)
+    for seed, (prompt, name, width, height, strip_bg) in enumerate(requests):
+        path = _generate_image(prompt, name, seed=seed, width=width, height=height, strip_bg=strip_bg)
         sprite_paths.append(str(path))
         print(f"[Asset Maker] Generated {name} -> {path}")
 

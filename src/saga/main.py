@@ -21,6 +21,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Generate a game design doc from a one-line idea.")
     parser.add_argument("idea", help="One-line game idea, e.g. 'a puzzle platformer about a shape-shifting golem'")
+    parser.add_argument(
+        "--playtest",
+        action="store_true",
+        help="After the pipeline finishes, enter the human playtest feedback loop",
+    )
     args = parser.parse_args()
 
     graph = build_graph()
@@ -43,6 +48,13 @@ def main() -> None:
         print(f"QA: PASSED (after {result.get('retry_count') or 0} retries)", file=sys.stderr)
     else:
         print(f"QA: FAILED after {result.get('retry_count') or 0} retries: {result.get('qa_errors')}", file=sys.stderr)
+    if result.get("screenshot_path"):
+        print(f"Screenshot: {result['screenshot_path']}", file=sys.stderr)
+
+    if args.playtest and result.get("qa_passed"):
+        from saga.playtest import playtest_loop
+
+        playtest_loop(result)
 
 
 if __name__ == "__main__":
