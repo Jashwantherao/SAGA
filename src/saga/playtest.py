@@ -119,6 +119,8 @@ def playtest_loop(state: GraphState) -> None:
         print(f"\n=== Playtest cycle {cycle}/{MAX_PLAYTEST_CYCLES} ===")
         if state.get("screenshot_path"):
             print(f"Screenshot (check before launching): {state['screenshot_path']}")
+        for note in state.get("vision_notes") or []:
+            print(f"Heads-up from vision QA: {note}")
         print(f'Play the build:  "{GODOT_EXE}" --path {state["godot_project_path"]}')
 
         answers = capture_playtest_feedback()

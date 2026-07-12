@@ -10,7 +10,7 @@ class DesignDoc(TypedDict):
     title: str
     genre: str
     # collect | survive_hazards | ordered_switches | depletion | herd_to_goal
-    # | capture_zones | survive_and_deplete
+    # | capture_zones | survive_and_deplete | maze_chase
     mechanic_template: str
     hero_description: str  # concrete, high-contrast visual description of the hero sprite
     core_mechanics: list[str]
@@ -37,3 +37,5 @@ class GraphState(TypedDict):
     # (and cleared) by the Coder's tune path.
     tune_notes: Optional[list[str]]
     screenshot_path: Optional[str]
+    # Non-gating findings from the local vision model's screenshot review.
+    vision_notes: Optional[list[str]]

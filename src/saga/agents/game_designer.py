@@ -16,6 +16,7 @@ MECHANIC_TEMPLATES = [
     "herd_to_goal",
     "capture_zones",
     "survive_and_deplete",
+    "maze_chase",
 ]
 
 KEY_ITEM_ROLES = ["pickup", "hazard", "switch", "creature", "zone_marker"]
@@ -81,11 +82,13 @@ SYSTEM_PROMPT = (
     "NOT default to 'collect': survive_and_deplete (a draining resource, refill "
     "zones with finite fuel, AND roaming hazards - the richest option; prefer it "
     "whenever the fantasy supports both a fading resource and an active threat), "
-    "survive_hazards (outlast moving dangers), ordered_switches (activate "
-    "triggers in sequence), depletion (a resource drains unless replenished), "
-    "herd_to_goal (corner a fleeing creature), capture_zones (claim regions "
-    "while a patroller un-claims them), or collect (gather items) only when "
-    "gathering genuinely is the idea's core fantasy.\n\n"
+    "maze_chase (navigate walled corridors collecting items while dodging a "
+    "patroller - prefer it when the fantasy is about tight spaces, stealth, or "
+    "labyrinths), survive_hazards (outlast moving dangers), ordered_switches "
+    "(activate triggers in sequence), depletion (a resource drains unless "
+    "replenished), herd_to_goal (corner a fleeing creature), capture_zones "
+    "(claim regions while a patroller un-claims them), or collect (gather "
+    "items) only when gathering genuinely is the idea's core fantasy.\n\n"
     "The mechanic must EMBODY the premise, not decorate it: state in theme_thread "
     "how the mechanic is the story ('the fading warmth IS the depleting "
     "resource'). Choose art_style and audio_mood to match the mechanic's "
