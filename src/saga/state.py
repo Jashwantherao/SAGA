@@ -33,6 +33,10 @@ class GraphState(TypedDict):
     qa_passed: Optional[bool]
     qa_errors: Optional[list[str]]
     retry_count: int
+    # Which of the design doc's levels the Coder<->QA loop is currently
+    # building; advanced by the graph's advance_level node after each level
+    # passes QA.
+    current_level: int
     # Numeric tuning instructions from the playtest feedback loop; consumed
     # (and cleared) by the Coder's tune path.
     tune_notes: Optional[list[str]]

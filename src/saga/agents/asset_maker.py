@@ -23,6 +23,11 @@ STEPS = 4  # Flux schnell's distilled step count
 ICON_WIDTH = 128
 ICON_HEIGHT = 128
 
+# Icons are GENERATED larger than their final size: Flux composes complete,
+# well-framed subjects far more reliably at 512 than at 128, and the
+# post-process (rembg cut -> alpha crop -> downscale) lands on 128 anyway.
+ICON_GEN_SIZE = 512
+
 # Backgrounds are generated at exactly the Coder's fixed viewport size
 # (see coder.py's PROJECT_GODOT_TEMPLATE) so they can fill the screen
 # edge-to-edge with no scaling or letterboxing.
@@ -73,10 +78,27 @@ def _check_comfyui_reachable() -> None:
 def _strip_background(png_bytes: bytes) -> bytes:
     """Flux cannot emit an alpha channel no matter what the prompt says, so
     every icon arrives with an opaque background square baked in. rembg
-    (U2-Net, fully local) cuts the subject out."""
+    (U2-Net, fully local) cuts the subject out, then the result is cropped
+    to its alpha bounding box, padded square, and downscaled to icon size -
+    without the crop, a subject occupying a corner of the generation ships
+    off-center and part-cropped (the "floating head" defect vision QA kept
+    flagging)."""
+    import io
+
+    from PIL import Image
     from rembg import remove  # lazy: onnxruntime import is slow
 
-    return remove(png_bytes)
+    cut = Image.open(io.BytesIO(remove(png_bytes))).convert("RGBA")
+    bbox = cut.split()[3].getbbox()  # bounding box of non-transparent pixels
+    if bbox:
+        cut = cut.crop(bbox)
+    side = int(max(cut.size) * 1.08)  # 8% breathing room
+    canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    canvas.paste(cut, ((side - cut.width) // 2, (side - cut.height) // 2))
+    canvas = canvas.resize((ICON_WIDTH, ICON_HEIGHT), Image.LANCZOS)
+    out = io.BytesIO()
+    canvas.save(out, format="PNG")
+    return out.getvalue()
 
 
 def _generate_image(
@@ -126,17 +148,19 @@ def asset_maker(state: GraphState) -> GraphState:
     # futile (no alpha channel) and produces busy checkerboard fakes.
     requests = [
         (
-            f"{design_doc['hero_description']}, game sprite, centered, plain solid background",
+            f"{design_doc['hero_description']}, full body, whole character visible from head "
+            f"to feet, standing, game sprite, centered, plain solid background",
             "hero_sprite",
-            ICON_WIDTH,
-            ICON_HEIGHT,
+            ICON_GEN_SIZE,
+            ICON_GEN_SIZE,
             True,
         ),
         (
-            f"{design_doc['key_item']['description']}, small game icon, centered, {art_style}, plain solid background",
+            f"{design_doc['key_item']['description']}, whole object fully visible, small game "
+            f"icon, centered, {art_style}, plain solid background",
             "key_item",
-            ICON_WIDTH,
-            ICON_HEIGHT,
+            ICON_GEN_SIZE,
+            ICON_GEN_SIZE,
             True,
         ),
     ]

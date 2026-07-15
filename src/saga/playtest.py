@@ -33,11 +33,21 @@ GODOT_EXE = "D:\\Godot\\Godot_v4.7-stable_win64_console.exe"
 
 
 def run_coder_qa(state: GraphState) -> None:
-    """The same Coder<->QA retry loop the graph runs, callable standalone."""
+    """The same per-level Coder<->QA loop the graph runs, callable standalone:
+    each of the design doc's levels is generated and verified in turn, with a
+    fresh retry budget per level."""
+    total_levels = len((state.get("design_doc") or {}).get("levels") or [None])
+    if not state.get("current_level"):
+        state["current_level"] = 0
     while True:
         state.update(coder(state))
         state.update(qa_agent(state))
         if state.get("qa_passed"):
+            if (state.get("current_level") or 0) + 1 < total_levels:
+                state["current_level"] = (state.get("current_level") or 0) + 1
+                state["qa_errors"] = None
+                state["retry_count"] = 0
+                continue
             return
         if (state.get("retry_count") or 0) >= MAX_RETRIES:
             print(f"[Playtest] QA failed after MAX_RETRIES={MAX_RETRIES}: {state.get('qa_errors')}")
