@@ -100,12 +100,15 @@ SYSTEM_PROMPT = (
     "zone_marker). The hero_description drives the hero sprite generation: make "
     "it concrete, characterful, and HIGH CONTRAST against the level's palette - "
     "a dark hero on a dark background disappears.\n\n"
-    "Hard constraints: single-scene game, playable entirely with HELD arrow-key "
-    "movement - never require a discrete button press to win. All interactions "
-    "are touch-based (moving into things). One key_item icon, one hero sprite, "
-    "one background per level (3-5 levels as pacing variations, not new scenes). "
-    "Losing must freeze play and update the on-screen label - never remove the "
-    "player from the scene. Keep scope achievable for ~100 lines of GDScript."
+    "Hard constraints: playable entirely with HELD arrow-key movement - never "
+    "require a discrete button press to win. All interactions are touch-based "
+    "(moving into things). One key_item icon, one hero sprite, one background "
+    "per level. Design 3-5 levels as REAL stages of the same mechanic: each "
+    "gets its own background scene and escalating difficulty, so make the "
+    "level descriptions visually distinct and give the sequence a narrative "
+    "arc from first to last. Losing must freeze play and update the on-screen "
+    "label - never remove the player from the scene. Keep each level's scope "
+    "achievable for ~100 lines of GDScript."
 )
 
 

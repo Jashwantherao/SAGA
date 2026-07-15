@@ -115,6 +115,8 @@ def _vision_review(screenshot_path: str, design_doc) -> list[str]:
 def qa_agent(state: GraphState) -> GraphState:
     project_dir = state["godot_project_path"]
     retry_count = state.get("retry_count") or 0
+    current_level = state.get("current_level") or 0
+    scene = f"res://Level_{current_level}.tscn"
 
     # 1. Import assets
     import_result = _run(["--headless", "--path", project_dir, "--import", "--quit"])
@@ -123,11 +125,11 @@ def qa_agent(state: GraphState) -> GraphState:
         print(f"[QA Agent] FAILED at import step: {import_errors or 'non-zero exit'}")
         return {"qa_passed": False, "qa_errors": import_errors or ["Import step failed"], "retry_count": retry_count + 1}
 
-    # 2. Actually run the scene for a bounded number of frames - this also
-    # catches compile errors (a broken script fails to load), which is why
-    # no separate --check-only pass is needed (or safe: it can't see
-    # autoloads).
-    run_result = _run(["--headless", "--path", project_dir, "--quit-after", "120"], timeout=30)
+    # 2. Actually run THIS level's scene for a bounded number of frames -
+    # this also catches compile errors (a broken script fails to load),
+    # which is why no separate --check-only pass is needed (or safe: it
+    # can't see autoloads).
+    run_result = _run(["--headless", "--path", project_dir, scene, "--quit-after", "120"], timeout=30)
     run_errors = _find_errors(run_result.stdout + run_result.stderr)
     if run_result.returncode != 0 or run_errors:
         print(f"[QA Agent] FAILED at scene run: {run_errors or f'exit code {run_result.returncode}'}")
@@ -141,10 +143,10 @@ def qa_agent(state: GraphState) -> GraphState:
     # screenshot.gd saves frame 60 to res://screenshot.png; it no-ops in the
     # headless runs above.
     screenshot_path = None
-    screenshot_file = Path(project_dir) / "screenshot.png"
+    screenshot_file = Path(project_dir) / f"screenshot_Level{current_level}.png"
     try:
         screenshot_file.unlink(missing_ok=True)  # never report a stale frame
-        _run(["--path", project_dir, "--quit-after", "90"], timeout=30)
+        _run(["--path", project_dir, scene, "--quit-after", "90"], timeout=30)
         if screenshot_file.exists():
             screenshot_path = str(screenshot_file)
             print(f"[QA Agent] Screenshot captured -> {screenshot_path}")

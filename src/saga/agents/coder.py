@@ -34,13 +34,15 @@ PROJECT_GODOT_TEMPLATE = """config_version=5
 
 [application]
 config/name="{title}"
-run/main_scene="res://Main.tscn"
+run/main_scene="res://Level_0.tscn"
 config/features=PackedStringArray("4.7")
 
 [autoload]
 Screenshot="*res://screenshot.gd"
 Sfx="*res://sfx.gd"
 Ambience="*res://ambience.gd"
+Music="*res://music.gd"
+Game="*res://game.gd"
 
 [display]
 window/size/viewport_width=1024
@@ -71,7 +73,73 @@ func _process(_delta):
         Input.action_release("ui_accept")
     if frame == 60:
         var img = get_viewport().get_texture().get_image()
-        img.save_png("res://screenshot.png")
+        var scene_name = "scene"
+        if get_tree().current_scene != null:
+            scene_name = str(get_tree().current_scene.name)
+        img.save_png("res://screenshot_%s.png" % scene_name)
+"""
+
+# Harness-owned level flow: the generated level scripts only ever call
+# Game.level_complete() once on a win; advancing (or reaching the victory
+# screen) and restarting are deterministic harness code, not LLM output.
+def _build_game_gd(level_count: int) -> str:
+    scenes = ", ".join(f'"res://Level_{i}.tscn"' for i in range(level_count))
+    return f"""extends Node
+
+var level = 0
+var level_scenes = [{scenes}]
+
+func level_complete():
+    await get_tree().create_timer(1.5).timeout
+    level += 1
+    if level < level_scenes.size():
+        get_tree().change_scene_to_file(level_scenes[level])
+    else:
+        get_tree().change_scene_to_file("res://Victory.tscn")
+
+func restart():
+    level = 0
+    get_tree().change_scene_to_file(level_scenes[0])
+"""
+
+
+# Music lives in an autoload so it survives scene changes between levels
+# (and loops, which the old per-scene autoplay player never did).
+def _build_music_gd(bgm_filename: str | None) -> str:
+    if not bgm_filename:
+        return "extends Node\n"
+    return f"""extends Node
+
+func _ready():
+    var player = AudioStreamPlayer.new()
+    player.stream = load("res://assets/{bgm_filename}")
+    add_child(player)
+    player.finished.connect(player.play)
+    player.play()
+"""
+
+
+VICTORY_GD = """extends Node2D
+
+func _ready():
+    var canvas = CanvasLayer.new()
+    add_child(canvas)
+    var label = Label.new()
+    label.position = Vector2(320, 270)
+    label.text = "VICTORY - every level complete!  Press Enter to play again"
+    canvas.add_child(label)
+
+func _process(_delta):
+    if Input.is_action_just_pressed("ui_accept"):
+        Game.restart()
+"""
+
+VICTORY_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://victory.gd" id="1"]
+
+[node name="Victory" type="Node2D"]
+script = ExtResource("1")
 """
 
 # Harness-owned ambient particles: presentation boilerplate the 14B model
@@ -120,29 +188,15 @@ func play(sfx_name: String):
 """
 
 
-def _build_main_tscn(bgm_filename: str | None) -> str:
-    """Bgm autoplay is wired here by the harness, not left to the LLM - the
-    filename is already known before the template is filled in, same "harness
-    owns the boilerplate, LLM owns gameplay" split as the rest of the scene."""
-    if not bgm_filename:
-        return """[gd_scene load_steps=2 format=3]
+def _build_level_tscn(index: int) -> str:
+    """Per-level scene boilerplate: a bare Node2D with the level's script.
+    BGM moved to the Music autoload so it persists across level changes."""
+    return f"""[gd_scene load_steps=2 format=3]
 
-[ext_resource type="Script" path="res://Main.gd" id="1"]
+[ext_resource type="Script" path="res://Level_{index}.gd" id="1"]
 
-[node name="Main" type="Node2D"]
+[node name="Level{index}" type="Node2D"]
 script = ExtResource("1")
-"""
-    return f"""[gd_scene load_steps=3 format=3]
-
-[ext_resource type="Script" path="res://Main.gd" id="1"]
-[ext_resource type="AudioStream" path="res://assets/{bgm_filename}" id="2"]
-
-[node name="Main" type="Node2D"]
-script = ExtResource("1")
-
-[node name="BGM" type="AudioStreamPlayer" parent="."]
-stream = ExtResource("2")
-autoplay = true
 """
 
 
@@ -163,12 +217,19 @@ SYSTEM_PROMPT_BASE = (
     "detected via the area_entered (and area_exited where needed) signals - "
     "never use physics bodies. Show the game state in a Label on a "
     "CanvasLayer, and implement the design brief's win condition and lose "
-    "condition exactly. Structure play as three states in a `state` "
-    "variable: 'title' (show the game title and 'Press Enter to start'; "
-    "ui_accept starts), 'playing', and 'over' (show the result and 'Press "
-    "Enter to restart'; ui_accept calls get_tree().reload_current_scene()). "
-    "At the end of _ready, if DisplayServer.get_name() == \"headless\", set "
-    "state straight to 'playing' so automated QA exercises real gameplay. "
+    "condition exactly. Your script controls ONE level of a multi-level "
+    "game - the design brief names your level and its position, so scale "
+    "difficulty numbers up for later levels. Structure play as four states "
+    "in a `state` variable: 'title' (show the game title and 'Press Enter "
+    "to start'; ui_accept starts), 'playing', 'won' (on winning the level: "
+    "set state to 'won', play the win sound, set the label to a "
+    "level-complete message, and call Game.level_complete() exactly once - "
+    "the harness's Game autoload advances to the next level or the victory "
+    "screen), and 'over' (on losing: show the result and 'Press Enter to "
+    "restart'; ui_accept calls get_tree().reload_current_scene() to retry "
+    "the level). At the end of _ready, if DisplayServer.get_name() == "
+    "\"headless\" or Game.level > 0, set state straight to 'playing' - QA "
+    "runs headlessly and the title card belongs on the first level only. "
     "ui_accept may ONLY start or restart the game - never use it inside "
     "gameplay, and never require any discrete button press to win; the core "
     "loop must be playable with HELD movement keys alone. No custom InputMap "
@@ -294,8 +355,7 @@ COLLECT_EXAMPLE_USER = (
     "Win condition: collect all the coins\n"
     "Lose condition: none\n"
     "Key item: a gleaming gold coin (role: pickup)\n"
-    "Levels:\n"
-    "- Rooftop Dash: a sunlit row of rooftops with scattered coins\n"
+    "This is level 1 of 1: Rooftop Dash: a sunlit row of rooftops with scattered coins\n"
     "Available image assets: hero_sprite.png, key_item.png, level_0_bg.png\n"
 )
 
@@ -340,7 +400,7 @@ func _ready():
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
-    if DisplayServer.get_name() == "headless":
+    if DisplayServer.get_name() == "headless" or Game.level > 0:
         state = "playing"
 
 func _spawn_coin(pos: Vector2):
@@ -365,9 +425,10 @@ func _on_coin_area_entered(area: Area2D, coin: Area2D):
     Sfx.play("pickup")
     status_label.text = "Coins: %d / %d" % [score, total_coins]
     if score >= total_coins:
-        state = "over"
+        state = "won"
         Sfx.play("win")
-        status_label.text = "All coins collected - you win!  Press Enter to restart"
+        status_label.text = "All coins collected - level complete!"
+        Game.level_complete()
 
 func _process(delta):
     if state == "title":
@@ -375,6 +436,8 @@ func _process(delta):
         if Input.is_action_just_pressed("ui_accept"):
             state = "playing"
             status_label.text = "Coins: 0 / %d" % total_coins
+        return
+    if state == "won":
         return
     if state == "over":
         if Input.is_action_just_pressed("ui_accept"):
@@ -403,8 +466,7 @@ SURVIVE_EXAMPLE_USER = (
     "Win condition: survive for 30 seconds\n"
     "Lose condition: lose all 3 lives\n"
     "Key item: a blazing meteor fragment (role: hazard)\n"
-    "Levels:\n"
-    "- Night Ridge: a dark ridgeline under a meteor shower\n"
+    "This is level 1 of 1: Night Ridge: a dark ridgeline under a meteor shower\n"
     "Available image assets: hero_sprite.png, key_item.png, level_0_bg.png\n"
 )
 
@@ -455,7 +517,7 @@ func _ready():
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
-    if DisplayServer.get_name() == "headless":
+    if DisplayServer.get_name() == "headless" or Game.level > 0:
         state = "playing"
 
 func _spawn_hazard(pos: Vector2, dir: Vector2):
@@ -489,6 +551,8 @@ func _process(delta):
         if Input.is_action_just_pressed("ui_accept"):
             state = "playing"
         return
+    if state == "won":
+        return
     if state == "over":
         if Input.is_action_just_pressed("ui_accept"):
             get_tree().reload_current_scene()
@@ -496,9 +560,10 @@ func _process(delta):
 
     time_left -= delta
     if time_left <= 0.0:
-        state = "over"
+        state = "won"
         Sfx.play("win")
-        status_label.text = "Dawn breaks - you survived!  Press Enter to restart"
+        status_label.text = "Dawn breaks - level complete!"
+        Game.level_complete()
         return
 
     for i in hazards.size():
@@ -535,8 +600,7 @@ DEPLETION_EXAMPLE_USER = (
     "Win condition: keep the lantern lit for 30 seconds\n"
     "Lose condition: the lantern's light reaches zero\n"
     "Key item: a crackling stone brazier (role: zone_marker)\n"
-    "Levels:\n"
-    "- The Long Walk: a fog-bound rampart dotted with braziers\n"
+    "This is level 1 of 1: The Long Walk: a fog-bound rampart dotted with braziers\n"
     "Available image assets: hero_sprite.png, key_item.png, level_0_bg.png\n"
 )
 
@@ -586,7 +650,7 @@ func _ready():
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
-    if DisplayServer.get_name() == "headless":
+    if DisplayServer.get_name() == "headless" or Game.level > 0:
         state = "playing"
 
 func _spawn_zone(pos: Vector2):
@@ -614,6 +678,8 @@ func _process(delta):
         if Input.is_action_just_pressed("ui_accept"):
             state = "playing"
         return
+    if state == "won":
+        return
     if state == "over":
         if Input.is_action_just_pressed("ui_accept"):
             get_tree().reload_current_scene()
@@ -632,9 +698,10 @@ func _process(delta):
         status_label.text = "The lantern gutters out...  Press Enter to restart"
         return
     if time_left <= 0.0:
-        state = "over"
+        state = "won"
         Sfx.play("win")
-        status_label.text = "Dawn comes - the light held!  Press Enter to restart"
+        status_label.text = "Dawn comes - level complete!"
+        Game.level_complete()
         return
 
     var velocity = Vector2.ZERO
@@ -661,8 +728,7 @@ HYBRID_EXAMPLE_USER = (
     "Win condition: survive for 60 seconds\n"
     "Lose condition: power reaches zero\n"
     "Key item: a glowing charging pad (role: zone_marker)\n"
-    "Levels:\n"
-    "- The Core Floor: a dim reactor hall lit by scattered charging pads\n"
+    "This is level 1 of 1: The Core Floor: a dim reactor hall lit by scattered charging pads\n"
     "Available image assets: hero_sprite.png, key_item.png, level_0_bg.png\n"
 )
 
@@ -730,7 +796,7 @@ func _ready():
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
-    if DisplayServer.get_name() == "headless":
+    if DisplayServer.get_name() == "headless" or Game.level > 0:
         state = "playing"
 
 func _spawn_zone(index: int, pos: Vector2):
@@ -794,6 +860,8 @@ func _process(delta):
         if Input.is_action_just_pressed("ui_accept"):
             state = "playing"
         return
+    if state == "won":
+        return
     if state == "over":
         if Input.is_action_just_pressed("ui_accept"):
             get_tree().reload_current_scene()
@@ -828,9 +896,10 @@ func _process(delta):
         status_label.text = "Systems dark. The reactor wins...  Press Enter to restart"
         return
     if time_left <= 0.0:
-        state = "over"
+        state = "won"
         Sfx.play("win")
-        status_label.text = "Rescue arrives - you held on!  Press Enter to restart"
+        status_label.text = "Rescue arrives - level complete!"
+        Game.level_complete()
         return
 
     for i in hazards.size():
@@ -871,8 +940,7 @@ MAZE_EXAMPLE_USER = (
     "Win condition: collect all 4 gems\n"
     "Lose condition: lose all 3 lives\n"
     "Key item: a sparkling cut gem (role: pickup)\n"
-    "Levels:\n"
-    "- The Vault: dim steel corridors lined with deposit boxes\n"
+    "This is level 1 of 1: The Vault: dim steel corridors lined with deposit boxes\n"
     "Available image assets: hero_sprite.png, key_item.png, level_0_bg.png\n"
 )
 
@@ -956,7 +1024,7 @@ func _ready():
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
-    if DisplayServer.get_name() == "headless":
+    if DisplayServer.get_name() == "headless" or Game.level > 0:
         state = "playing"
 
 func _spawn_gem(pos: Vector2):
@@ -981,9 +1049,10 @@ func _on_gem_area_entered(area: Area2D, gem: Area2D):
     score += 1
     Sfx.play("pickup")
     if score >= total_gems:
-        state = "over"
+        state = "won"
         Sfx.play("win")
-        status_label.text = "The vault is empty - clean getaway!  Press Enter to restart"
+        status_label.text = "The vault is empty - level complete!"
+        Game.level_complete()
 
 func _on_player_touched(area: Area2D):
     if state != "playing" or hit_cooldown > 0.0:
@@ -1011,6 +1080,8 @@ func _process(delta):
         status_label.text = "VAULT RUNNER - Press Enter to start"
         if Input.is_action_just_pressed("ui_accept"):
             state = "playing"
+        return
+    if state == "won":
         return
     if state == "over":
         if Input.is_action_just_pressed("ui_accept"):
@@ -1116,6 +1187,9 @@ def coder(state: GraphState) -> GraphState:
     design_doc = state["design_doc"]
     sprite_paths = state.get("sprite_paths") or []
     bgm_path = state.get("bgm_path")
+    current_level = state.get("current_level") or 0
+    levels = design_doc["levels"]
+    total_levels = len(levels)
 
     PROJECT_DIR.mkdir(parents=True, exist_ok=True)
     assets_dir = PROJECT_DIR / "assets"
@@ -1136,49 +1210,64 @@ def coder(state: GraphState) -> GraphState:
     # autoload, called by the generated script.
     write_default_sfx(assets_dir)
 
+    # This level's script sees only ITS background in the asset list -
+    # listing all N backgrounds invites the model to pick the wrong one.
+    bg_files = [f for f in asset_filenames if f.startswith("level_")]
+    level_bg = next(
+        (f for f in bg_files if f.startswith(f"level_{current_level}_")),
+        bg_files[0] if bg_files else None,
+    )
+    listed_assets = [f for f in asset_filenames if not f.startswith("level_")]
+    if level_bg:
+        listed_assets.append(level_bg)
+
     template = design_doc.get("mechanic_template") or "collect"
     example_user, example_response = FEW_SHOTS[TEMPLATE_TO_FEW_SHOT.get(template, "collect")]
 
+    script_file = PROJECT_DIR / f"Level_{current_level}.gd"
     qa_errors = state.get("qa_errors") or []
     tune_notes = state.get("tune_notes") or []
 
     # The fix/tune paths need the real asset list too: without it the model
     # cannot recover from an invented-filename error (it has no way to know
     # which files exist) and tends to flail into fallback code instead.
-    assets_line = f"Available image assets (use these EXACT filenames): {', '.join(asset_filenames)}\n"
+    assets_line = f"Available image assets (use these EXACT filenames): {', '.join(listed_assets)}\n"
 
     if qa_errors:
-        previous_script = (PROJECT_DIR / "Main.gd").read_text(encoding="utf-8")
+        previous_script = script_file.read_text(encoding="utf-8")
         errors_desc = "\n".join(f"- {e}" for e in qa_errors)
         user_prompt = (
-            f"Previous Main.gd:\n```gdscript\n{previous_script}\n```\n\n"
+            f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
             f"Godot reported these errors:\n{errors_desc}\n"
         )
         system_prompt = FIX_SYSTEM_PROMPT
     elif tune_notes:
-        previous_script = (PROJECT_DIR / "Main.gd").read_text(encoding="utf-8")
+        previous_script = script_file.read_text(encoding="utf-8")
         notes_desc = "\n".join(f"- {n}" for n in tune_notes)
         user_prompt = (
-            f"Previous Main.gd:\n```gdscript\n{previous_script}\n```\n\n"
+            f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
             f"Apply these tuning changes:\n{notes_desc}\n"
         )
         system_prompt = TUNE_SYSTEM_PROMPT
     else:
         key_item = design_doc["key_item"]
-        levels_desc = "\n".join(f"- {lvl['name']}: {lvl['description']}" for lvl in design_doc["levels"])
+        level = levels[current_level]
         user_prompt = (
             f"Title: {design_doc['title']}\n"
             f"Genre: {design_doc['genre']}\n"
             f"Mechanic template: {template}\n"
             f"Core mechanics: {', '.join(design_doc['core_mechanics'])}\n"
             f"Story premise: {design_doc['story_premise']}\n"
-            f"Win condition: {design_doc['win_condition']}\n"
+            f"Win condition (per level): {design_doc['win_condition']}\n"
             f"Lose condition: {design_doc['lose_condition']}\n"
             f"Key item: {key_item['description']} (role: {key_item['role']})\n"
-            f"Levels:\n{levels_desc}\n"
-            f"Available image assets: {', '.join(asset_filenames)}\n"
+            f"This is level {current_level + 1} of {total_levels}: "
+            f"{level['name']}: {level['description']}\n"
+            f"Difficulty: scale for level {current_level + 1} of {total_levels} - "
+            f"later levels get faster hazards, more of them, and tighter margins.\n"
+            f"Available image assets: {', '.join(listed_assets)}\n"
         )
         requirements = TEMPLATE_REQUIREMENTS.get(template, TEMPLATE_REQUIREMENTS["collect"])
         system_prompt = f"{SYSTEM_PROMPT_BASE} {requirements}"
@@ -1222,7 +1311,7 @@ def coder(state: GraphState) -> GraphState:
                 {
                     "role": "user",
                     "content": (
-                        f"Previous Main.gd:\n```gdscript\n{gdscript}\n```\n\n"
+                        f"Previous script:\n```gdscript\n{gdscript}\n```\n\n"
                         f"{assets_line}"
                         f"These errors must be fixed by using only the exact "
                         f"filenames listed above:\n{errors_desc}\n"
@@ -1238,11 +1327,20 @@ def coder(state: GraphState) -> GraphState:
     (PROJECT_DIR / "screenshot.gd").write_text(SCREENSHOT_GD, encoding="utf-8")
     (PROJECT_DIR / "sfx.gd").write_text(SFX_GD, encoding="utf-8")
     (PROJECT_DIR / "ambience.gd").write_text(AMBIENCE_GD, encoding="utf-8")
-    (PROJECT_DIR / "Main.tscn").write_text(_build_main_tscn(bgm_filename), encoding="utf-8")
-    (PROJECT_DIR / "Main.gd").write_text(gdscript, encoding="utf-8")
+    (PROJECT_DIR / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
+    (PROJECT_DIR / "game.gd").write_text(_build_game_gd(total_levels), encoding="utf-8")
+    (PROJECT_DIR / "victory.gd").write_text(VICTORY_GD, encoding="utf-8")
+    (PROJECT_DIR / "Victory.tscn").write_text(VICTORY_TSCN, encoding="utf-8")
+    (PROJECT_DIR / f"Level_{current_level}.tscn").write_text(
+        _build_level_tscn(current_level), encoding="utf-8"
+    )
+    script_file.write_text(gdscript, encoding="utf-8")
 
     action = "Fixed" if qa_errors else ("Tuned" if tune_notes else "Generated")
-    print(f"[Coder] {action} Godot project ({template}, model={MODEL}) -> {PROJECT_DIR}")
+    print(
+        f"[Coder] {action} level {current_level + 1}/{total_levels} "
+        f"({template}, model={MODEL}) -> {PROJECT_DIR}"
+    )
     # tune_notes are consumed by this pass; clear them so a subsequent QA
     # retry takes the fix path against the already-tuned script.
     return {"godot_project_path": str(PROJECT_DIR), "tune_notes": None}
