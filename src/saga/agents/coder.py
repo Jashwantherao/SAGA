@@ -79,18 +79,34 @@ func _process(_delta):
         img.save_png("res://screenshot_%s.png" % scene_name)
 """
 
+def _gd_string(text: str) -> str:
+    """Escape arbitrary text into a GDScript double-quoted string literal."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ") + '"'
+
+
 # Harness-owned level flow: the generated level scripts only ever call
-# Game.level_complete() once on a win; advancing (or reaching the victory
-# screen) and restarting are deterministic harness code, not LLM output.
-def _build_game_gd(level_count: int) -> str:
+# Game.level_complete() once on a win; the interlude (narrative beat),
+# advancing, the victory screen, and restarting are deterministic harness
+# code, not LLM output.
+def _build_game_gd(level_count: int, beats: list[str]) -> str:
     scenes = ", ".join(f'"res://Level_{i}.tscn"' for i in range(level_count))
+    beats_gd = ", ".join(_gd_string(b) for b in beats)
     return f"""extends Node
 
 var level = 0
 var level_scenes = [{scenes}]
+var level_beats = [{beats_gd}]
+
+func current_beat() -> String:
+    if level < level_beats.size():
+        return level_beats[level]
+    return ""
 
 func level_complete():
     await get_tree().create_timer(1.5).timeout
+    get_tree().change_scene_to_file("res://Interlude.tscn")
+
+func advance():
     level += 1
     if level < level_scenes.size():
         get_tree().change_scene_to_file(level_scenes[level])
@@ -100,6 +116,48 @@ func level_complete():
 func restart():
     level = 0
     get_tree().change_scene_to_file(level_scenes[0])
+"""
+
+
+# The between-level narrative beat: the just-won level's outro_beat on an
+# otherwise empty screen. Enter continues; it also auto-continues so a
+# headless QA run that happens to win a level never stalls here.
+INTERLUDE_GD = """extends Node2D
+
+var elapsed = 0.0
+
+func _ready():
+    var canvas = CanvasLayer.new()
+    add_child(canvas)
+    var beat = Label.new()
+    beat.position = Vector2(162, 230)
+    beat.size = Vector2(700, 130)
+    beat.autowrap_mode = TextServer.AUTOWRAP_WORD
+    beat.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    beat.text = Game.current_beat()
+    canvas.add_child(beat)
+    var hint = Label.new()
+    hint.position = Vector2(162, 400)
+    hint.size = Vector2(700, 40)
+    hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    hint.text = "Press Enter to continue"
+    canvas.add_child(hint)
+
+func _process(delta):
+    elapsed += delta
+    var auto_continue = 10.0
+    if DisplayServer.get_name() == "headless":
+        auto_continue = 0.5
+    if Input.is_action_just_pressed("ui_accept") or elapsed > auto_continue:
+        Game.advance()
+"""
+
+INTERLUDE_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://interlude.gd" id="1"]
+
+[node name="Interlude" type="Node2D"]
+script = ExtResource("1")
 """
 
 
@@ -1127,6 +1185,24 @@ FEW_SHOTS = {
     "maze_chase": (MAZE_EXAMPLE_USER, MAZE_EXAMPLE_RESPONSE),
 }
 
+# Template-specific phrasing for the intensity anchor: which direction each
+# family's pressure moves. Written in the few-shots' own tuning-variable
+# vocabulary so the model has a literal target, and family-aware because
+# some levers invert (longer survival time is HARDER in survival templates).
+INTENSITY_LEVERS = {
+    "collect": "more pickups, placed farther apart",
+    "ordered_switches": "a longer sequence with switches spaced farther apart",
+    "survive_hazards": "faster and more hazards and a longer survival time; keep lives at 3",
+    "depletion": "higher drain, stingier refill, fewer or farther-apart zones",
+    "survive_and_deplete": (
+        "higher drain and drain ramp, faster and more hazards, less zone fuel, "
+        "zones spaced farther apart"
+    ),
+    "herd_to_goal": "a faster-fleeing creature and a smaller goal zone",
+    "capture_zones": "a faster patroller and zones spread farther apart",
+    "maze_chase": "a faster patroller covering more of the route, pickups placed deeper",
+}
+
 # Structurally nearest authored example per template: ordered_switches shares
 # collect's touch-static-objects-and-track-progress shape, herd_to_goal shares
 # survive_hazards' per-frame moving-Area2D vector math, capture_zones shares
@@ -1148,10 +1224,14 @@ FIX_SYSTEM_PROMPT = (
     "listed - do not rewrite the script from scratch or change unrelated "
     "behavior. Preserve the existing mechanic, status-label, "
     "title/playing/over state machine, Sfx calls, and win/lose logic as-is "
-    "unless one of them is itself the cause of an error. No custom InputMap "
-    "actions are defined in this project, so only use Godot's built-in "
-    "default input actions (ui_up, ui_down, ui_left, ui_right, and ui_accept "
-    "for start/restart only) - never invent a new action name. Respond with "
+    "unless one of them is itself the cause of an error. If an error says a "
+    "method expected N arguments but was called with N+1, the signal was "
+    "connected with .bind(...) - the handler must accept the extra bound "
+    "argument (e.g. func _on_zone_entered(area: Area2D, index: int)), "
+    "exactly as the worked example does. No custom InputMap actions are "
+    "defined in this project, so only use Godot's built-in default input "
+    "actions (ui_up, ui_down, ui_left, ui_right, and ui_accept for "
+    "start/restart only) - never invent a new action name. Respond with "
     "ONLY a single ```gdscript fenced code block containing the complete "
     "corrected script, no explanation before or after it."
 )
@@ -1228,6 +1308,15 @@ def coder(state: GraphState) -> GraphState:
     qa_errors = state.get("qa_errors") or []
     tune_notes = state.get("tune_notes") or []
 
+    # Escalation: if three fix attempts haven't converged, the fix path is
+    # stuck in a local minimum (observed: the model repeatedly missing a
+    # .bind()/handler-arity mismatch). Spend the remaining retry budget on
+    # fresh regenerations instead - different sampling luck beats repeating
+    # the same failed repair.
+    if qa_errors and (state.get("retry_count") or 0) >= 3:
+        print("[Coder] Fix loop not converging after 3 attempts - regenerating fresh")
+        qa_errors = []
+
     # The fix/tune paths need the real asset list too: without it the model
     # cannot recover from an invented-filename error (it has no way to know
     # which files exist) and tends to flail into fallback code instead.
@@ -1254,6 +1343,20 @@ def coder(state: GraphState) -> GraphState:
     else:
         key_item = design_doc["key_item"]
         level = levels[current_level]
+        intensity = level.get("intensity")
+        if intensity:
+            levers = INTENSITY_LEVERS.get(template, INTENSITY_LEVERS["collect"])
+            difficulty_line = (
+                f"Difficulty intensity: {intensity}/10 (non-negotiable). The worked "
+                f"example's numbers are intensity 4/10 - scale pressure roughly 15% "
+                f"per point of difference via: {levers}. "
+                f"Apply specifically: {level.get('pressure_notes', '')}\n"
+            )
+        else:
+            difficulty_line = (
+                f"Difficulty: scale for level {current_level + 1} of {total_levels} - "
+                f"later levels get faster hazards, more of them, and tighter margins.\n"
+            )
         user_prompt = (
             f"Title: {design_doc['title']}\n"
             f"Genre: {design_doc['genre']}\n"
@@ -1265,8 +1368,7 @@ def coder(state: GraphState) -> GraphState:
             f"Key item: {key_item['description']} (role: {key_item['role']})\n"
             f"This is level {current_level + 1} of {total_levels}: "
             f"{level['name']}: {level['description']}\n"
-            f"Difficulty: scale for level {current_level + 1} of {total_levels} - "
-            f"later levels get faster hazards, more of them, and tighter margins.\n"
+            f"{difficulty_line}"
             f"Available image assets: {', '.join(listed_assets)}\n"
         )
         requirements = TEMPLATE_REQUIREMENTS.get(template, TEMPLATE_REQUIREMENTS["collect"])
@@ -1327,8 +1429,11 @@ def coder(state: GraphState) -> GraphState:
     (PROJECT_DIR / "screenshot.gd").write_text(SCREENSHOT_GD, encoding="utf-8")
     (PROJECT_DIR / "sfx.gd").write_text(SFX_GD, encoding="utf-8")
     (PROJECT_DIR / "ambience.gd").write_text(AMBIENCE_GD, encoding="utf-8")
+    beats = [lvl.get("outro_beat", "") for lvl in levels]
     (PROJECT_DIR / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
-    (PROJECT_DIR / "game.gd").write_text(_build_game_gd(total_levels), encoding="utf-8")
+    (PROJECT_DIR / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")
+    (PROJECT_DIR / "interlude.gd").write_text(INTERLUDE_GD, encoding="utf-8")
+    (PROJECT_DIR / "Interlude.tscn").write_text(INTERLUDE_TSCN, encoding="utf-8")
     (PROJECT_DIR / "victory.gd").write_text(VICTORY_GD, encoding="utf-8")
     (PROJECT_DIR / "Victory.tscn").write_text(VICTORY_TSCN, encoding="utf-8")
     (PROJECT_DIR / f"Level_{current_level}.tscn").write_text(

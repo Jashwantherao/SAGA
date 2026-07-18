@@ -6,6 +6,17 @@ class KeyItem(TypedDict):
     role: str  # pickup | hazard | switch | creature | zone_marker
 
 
+class Level(TypedDict):
+    name: str
+    description: str  # drives this level's background generation
+    outro_beat: str  # 1-2 sentences shown on the interlude screen after winning this level
+    # 1-10 authored pressure; non-decreasing across the sequence. The harness
+    # anchors the matched few-shot's numbers at intensity 4 and scales ~15%
+    # pressure per point, so this is literal arithmetic for the Coder.
+    intensity: int
+    pressure_notes: str  # which of the template's levers rise this level; final level names the climax
+
+
 class DesignDoc(TypedDict):
     title: str
     genre: str
@@ -18,7 +29,7 @@ class DesignDoc(TypedDict):
     theme_thread: str  # one sentence: how the mechanic embodies the premise
     win_condition: str
     lose_condition: str  # or "none"
-    levels: list[dict[str, str]]  # each: {"name": ..., "description": ...}
+    levels: list[Level]
     art_style: str
     audio_mood: str
     key_item: KeyItem
