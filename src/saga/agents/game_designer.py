@@ -1,12 +1,24 @@
-"""Game Designer agent — turns a one-line prompt into a structured game design doc."""
+"""Game Designer agent — turns a one-line prompt into a structured game design doc.
+
+Two backends share the same schema and system prompt:
+- "local" (default): a local model via Ollama's structured outputs. The
+  design task is heavily structured by now - template menu with selection
+  guidance, per-template lever lists, intensity rules, a strict JSON schema
+  - which is exactly the shape of problem a mid-size local model handles,
+  and it makes the whole pipeline runnable end to end with zero cloud cost.
+- "claude": the Anthropic API - the premium option for when the key is
+  funded. Select with SAGA_DESIGNER_BACKEND=claude.
+"""
 
 import json
-
-import anthropic
+import os
 
 from saga.state import GraphState
 
-MODEL = "claude-sonnet-5"
+CLAUDE_MODEL = "claude-sonnet-5"
+LOCAL_MODEL = os.environ.get(
+    "SAGA_DESIGNER_MODEL", "hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q3_K_S"
+)
 
 MECHANIC_TEMPLATES = [
     "collect",
@@ -149,11 +161,53 @@ SYSTEM_PROMPT = (
 )
 
 
-def game_designer(state: GraphState) -> GraphState:
-    client = anthropic.Anthropic()
+def _validate(doc: dict) -> list[str]:
+    """Structural checks a local model can plausibly get wrong; returned as a
+    problem list so a corrective retry can quote them verbatim."""
+    problems = []
+    for key in DESIGN_DOC_SCHEMA["required"]:
+        if not doc.get(key):
+            problems.append(f"missing or empty field {key!r}")
+    if doc.get("mechanic_template") not in MECHANIC_TEMPLATES:
+        problems.append(f"mechanic_template must be one of {MECHANIC_TEMPLATES}")
+    key_item = doc.get("key_item") or {}
+    if key_item.get("role") not in KEY_ITEM_ROLES:
+        problems.append(f"key_item.role must be one of {KEY_ITEM_ROLES}")
+    if not key_item.get("description"):
+        problems.append("key_item.description is required")
+    levels = doc.get("levels") or []
+    if not 3 <= len(levels) <= 5:
+        problems.append(f"need 3-5 levels, got {len(levels)}")
+    for i, lvl in enumerate(levels):
+        for field in ("name", "description", "outro_beat", "pressure_notes"):
+            if not lvl.get(field):
+                problems.append(f"levels[{i}].{field} is required")
+        if not isinstance(lvl.get("intensity"), int):
+            problems.append(f"levels[{i}].intensity must be an integer 1-10")
+    return problems
 
+
+def _normalize(doc: dict) -> dict:
+    """Safe harness-side fixups: clamp intensity into 1-10 and enforce the
+    non-decreasing rule via a running max (a curve that dips is the exact
+    noise this field exists to prevent)."""
+    prev = 0
+    for lvl in doc.get("levels") or []:
+        value = max(1, min(10, int(lvl.get("intensity") or 1)))
+        if value < prev:
+            print(f"[Game Designer] intensity dip ({value} after {prev}) raised to {prev}")
+            value = prev
+        lvl["intensity"] = value
+        prev = value
+    return doc
+
+
+def _design_claude(user_prompt: str) -> dict:
+    import anthropic
+
+    client = anthropic.Anthropic()
     response = client.messages.create(
-        model=MODEL,
+        model=CLAUDE_MODEL,
         max_tokens=4096,
         system=SYSTEM_PROMPT,
         thinking={"type": "adaptive"},
@@ -161,14 +215,55 @@ def game_designer(state: GraphState) -> GraphState:
             "effort": "high",
             "format": {"type": "json_schema", "schema": DESIGN_DOC_SCHEMA},
         },
-        messages=[{"role": "user", "content": state["user_prompt"]}],
+        messages=[{"role": "user", "content": user_prompt}],
     )
-
     text = next(block.text for block in response.content if block.type == "text")
-    design_doc = json.loads(text)
+    return json.loads(text)
+
+
+def _design_local(user_prompt: str) -> dict:
+    import ollama
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+    response = ollama.chat(model=LOCAL_MODEL, messages=messages, format=DESIGN_DOC_SCHEMA)
+    doc = json.loads(response["message"]["content"])
+
+    problems = _validate(doc)
+    if problems:
+        print(f"[Game Designer] Local doc invalid, one corrective retry: {problems}")
+        messages.append({"role": "assistant", "content": json.dumps(doc)})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Your design doc has these problems - return the complete "
+                    "corrected doc: " + "; ".join(problems)
+                ),
+            }
+        )
+        response = ollama.chat(model=LOCAL_MODEL, messages=messages, format=DESIGN_DOC_SCHEMA)
+        doc = json.loads(response["message"]["content"])
+        problems = _validate(doc)
+        if problems:
+            raise ValueError(f"Local designer produced an invalid design doc: {problems}")
+    return doc
+
+
+def game_designer(state: GraphState) -> GraphState:
+    backend = os.environ.get("SAGA_DESIGNER_BACKEND", "local")
+    if backend == "claude":
+        design_doc = _design_claude(state["user_prompt"])
+    else:
+        design_doc = _design_local(state["user_prompt"])
+    design_doc = _normalize(design_doc)
 
     print(
-        f"[Game Designer] Produced design doc: {design_doc['title']!r} "
-        f"(template: {design_doc['mechanic_template']})"
+        f"[Game Designer/{backend}] Produced design doc: {design_doc['title']!r} "
+        f"(template: {design_doc['mechanic_template']}, "
+        f"{len(design_doc['levels'])} levels, "
+        f"intensity {[lvl['intensity'] for lvl in design_doc['levels']]})"
     )
     return {"user_prompt": state["user_prompt"], "design_doc": design_doc}
