@@ -40,8 +40,11 @@ DESIGN_DOC_SCHEMA = {
                 "properties": {
                     "name": {"type": "string"},
                     "description": {"type": "string"},
+                    "outro_beat": {"type": "string"},
+                    "intensity": {"type": "integer", "minimum": 1, "maximum": 10},
+                    "pressure_notes": {"type": "string"},
                 },
-                "required": ["name", "description"],
+                "required": ["name", "description", "outro_beat", "intensity", "pressure_notes"],
                 "additionalProperties": False,
             },
         },
@@ -77,7 +80,8 @@ DESIGN_DOC_SCHEMA = {
 
 SYSTEM_PROMPT = (
     "You are the Game Designer agent in an automated indie-game studio pipeline. "
-    "Given a one-line game idea, design a small, complete 2D Godot game.\n\n"
+    "Given a one-line game idea, design a small, complete multi-level 2D Godot "
+    "game.\n\n"
     "First, choose the mechanic_template whose fantasy best matches the idea - do "
     "NOT default to 'collect': survive_and_deplete (a draining resource, refill "
     "zones with finite fuel, AND roaming hazards - the richest option; prefer it "
@@ -89,6 +93,15 @@ SYSTEM_PROMPT = (
     "replenished), herd_to_goal (corner a fleeing creature), capture_zones "
     "(claim regions while a patroller un-claims them), or collect (gather "
     "items) only when gathering genuinely is the idea's core fantasy.\n\n"
+    "Each template's difficulty levers, for your per-level fields - never cite "
+    "a lever your template lacks: survive_hazards: hazard speed and count, "
+    "lives, survival time. depletion: drain rate, refill rate, zone count and "
+    "spacing, survival time. survive_and_deplete: all of those plus drain ramp "
+    "and zone fuel. maze_chase: patroller speed and route coverage, pickup "
+    "placement depth, lives. collect: pickup count and how far apart they sit. "
+    "ordered_switches: sequence length and switch spacing. herd_to_goal: flee "
+    "speed and goal-zone size. capture_zones: patroller speed, zone count and "
+    "spread.\n\n"
     "The mechanic must EMBODY the premise, not decorate it: state in theme_thread "
     "how the mechanic is the story ('the fading warmth IS the depleting "
     "resource'). Choose art_style and audio_mood to match the mechanic's "
@@ -100,15 +113,39 @@ SYSTEM_PROMPT = (
     "zone_marker). The hero_description drives the hero sprite generation: make "
     "it concrete, characterful, and HIGH CONTRAST against the level's palette - "
     "a dark hero on a dark background disappears.\n\n"
+    "Design 3-5 levels as REAL stages: visually distinct backgrounds, a "
+    "narrative arc from first to last, and three authored fields per level "
+    "beyond name and description:\n"
+    "- intensity (1 to 10): the level's overall pressure. Non-decreasing "
+    "across the sequence; open at 3 or 4 and make the final level 8 or "
+    "higher. The build system anchors the mechanic's reference numbers at "
+    "intensity 4 and scales pressure roughly 15% per point, so treat these "
+    "as literal settings, not mood words.\n"
+    "- pressure_notes: one sentence naming which of your template's levers "
+    "(from the list above) rise THIS level. The FINAL level's pressure_notes "
+    "must also name one structural climax, not just larger numbers: hazard "
+    "templates stage a second wave or force a final crossing through the "
+    "hazards' path; resource templates make the last stretch nearly "
+    "refill-less - zones sparse, distant, or almost spent; maze_chase puts "
+    "the last pickup deep in a dead-end the patroller's route covers; "
+    "collect and ordered_switches place the final objectives at the map's "
+    "far extremes so the closing route is the longest and most exposed; "
+    "herd_to_goal shrinks the goal and quickens the creature. The climax "
+    "should take away something earlier levels let the player rely on.\n"
+    "- outro_beat: 1-2 sentences of story shown full-screen after the level "
+    "is won, before the next loads. Write what JUST happened and what it "
+    "cost or revealed - never a recap of the premise, never numbers or "
+    "mechanics words. The first beat sets what is at stake ahead; a middle "
+    "beat complicates things or takes something away; the final level's "
+    "beat IS the ending - resolve what the hero wanted in the premise, in "
+    "the same emotional register as audio_mood. The player reads these one "
+    "at a time on an otherwise empty screen: make each one earn it.\n\n"
     "Hard constraints: playable entirely with HELD arrow-key movement - never "
     "require a discrete button press to win. All interactions are touch-based "
     "(moving into things). One key_item icon, one hero sprite, one background "
-    "per level. Design 3-5 levels as REAL stages of the same mechanic: each "
-    "gets its own background scene and escalating difficulty, so make the "
-    "level descriptions visually distinct and give the sequence a narrative "
-    "arc from first to last. Losing must freeze play and update the on-screen "
-    "label - never remove the player from the scene. Keep each level's scope "
-    "achievable for ~100 lines of GDScript."
+    "per level. Losing must freeze play and update the on-screen label - never "
+    "remove the player from the scene. Keep each level's scope achievable for "
+    "~100 lines of GDScript."
 )
 
 
