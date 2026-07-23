@@ -29,6 +29,7 @@ MECHANIC_TEMPLATES = [
     "capture_zones",
     "survive_and_deplete",
     "maze_chase",
+    "dot_maze",
 ]
 
 KEY_ITEM_ROLES = ["pickup", "hazard", "switch", "creature", "zone_marker"]
@@ -98,7 +99,10 @@ SYSTEM_PROMPT = (
     "NOT default to 'collect': survive_and_deplete (a draining resource, refill "
     "zones with finite fuel, AND roaming hazards - the richest option; prefer it "
     "whenever the fantasy supports both a fading resource and an active threat), "
-    "maze_chase (navigate walled corridors collecting items while dodging a "
+    "dot_maze (eat every dot in a dense maze while ghosts patrol and one hunts "
+    "you, with rare power pickups that briefly turn the tables - prefer it for "
+    "classic chase-and-chomp arcade fantasies), maze_chase (navigate walled "
+    "corridors collecting items while dodging a "
     "patroller - prefer it when the fantasy is about tight spaces, stealth, or "
     "labyrinths), survive_hazards (outlast moving dangers), ordered_switches "
     "(activate triggers in sequence), depletion (a resource drains unless "
@@ -110,7 +114,9 @@ SYSTEM_PROMPT = (
     "lives, survival time. depletion: drain rate, refill rate, zone count and "
     "spacing, survival time. survive_and_deplete: all of those plus drain ramp "
     "and zone fuel. maze_chase: patroller speed and route coverage, pickup "
-    "placement depth, lives. collect: pickup count and how far apart they sit. "
+    "placement depth, lives. dot_maze: ghost speeds (patrollers and hunter), "
+    "power-pickup duration, dot count, lives. collect: pickup count and how "
+    "far apart they sit. "
     "ordered_switches: sequence length and switch spacing. herd_to_goal: flee "
     "speed and goal-zone size. capture_zones: patroller speed, zone count and "
     "spread.\n\n"
@@ -202,6 +208,37 @@ def _normalize(doc: dict) -> dict:
     return doc
 
 
+def _parse_json_lenient(text: str) -> dict:
+    """A truncated response is a raised context/prediction budget the model
+    still overran, or a model that ignores it - either way it's cheaper to
+    salvage the doc than to discard a mostly-good generation. Closes any
+    unterminated string and unbalanced brackets before parsing."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        print(f"[Game Designer] JSON truncated ({e}), attempting salvage")
+        stack = []
+        in_string = False
+        escaped = False
+        for ch in text:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch in "{[":
+                stack.append("}" if ch == "{" else "]")
+            elif ch in "}]" and stack:
+                stack.pop()
+        salvaged = text + ('"' if in_string else "") + "".join(reversed(stack))
+        return json.loads(salvaged)
+
+
 def _design_claude(user_prompt: str) -> dict:
     import anthropic
 
@@ -224,12 +261,18 @@ def _design_claude(user_prompt: str) -> dict:
 def _design_local(user_prompt: str) -> dict:
     import ollama
 
+    # A 3-5 level design doc with several string fields per level easily
+    # exceeds Ollama's small default context/output window - Ollama truncates
+    # silently rather than erroring, so under-provisioning here reads as a
+    # JSON parse failure with no clue as to the real cause.
+    options = {"num_ctx": 8192, "num_predict": 4096}
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
     ]
-    response = ollama.chat(model=LOCAL_MODEL, messages=messages, format=DESIGN_DOC_SCHEMA)
-    doc = json.loads(response["message"]["content"])
+    response = ollama.chat(model=LOCAL_MODEL, messages=messages, format=DESIGN_DOC_SCHEMA, options=options)
+    doc = _parse_json_lenient(response["message"]["content"])
 
     problems = _validate(doc)
     if problems:
@@ -244,8 +287,8 @@ def _design_local(user_prompt: str) -> dict:
                 ),
             }
         )
-        response = ollama.chat(model=LOCAL_MODEL, messages=messages, format=DESIGN_DOC_SCHEMA)
-        doc = json.loads(response["message"]["content"])
+        response = ollama.chat(model=LOCAL_MODEL, messages=messages, format=DESIGN_DOC_SCHEMA, options=options)
+        doc = _parse_json_lenient(response["message"]["content"])
         problems = _validate(doc)
         if problems:
             raise ValueError(f"Local designer produced an invalid design doc: {problems}")

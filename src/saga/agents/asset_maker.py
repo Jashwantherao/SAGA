@@ -167,7 +167,10 @@ def asset_maker(state: GraphState) -> GraphState:
     for i, level in enumerate(design_doc["levels"]):
         requests.append(
             (
-                f"{level['description']}, {art_style}, game background",
+                f"{level['description']}, {art_style}, game background, strict top-down "
+                f"orthographic view, camera facing straight down at 90 degrees, flat floor "
+                f"plan, no perspective, no horizon, no vanishing point, no camera tilt, "
+                f"no isometric angle, walls and objects shown from directly above only",
                 f"level_{i}_bg",
                 VIEWPORT_WIDTH,
                 VIEWPORT_HEIGHT,
@@ -180,5 +183,25 @@ def asset_maker(state: GraphState) -> GraphState:
         path = _generate_image(prompt, name, seed=seed, width=width, height=height, strip_bg=strip_bg)
         sprite_paths.append(str(path))
         print(f"[Asset Maker] Generated {name} -> {path}")
+
+    # Release ComfyUI's VRAM now that the art batch is done: the Coder's
+    # code model loads next, and a full image batch leaves ComfyUI holding
+    # most of the card (observed: a 13GB coder model's llama-server dying
+    # with a CUDA init failure when loaded on top). The phases are strictly
+    # sequential, so the GPU should hand over between them.
+    try:
+        httpx.post(
+            f"{COMFYUI_URL}/free",
+            json={"unload_models": True, "free_memory": True},
+            timeout=15,
+        )
+        print("[Asset Maker] Asked ComfyUI to release VRAM for the code phase")
+        # /free returns before the driver has actually reclaimed the memory;
+        # the Coder's first Ollama load reproducibly crashed immediately
+        # after this call across 3/3 observed runs without this settle time
+        # (Coder also retries with backoff as a second line of defense).
+        time.sleep(8)
+    except Exception as e:
+        print(f"[Asset Maker] ComfyUI VRAM release skipped ({type(e).__name__}: {e})")
 
     return {"sprite_paths": sprite_paths}

@@ -20,14 +20,43 @@ effect.
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 
+import httpx
 import ollama
 
 from saga.sfx import write_default_sfx
 from saga.state import GraphState
 
 MODEL = os.environ.get("SAGA_CODER_MODEL", "qwen2.5-coder:14b")
+
+# Per-template model routing: the 14B's faithful-imitation window tops out
+# around ~200 lines of few-shot (benchmarked), and it reliably drops the
+# member-variable block when asked to reproduce the 244-line dot_maze
+# example. Templates whose few-shots exceed that window route to the larger
+# MoE (3B active params, so still fast) instead of slimming the game down.
+TEMPLATE_MODEL_OVERRIDES = {
+    "dot_maze": os.environ.get("SAGA_DOTMAZE_MODEL", "batiai/qwen3.6-35b:q3"),
+}
+
+# Structural contracts per template: regex patterns whose absence means the
+# model silently simplified a required system away (observed: a generation
+# that compiled and passed QA with no walls, immobile ghosts, and no ghost
+# collision - "not using arrays for simplicity"). Violations get one
+# correction round-trip with the missing systems named; QA cannot catch
+# hollowness, only crashes, so this check is the only line of defense.
+TEMPLATE_CONTRACTS = {
+    "dot_maze": [
+        ("the Rect2 wall array and axis-separated wall collision", r"Rect2\("),
+        ("ghost movement (patrol via move_toward plus a hunter moving toward the player)", r"move_toward"),
+        ("the ghost-touch handler connected via player.area_entered", r"player\.area_entered\.connect"),
+    ],
+    "maze_chase": [
+        ("the Rect2 wall array and axis-separated wall collision", r"Rect2\("),
+        ("the patroller-touch handler connected via player.area_entered", r"player\.area_entered\.connect"),
+    ],
+}
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent.parent / "output" / "godot_project"
 
 PROJECT_GODOT_TEMPLATE = """config_version=5
@@ -390,6 +419,31 @@ TEMPLATE_REQUIREMENTS = {
         "patroller costs a life, plays the hit sound, and starts a brief "
         "hit-cooldown with a red flash. Win when every pickup is collected, "
         "lose when lives reach zero."
+    ),
+    "dot_maze": (
+        "Structure for this game: a dense corridor maze in the classic "
+        "chase-and-chomp style. Walls are an array of Rect2 values (border "
+        "walls plus rows of inner blocks leaving open corridors), each drawn "
+        "as a ColorRect; the player moves with axis-separated collision "
+        "against them. Spawn many small dots along the corridors with nested "
+        "for-loops over position arrays (key_item sprite scaled small), plus "
+        "a few large power pickups at the corners (key_item scaled bigger, "
+        "tinted gold). Three ghost Area2Ds built from the key_item sprite "
+        "tinted distinct colors: two patrol fixed waypoint rectangles via "
+        "move_toward, one hunts by moving directly toward the player every "
+        "frame. Eating a power pickup starts a power timer: all ghosts tint "
+        "blue, flee away from the player at reduced speed, and touching one "
+        "eats it - play the pickup sound and teleport it back to its home "
+        "position, no longer frightened. When the timer expires ghosts "
+        "return to normal. Touching a normal ghost costs a life, plays the "
+        "hit sound, respawns the player at their start position, and starts "
+        "a brief hit-cooldown. Win when every dot and power pickup is "
+        "eaten; lose when lives reach zero. Show dots remaining, lives, and "
+        "a POWER indicator while the timer runs. Reproduce EVERY system the "
+        "worked example demonstrates - the walls, both ghost movement "
+        "styles, the power mode, and the ghost-touch handler; never stub a "
+        "function with pass or drop a system 'for simplicity'. A missing "
+        "system is a failed level even if the script runs."
     ),
 }
 
@@ -1177,12 +1231,271 @@ func _process(delta):
     status_label.text = "Gems: %d / %d   Lives: %d" % [score, total_gems, lives]
 ```"""
 
+DOT_MAZE_EXAMPLE_USER = (
+    "Title: Glutton Grove\n"
+    "Genre: arcade chase\n"
+    "Mechanic template: dot_maze\n"
+    "Core mechanics: eat every glow-berry in the hedge maze, dodge the garden wardens, golden berries turn the tables\n"
+    "Story premise: A round little glutton sneaks into a hedge-maze garden to eat every glow-berry while the wardens make their rounds.\n"
+    "Win condition: eat every berry in the maze\n"
+    "Lose condition: lose all 3 lives\n"
+    "Key item: a plump glowing berry (role: pickup)\n"
+    "This is level 1 of 1: The Hedge Rounds: a moonlit garden maze of tall hedges\n"
+    "Available image assets: hero_sprite.png, key_item.png, level_0_bg.png\n"
+)
+
+DOT_MAZE_EXAMPLE_RESPONSE = """```gdscript
+extends Node2D
+
+@export var speed = 200.0
+var patrol_speed = 110.0
+var hunter_speed = 90.0
+var frightened_speed = 65.0
+var power_duration = 6.0
+var starting_lives = 3
+var hit_cooldown_time = 1.2
+var player_half_size = 14.0
+
+var lives = starting_lives
+var score = 0
+var total_dots = 0
+var power_left = 0.0
+var hit_cooldown = 0.0
+var state = "title"
+var player: Area2D
+var player_spawn = Vector2(512, 490)
+var status_label: Label
+var walls = []
+var ghosts = []
+var ghost_sprites = []
+var ghost_tints = []
+var ghost_home = []
+var ghost_routes = []
+var ghost_route_index = []
+var ghost_frightened = []
+var pellet_positions = [Vector2(75, 70), Vector2(950, 70), Vector2(75, 490), Vector2(950, 490)]
+
+func _ready():
+    var background = Sprite2D.new()
+    background.texture = load("res://assets/level_0_bg.png")
+    background.centered = false
+    background.position = Vector2.ZERO
+    background.z_index = -1
+    add_child(background)
+
+    walls = [
+        Rect2(0, 0, 1024, 20), Rect2(0, 556, 1024, 20),
+        Rect2(0, 0, 20, 576), Rect2(1004, 0, 20, 576),
+    ]
+    for row_y in [110, 250, 390]:
+        for block_x in [130, 350, 560, 780]:
+            walls.append(Rect2(block_x, row_y, 120, 60))
+    for r in walls:
+        var wall_rect = ColorRect.new()
+        wall_rect.position = r.position
+        wall_rect.size = r.size
+        wall_rect.color = Color(0.12, 0.2, 0.14, 0.92)
+        add_child(wall_rect)
+
+    player = Area2D.new()
+    player.position = player_spawn
+    var player_sprite = Sprite2D.new()
+    player_sprite.texture = load("res://assets/hero_sprite.png")
+    player.add_child(player_sprite)
+    var player_shape = CollisionShape2D.new()
+    var player_circle = CircleShape2D.new()
+    player_circle.radius = player_half_size
+    player_shape.shape = player_circle
+    player.add_child(player_shape)
+    player.area_entered.connect(_on_player_touched)
+    add_child(player)
+
+    for y in [70, 210, 350, 490]:
+        for x in [75, 160, 300, 410, 515, 620, 730, 840, 950]:
+            if Vector2(x, y) in pellet_positions:
+                continue
+            _spawn_dot(Vector2(x, y), false)
+    for x in [75, 300, 515, 730, 950]:
+        for y in [140, 280, 420]:
+            _spawn_dot(Vector2(x, y), false)
+    for pos in pellet_positions:
+        _spawn_dot(pos, true)
+
+    _spawn_ghost(Vector2(75, 70), Color(1.4, 0.5, 0.5), [Vector2(300, 70), Vector2(300, 490), Vector2(75, 490), Vector2(75, 70)])
+    _spawn_ghost(Vector2(950, 70), Color(1.3, 0.6, 1.3), [Vector2(730, 70), Vector2(950, 70), Vector2(950, 490), Vector2(730, 490)])
+    _spawn_ghost(Vector2(515, 280), Color(0.6, 1.3, 0.7), [])
+
+    var canvas = CanvasLayer.new()
+    add_child(canvas)
+    status_label = Label.new()
+    status_label.position = Vector2(20, 20)
+    canvas.add_child(status_label)
+
+    if DisplayServer.get_name() == "headless" or Game.level > 0:
+        state = "playing"
+
+func _spawn_dot(pos: Vector2, is_pellet: bool):
+    var dot = Area2D.new()
+    dot.position = pos
+    var sprite = Sprite2D.new()
+    sprite.texture = load("res://assets/key_item.png")
+    if is_pellet:
+        sprite.scale = Vector2(0.45, 0.45)
+        sprite.modulate = Color(1.4, 1.2, 0.5)
+    else:
+        sprite.scale = Vector2(0.18, 0.18)
+    dot.add_child(sprite)
+    var shape = CollisionShape2D.new()
+    var circle = CircleShape2D.new()
+    circle.radius = 10.0
+    shape.shape = circle
+    dot.add_child(shape)
+    dot.area_entered.connect(_on_dot_entered.bind(dot, is_pellet))
+    add_child(dot)
+    total_dots += 1
+
+func _spawn_ghost(pos: Vector2, tint: Color, route: Array):
+    var ghost = Area2D.new()
+    ghost.position = pos
+    var sprite = Sprite2D.new()
+    sprite.texture = load("res://assets/key_item.png")
+    sprite.modulate = tint
+    sprite.scale = Vector2(0.55, 0.55)
+    ghost.add_child(sprite)
+    var shape = CollisionShape2D.new()
+    var circle = CircleShape2D.new()
+    circle.radius = 14.0
+    shape.shape = circle
+    ghost.add_child(shape)
+    add_child(ghost)
+    ghosts.append(ghost)
+    ghost_sprites.append(sprite)
+    ghost_tints.append(tint)
+    ghost_home.append(pos)
+    ghost_routes.append(route)
+    ghost_route_index.append(0)
+    ghost_frightened.append(false)
+
+func _on_dot_entered(area: Area2D, dot: Area2D, is_pellet: bool):
+    if state != "playing" or area != player:
+        return
+    dot.queue_free()
+    score += 1
+    Sfx.play("pickup")
+    if is_pellet:
+        power_left = power_duration
+        for i in ghosts.size():
+            ghost_frightened[i] = true
+    if score >= total_dots:
+        state = "won"
+        Sfx.play("win")
+        status_label.text = "The grove is picked clean - level complete!"
+        Game.level_complete()
+
+func _on_player_touched(area: Area2D):
+    if state != "playing":
+        return
+    var gi = ghosts.find(area)
+    if gi == -1:
+        return
+    if ghost_frightened[gi]:
+        Sfx.play("pickup")
+        ghosts[gi].position = ghost_home[gi]
+        ghost_frightened[gi] = false
+        return
+    if hit_cooldown > 0.0:
+        return
+    lives -= 1
+    hit_cooldown = hit_cooldown_time
+    player.modulate = Color(1.0, 0.45, 0.45)
+    player.position = player_spawn
+    Sfx.play("hit")
+    if lives <= 0:
+        state = "over"
+        Sfx.play("lose")
+        status_label.text = "The wardens caught the glutton...  Press Enter to restart"
+
+func _hits_wall(pos: Vector2) -> bool:
+    var half = Vector2(player_half_size, player_half_size)
+    var player_rect = Rect2(pos - half, half * 2.0)
+    for w in walls:
+        if player_rect.intersects(w):
+            return true
+    return false
+
+func _process(delta):
+    if state == "title":
+        status_label.text = "GLUTTON GROVE - Press Enter to start"
+        if Input.is_action_just_pressed("ui_accept"):
+            state = "playing"
+        return
+    if state == "won":
+        return
+    if state == "over":
+        if Input.is_action_just_pressed("ui_accept"):
+            get_tree().reload_current_scene()
+        return
+
+    if hit_cooldown > 0.0:
+        hit_cooldown -= delta
+        if hit_cooldown <= 0.0:
+            player.modulate = Color(1, 1, 1)
+
+    if power_left > 0.0:
+        power_left -= delta
+        if power_left <= 0.0:
+            for i in ghosts.size():
+                ghost_frightened[i] = false
+
+    for i in ghosts.size():
+        var ghost = ghosts[i]
+        if ghost_frightened[i]:
+            ghost_sprites[i].modulate = Color(0.5, 0.6, 1.4)
+            var away = (ghost.position - player.position).normalized()
+            ghost.position += away * frightened_speed * delta
+            ghost.position = ghost.position.clamp(Vector2(40, 40), Vector2(984, 536))
+        else:
+            ghost_sprites[i].modulate = ghost_tints[i]
+            if ghost_routes[i].size() > 0:
+                var target = ghost_routes[i][ghost_route_index[i]]
+                ghost.position = ghost.position.move_toward(target, patrol_speed * delta)
+                if ghost.position.distance_to(target) < 2.0:
+                    ghost_route_index[i] = (ghost_route_index[i] + 1) % ghost_routes[i].size()
+            else:
+                var toward = (player.position - ghost.position).normalized()
+                ghost.position += toward * hunter_speed * delta
+
+    var velocity = Vector2.ZERO
+    if Input.is_action_pressed("ui_right"):
+        velocity.x += 1.0
+    if Input.is_action_pressed("ui_left"):
+        velocity.x -= 1.0
+    if Input.is_action_pressed("ui_down"):
+        velocity.y += 1.0
+    if Input.is_action_pressed("ui_up"):
+        velocity.y -= 1.0
+    var motion = velocity.normalized() * speed * delta
+
+    var new_x = player.position + Vector2(motion.x, 0)
+    if not _hits_wall(new_x):
+        player.position = new_x
+    var new_y = player.position + Vector2(0, motion.y)
+    if not _hits_wall(new_y):
+        player.position = new_y
+
+    var power_note = ""
+    if power_left > 0.0:
+        power_note = "   POWER %ds!" % int(ceil(power_left))
+    status_label.text = "Berries: %d / %d   Lives: %d%s" % [score, total_dots, lives, power_note]
+```"""
+
 FEW_SHOTS = {
     "collect": (COLLECT_EXAMPLE_USER, COLLECT_EXAMPLE_RESPONSE),
     "survive_hazards": (SURVIVE_EXAMPLE_USER, SURVIVE_EXAMPLE_RESPONSE),
     "depletion": (DEPLETION_EXAMPLE_USER, DEPLETION_EXAMPLE_RESPONSE),
     "survive_and_deplete": (HYBRID_EXAMPLE_USER, HYBRID_EXAMPLE_RESPONSE),
     "maze_chase": (MAZE_EXAMPLE_USER, MAZE_EXAMPLE_RESPONSE),
+    "dot_maze": (DOT_MAZE_EXAMPLE_USER, DOT_MAZE_EXAMPLE_RESPONSE),
 }
 
 # Template-specific phrasing for the intensity anchor: which direction each
@@ -1201,6 +1514,10 @@ INTENSITY_LEVERS = {
     "herd_to_goal": "a faster-fleeing creature and a smaller goal zone",
     "capture_zones": "a faster patroller and zones spread farther apart",
     "maze_chase": "a faster patroller covering more of the route, pickups placed deeper",
+    "dot_maze": (
+        "faster ghosts (especially the hunter), shorter power duration, more "
+        "dots; keep lives at 3"
+    ),
 }
 
 # Structurally nearest authored example per template: ordered_switches shares
@@ -1216,6 +1533,7 @@ TEMPLATE_TO_FEW_SHOT = {
     "capture_zones": "depletion",
     "survive_and_deplete": "survive_and_deplete",
     "maze_chase": "maze_chase",
+    "dot_maze": "dot_maze",
 }
 
 FIX_SYSTEM_PROMPT = (
@@ -1374,20 +1692,41 @@ def coder(state: GraphState) -> GraphState:
         requirements = TEMPLATE_REQUIREMENTS.get(template, TEMPLATE_REQUIREMENTS["collect"])
         system_prompt = f"{SYSTEM_PROMPT_BASE} {requirements}"
 
+    model = TEMPLATE_MODEL_OVERRIDES.get(template, MODEL)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": example_user},
         {"role": "assistant", "content": example_response},
         {"role": "user", "content": user_prompt},
     ]
-    response = ollama.chat(model=MODEL, messages=messages)
+    # The Ollama runner reproducibly dies loading a fresh model right after
+    # ComfyUI's image batch (observed 3/3 runs) - a single fixed-delay retry
+    # was not reliable enough. Retry with increasing backoff; a ConnectError
+    # means the runner hasn't come back up at all yet (asking Ollama to load
+    # a model while the previous runner is still dying), which needs a
+    # longer wait than a ResponseError (a runner that loaded and then died).
+    response = None
+    last_error = None
+    for attempt, backoff in enumerate([0, 20, 40, 60]):
+        if backoff:
+            print(f"[Coder] Ollama runner unstable (attempt {attempt}), waiting {backoff}s: {last_error}")
+            time.sleep(backoff)
+        try:
+            response = ollama.chat(model=model, messages=messages)
+            break
+        except (ollama.ResponseError, httpx.ConnectError, httpx.ReadTimeout) as e:
+            last_error = e
+    if response is None:
+        raise RuntimeError(
+            f"Ollama runner did not recover after 4 attempts for model {model!r}: {last_error}"
+        )
     try:
         gdscript = _extract_gdscript(response["message"]["content"])
     except ValueError:
         # Local models occasionally drop the fence under long prompts; one
         # retry recovers nearly all of these without failing the whole run.
         print("[Coder] Response had no code fence, retrying once")
-        response = ollama.chat(model=MODEL, messages=messages)
+        response = ollama.chat(model=model, messages=messages)
         gdscript = _extract_gdscript(response["message"]["content"])
 
     # Pre-flight: catch invented asset filenames before wasting a Godot run.
@@ -1405,7 +1744,7 @@ def coder(state: GraphState) -> GraphState:
             f"- load(\"res://assets/{ref}\") refers to a file that does not exist" for ref in bad_refs
         )
         retry_response = ollama.chat(
-            model=MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": FIX_SYSTEM_PROMPT},
                 {"role": "user", "content": example_user},
@@ -1422,6 +1761,34 @@ def coder(state: GraphState) -> GraphState:
             ],
         )
         gdscript = _extract_gdscript(retry_response["message"]["content"])
+
+    # Pre-flight: catch silently-simplified-away systems (contract check).
+    # One bounded correction round-trip, same shape as the filename check.
+    contract = TEMPLATE_CONTRACTS.get(template) or []
+    violations = [desc for desc, pattern in contract if not re.search(pattern, gdscript)]
+    if violations and not qa_errors and not tune_notes:
+        print(f"[Coder] Contract violation(s), requesting one correction: {violations}")
+        errors_desc = "\n".join(
+            f"- the script is missing a required system: {desc} - reproduce it "
+            f"exactly as the worked example demonstrates" for desc in violations
+        )
+        contract_response = ollama.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": FIX_SYSTEM_PROMPT},
+                {"role": "user", "content": example_user},
+                {"role": "assistant", "content": example_response},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Previous script:\n```gdscript\n{gdscript}\n```\n\n"
+                        f"{assets_line}"
+                        f"These problems must be fixed:\n{errors_desc}\n"
+                    ),
+                },
+            ],
+        )
+        gdscript = _extract_gdscript(contract_response["message"]["content"])
 
     (PROJECT_DIR / "project.godot").write_text(
         PROJECT_GODOT_TEMPLATE.format(title=design_doc["title"]), encoding="utf-8"
@@ -1444,7 +1811,7 @@ def coder(state: GraphState) -> GraphState:
     action = "Fixed" if qa_errors else ("Tuned" if tune_notes else "Generated")
     print(
         f"[Coder] {action} level {current_level + 1}/{total_levels} "
-        f"({template}, model={MODEL}) -> {PROJECT_DIR}"
+        f"({template}, model={model}) -> {PROJECT_DIR}"
     )
     # tune_notes are consumed by this pass; clear them so a subsequent QA
     # retry takes the fix path against the already-tuned script.
