@@ -24,7 +24,7 @@ from pathlib import Path
 from saga.state import GraphState
 
 GODOT_EXE = "D:\\Godot\\Godot_v4.7-stable_win64_console.exe"
-VISION_MODEL = os.environ.get("SAGA_VISION_MODEL", "qwen2.5vl:7b")
+VISION_MODEL = os.environ.get("SAGA_VISION_MODEL", "gemma4:12b")
 
 ERROR_PATTERNS = re.compile(
     r"SCRIPT ERROR|Parse Error|Invalid call|Nonexistent function|ERROR:",
