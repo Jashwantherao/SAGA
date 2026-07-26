@@ -20,6 +20,7 @@ effect.
 import os
 import re
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -1570,6 +1571,43 @@ TUNE_SYSTEM_PROMPT = (
 )
 
 
+# Ports of the GPU services that are finished by the time the Coder runs.
+# ComfyUI and MusicGen both hold VRAM for the whole run despite having done
+# their single pass of work up front (assets and BGM). On a 16GB card that
+# residency is the difference between a 13GB coder model loading and dying:
+# measured 1817 MiB held with both running vs 961 MiB without, against a
+# model that needs ~14.1GB - i.e. 354 MiB headroom (crashes) vs 1210 MiB
+# (loads). Opt-in because the user starts these servers themselves.
+GPU_SERVICE_PORTS = (8188, 8189)
+
+
+def _stop_gpu_services() -> None:
+    """Free VRAM held by finished services so a large coder model can load.
+
+    Enabled with SAGA_STOP_GPU_SERVICES=1. Only needed when the Coder's model
+    is large enough to be near the card's ceiling; harmless but unnecessary
+    for the default 14B. Note this stops servers the user started - they must
+    be restarted before the next pipeline run (or before a --playtest
+    `reasset` cycle, which needs ComfyUI again).
+    """
+    if os.environ.get("SAGA_STOP_GPU_SERVICES") != "1":
+        return
+    for port in GPU_SERVICE_PORTS:
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"Get-NetTCPConnection -LocalPort {port} -State Listen "
+                f"-ErrorAction SilentlyContinue | ForEach-Object "
+                f"{{ Stop-Process -Id $_.OwningProcess -Force -Confirm:$false }}",
+            ],
+            capture_output=True,
+        )
+    time.sleep(5)  # let the driver actually reclaim before the model loads
+    print(f"[Coder] Stopped GPU services on ports {GPU_SERVICE_PORTS} to free VRAM")
+
+
 def _extract_gdscript(text: str) -> str:
     match = re.search(r"```gdscript\s*\n(.*?)```", text, re.DOTALL)
     if match:
@@ -1607,6 +1645,9 @@ def coder(state: GraphState) -> GraphState:
     # Harness-owned SFX: synthesized deterministically, loaded by the Sfx
     # autoload, called by the generated script.
     write_default_sfx(assets_dir)
+
+    if current_level == 0:
+        _stop_gpu_services()
 
     # This level's script sees only ITS background in the asset list -
     # listing all N backgrounds invites the model to pick the wrong one.
