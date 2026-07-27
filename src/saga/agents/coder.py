@@ -64,7 +64,37 @@ TEMPLATE_CONTRACTS = {
         ("the Rect2 wall array and axis-separated wall collision", r"Rect2\("),
         ("the patroller-touch handler connected via player.area_entered", r"player\.area_entered\.connect"),
     ],
+    # Both of these were missing from a shipped build that passed QA cleanly
+    # and was unplayable: creatures fled from any distance, so they could
+    # never be approached, and nothing stopped a creature fleeing once it
+    # reached the pool, so the goal could never be filled.
+    "herd_to_goal": [
+        ("the panic radius that keeps creatures still until the player is close", r"panic_radius"),
+        ("the settled flag that stops a creature fleeing once it reaches the goal", r"settled"),
+    ],
 }
+
+# Applies to every template. The harness autoloads are engine globals, so a
+# script that declares `var Game = null` shadows the real one and every guarded
+# call becomes a no-op: no sound, and Game.level_complete() never fires, so the
+# game cannot advance past its first level. It runs flawlessly and does
+# nothing, which QA cannot see - it is looking for errors, and there are none.
+# Observed after a spurious import failure taught the model to "defend" against
+# a missing singleton by nulling it.
+FORBIDDEN_PATTERNS = [
+    (
+        "the script declares a local variable that shadows a harness autoload "
+        "(Game, Sfx, Music, Ambience). These are engine globals - call them "
+        "directly as Game.level_complete() and Sfx.play(...) with no null "
+        "checks and no local declaration, or they silently do nothing",
+        r"var\s+(?:Game|Sfx|Music|Ambience|Screenshot|Interlude|Victory)\b",
+    ),
+    (
+        "Game.level_complete() is wrapped in a null check, which means it may "
+        "never run and the game can never advance a level. Call it directly",
+        r"if\s+Game\s*!=\s*null",
+    ),
+]
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent.parent / "output" / "godot_project"
 
 PROJECT_GODOT_TEMPLATE = """config_version=5
@@ -445,12 +475,20 @@ TEMPLATE_REQUIREMENTS = {
         "moment the resource hits zero."
     ),
     "herd_to_goal": (
-        "Structure for this game: one creature Area2D flees the player every "
-        "frame (move it along the vector pointing away from the player, "
-        "scaled by speed and delta, clamped inside the viewport); one goal "
-        "zone Area2D at a fixed position; connect the goal's area_entered "
-        "and win when the entering area is the creature; show guidance in "
-        "the label."
+        "Structure for this game: several creature Area2Ds and one goal zone "
+        "Area2D at a fixed position. Herding only works if the creatures hold "
+        "still while you line up a push, so a creature flees ONLY when the "
+        "player is within a named panic_radius variable - beyond that radius "
+        "it does not move at all. Inside the radius it moves along the vector "
+        "pointing away from the player, scaled by speed and delta, clamped "
+        "inside the viewport; flee speed must stay well below the player's "
+        "speed or it can never be caught up with. A creature whose position "
+        "is inside the goal zone SETTLES permanently: set a settled flag, "
+        "stop it fleeing for the rest of the level no matter how close the "
+        "player comes, and play the pickup sound once. Track the settled "
+        "count in the label and win when every creature has settled - never "
+        "require them to be inside the zone simultaneously, because a "
+        "creature that can still flee will simply wander back out."
     ),
     "capture_zones": (
         "Structure for this game: place several zone-marker Area2Ds; "
@@ -1580,7 +1618,12 @@ INTENSITY_LEVERS = {
         "higher drain and drain ramp, faster and more hazards, less zone fuel, "
         "zones spaced farther apart"
     ),
-    "herd_to_goal": "a faster-fleeing creature and a smaller goal zone",
+    "herd_to_goal": (
+        "a larger panic_radius (creatures bolt sooner, so you must approach "
+        "more carefully), more creatures, and a smaller goal zone - raise "
+        "flee speed only slightly and never to within 60% of the player's "
+        "speed, or the creatures simply cannot be herded at all"
+    ),
     "capture_zones": "a faster patroller and zones spread farther apart",
     "maze_chase": "a faster patroller covering more of the route, pickups placed deeper",
     "dot_maze": (
@@ -1691,7 +1734,12 @@ def _chat(messages: list[dict], model: str) -> str:
     if _is_remote():
         from saga.llm import chat
 
-        return chat(messages, model=model, max_tokens=8192)
+        # Reasoning models spend most of the budget thinking before emitting a
+        # line: two measured level generations used 18.2k and 18.9k completion
+        # tokens for ~370 lines of output. At 8192 the script is cut off
+        # mid-file, which surfaces as "no fenced code block" rather than as a
+        # truncation, so the headroom here is deliberate.
+        return chat(messages, model=model, max_tokens=32000)
 
     last_error = None
     for attempt, backoff in enumerate([0, 20, 40, 60]):
@@ -1888,7 +1936,11 @@ def coder(state: GraphState) -> GraphState:
     # One bounded correction round-trip, same shape as the filename check.
     contract = TEMPLATE_CONTRACTS.get(template) or []
     violations = [desc for desc, pattern in contract if not re.search(pattern, gdscript)]
-    if violations and not qa_errors and not tune_notes:
+    # Forbidden patterns are the inverse: present rather than missing. They run
+    # on every path, including fixes, because a fix prompt reacting to a
+    # spurious error is exactly where autoload-shadowing gets introduced.
+    violations += [desc for desc, pattern in FORBIDDEN_PATTERNS if re.search(pattern, gdscript)]
+    if violations and not tune_notes:
         print(f"[Coder] Contract violation(s), requesting one correction: {violations}")
         errors_desc = "\n".join(
             f"- the script is missing a required system: {desc} - reproduce it "

@@ -238,6 +238,14 @@ def qa_agent(state: GraphState) -> GraphState:
                 "retry_count": retry_count + 1,
                 "balance_notes": balance_notes,
             }
+        if bal_gating:
+            print(
+                f"[QA Agent] WARNING: {len(bal_gating)} balance defect(s) UNRESOLVED "
+                f"after a fix attempt - this level may not be winnable:"
+            )
+            for note in bal_gating:
+                print(f"[QA Agent]   - {note}")
+            balance_notes = bal_gating + balance_notes
 
     # 4. Non-blocking windowed screenshot pass (a window flashes for ~1.5s).
     # screenshot.gd saves frame 60 to res://screenshot.png; it no-ops in the
@@ -277,6 +285,18 @@ def qa_agent(state: GraphState) -> GraphState:
                 "screenshot_path": screenshot_path,
                 "vision_notes": vision_notes,
             }
+        if gating:
+            # The cap has been spent and the defect is still there. Passing is
+            # the lesser evil - looping would burn the budget real crashes need
+            # - but reporting a clean PASS is how a visibly broken build
+            # reaches a human unremarked, so say so loudly instead.
+            print(
+                f"[QA Agent] WARNING: {len(gating)} visual defect(s) UNRESOLVED after "
+                f"a fix attempt - passing so the run can continue, but this build "
+                f"has a known problem:"
+            )
+            for note in gating:
+                print(f"[QA Agent]   - {note}")
 
     # This is the only point in the pipeline where a script is known-good
     # (compiled, ran, satisfied its template contract) - so it's where the

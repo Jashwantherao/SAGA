@@ -47,6 +47,13 @@ CHASE_TEMPLATES = {"maze_chase", "dot_maze"}
 # Some headroom is needed to actually escape, not merely to not lose ground.
 MIN_CHASE_SPEED_MARGIN = 1.05
 
+# Herding is the mirror image: the player chases, so a creature that flees at
+# anything close to the player's speed can never be pushed anywhere. Steering
+# something needs a lot more margin than merely catching it, because the push
+# only works while you are alongside it.
+HERD_TEMPLATES = {"herd_to_goal"}
+MAX_FLEE_FRACTION = 0.6
+
 # The Coder names these consistently because the few-shots do, but it is free
 # to be tolerant - a missed alias only means the check is skipped.
 _ALIASES = {
@@ -57,17 +64,29 @@ _ALIASES = {
     # Only the hunting state matters - a "frightened" speed is meant to be slow.
     "pursuer_speed": ("hunter_speed", "chaser_speed", "chase_speed", "enemy_speed",
                       "ghost_speed", "pursuer_speed", "patrol_speed"),
+    "flee_speed": ("flee_speed", "creature_speed", "jellyfish_flee_speed",
+                   "herd_speed", "critter_speed"),
 }
 
+# Tuning numbers arrive as `var speed = 240.0`, `@export var speed: float = 240.0`
+# or `const PLAYER_SPEED = 240.0` - the Coder picks freely between them, and a
+# pattern that missed `const` silently saw nothing to check on scripts that
+# preferred it, reporting them clean without ever looking. A trailing comment is
+# common on these lines and must not defeat the match.
 _TUNABLE_RE = re.compile(
-    r"^\s*(?:@export\s+)?var\s+([A-Za-z_]\w*)\s*(?::\s*\w+\s*)?=\s*(-?\d+(?:\.\d+)?)\s*$",
+    r"^\s*(?:@export\s+)?(?:var|const)\s+([A-Za-z_]\w*)\s*(?::\s*\w+\s*)?=\s*"
+    r"(-?\d+(?:\.\d+)?)\s*(?:#.*)?$",
     re.MULTILINE,
 )
 
 
 def extract_tunables(script: str) -> dict[str, float]:
-    """Pull every top-level numeric `var name = value` out of a GDScript file."""
-    return {name: float(value) for name, value in _TUNABLE_RE.findall(script)}
+    """Pull every top-level numeric constant out of a GDScript file.
+
+    Names are lowercased because constants are conventionally uppercase and the
+    alias table is not.
+    """
+    return {name.lower(): float(value) for name, value in _TUNABLE_RE.findall(script)}
 
 
 def _lookup(tunables: dict[str, float], key: str) -> float | None:
@@ -152,14 +171,49 @@ def check_chase(tunables: dict[str, float]) -> tuple[list[str], list[str]]:
     return [], []
 
 
+def check_herd(tunables: dict[str, float]) -> tuple[list[str], list[str]]:
+    """A creature that flees nearly as fast as the player cannot be steered."""
+    player = _lookup(tunables, "player_speed")
+    flee = _lookup(tunables, "flee_speed")
+    if player is None or flee is None or player <= 0:
+        return [], []
+
+    ratio = flee / player
+    if ratio > MAX_FLEE_FRACTION:
+        return [
+            f"Balance: creatures flee at {flee:g} against the player's {player:g} "
+            f"({ratio:.0%} of player speed). Herding needs the player to get alongside "
+            f"and push, which is impossible above {MAX_FLEE_FRACTION:.0%}. Drop the "
+            f"flee speed below {player * MAX_FLEE_FRACTION:.0f}."
+        ], []
+    return [], []
+
+
+CHECKED_TEMPLATES = DEPLETION_TEMPLATES | CHASE_TEMPLATES | HERD_TEMPLATES
+
+
 def check_level(script: str, template: str) -> tuple[list[str], list[str]]:
     """Balance findings for one generated level, split gating vs advisory."""
     tunables = extract_tunables(script)
     if template in DEPLETION_TEMPLATES:
-        return check_depletion(tunables)
-    if template in CHASE_TEMPLATES:
-        return check_chase(tunables)
-    return [], []
+        gating, advisory = check_depletion(tunables)
+    elif template in CHASE_TEMPLATES:
+        gating, advisory = check_chase(tunables)
+    elif template in HERD_TEMPLATES:
+        gating, advisory = check_herd(tunables)
+    else:
+        return [], []
+
+    # A checkable template that yields no findings AND no recognised numbers
+    # was not verified - it was skipped. Saying so is the difference between
+    # "this level is balanced" and "nothing looked at it", which otherwise read
+    # identically in the log.
+    if not gating and not advisory and not _lookup(tunables, "player_speed"):
+        advisory.append(
+            f"Balance (advisory): could not verify {template} - no recognised speed "
+            f"tunable found among {sorted(tunables)[:8] or 'nothing parseable'}."
+        )
+    return gating, advisory
 
 
 # --------------------------------------------------------------------------
