@@ -81,6 +81,20 @@ TEMPLATE_CONTRACTS = {
 # nothing, which QA cannot see - it is looking for errors, and there are none.
 # Observed after a spurious import failure taught the model to "defend" against
 # a missing singleton by nulling it.
+# Applies to every template: without a call to the Anim autoload the hero is a
+# still PNG sliding around, which is the single loudest tell that a build is a
+# mock-up rather than a game. Cheap to satisfy and easy to omit, so it is
+# checked rather than hoped for.
+UNIVERSAL_CONTRACTS = [
+    (
+        "per-frame character animation via the Anim autoload - call "
+        "Anim.walk(sprite, is_moving, direction.x) each frame for the player "
+        "and anything that walks, or Anim.hover(sprite) for anything that "
+        "floats, so the sprite is not a static image sliding around",
+        r"Anim\.(walk|hover)\(",
+    ),
+]
+
 FORBIDDEN_PATTERNS = [
     (
         "the script declares a local variable that shadows a harness autoload "
@@ -108,6 +122,7 @@ config/features=PackedStringArray("4.7")
 Screenshot="*res://screenshot.gd"
 Sfx="*res://sfx.gd"
 Ambience="*res://ambience.gd"
+Anim="*res://anim.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -271,6 +286,94 @@ script = ExtResource("1")
 # reliably gets wrong when asked to write it (it invents CPUParticles2D
 # properties), so it lives here with the other harness-owned polish. Skipped
 # headlessly - no visual value, and dummy-renderer particles leak RIDs.
+# Harness-owned character animation. Generated sprites are single static PNGs -
+# there is no sprite sheet and no frame-based animation anywhere in the
+# pipeline - so a hero has always been a still image sliding around, which is
+# what makes these builds read as mock-ups rather than games. Procedural motion
+# closes most of that gap for free: a sprite that bobs while walking, leans
+# into its direction, squashes on impact and breathes when idle is perceived as
+# animated even though it is one frame.
+#
+# It lives in the harness rather than the Coder's prompt for the same reason
+# Sfx does: it must be identical in every game, cannot be silently simplified
+# away, and is pure boilerplate the model would otherwise reinvent badly.
+#
+# Every helper animates a Sprite2D CHILD, never the Area2D that owns gameplay
+# position - the offsets are local, so bobbing cannot fight collision.
+ANIM_GD = """extends Node
+
+const BOB_HEIGHT := 3.0
+const BOB_SPEED := 9.0
+const LEAN_DEGREES := 5.0
+const IDLE_AMOUNT := 0.03
+const IDLE_SPEED := 2.2
+
+# Phase is derived from the clock rather than stored, so callers stay
+# stateless. The per-instance offset stops a row of identical creatures
+# bobbing in lockstep, which reads as one object instead of several.
+func _phase(node: Node2D, speed: float) -> float:
+\treturn Time.get_ticks_msec() / 1000.0 * speed + float(node.get_instance_id() % 97) * 0.13
+
+func _base(sprite: Node2D) -> Vector2:
+\tif not sprite.has_meta("anim_base"):
+\t\tsprite.set_meta("anim_base", sprite.scale)
+\treturn sprite.get_meta("anim_base")
+
+# Call every frame for anything that walks. Pass the movement direction so the
+# sprite faces where it is going.
+func walk(sprite: Node2D, moving: bool, dir_x: float = 0.0) -> void:
+\tif not is_instance_valid(sprite):
+\t\treturn
+\tvar base: Vector2 = _base(sprite)
+\tif dir_x != 0.0 and sprite is Sprite2D:
+\t\tsprite.flip_h = dir_x < 0.0
+\tif moving:
+\t\tvar p := _phase(sprite, BOB_SPEED)
+\t\tsprite.position.y = -abs(sin(p)) * BOB_HEIGHT
+\t\tsprite.rotation_degrees = sin(p * 0.5) * LEAN_DEGREES
+\t\tsprite.scale = Vector2(base.x * (1.0 + abs(sin(p)) * 0.04), base.y * (1.0 - abs(sin(p)) * 0.04))
+\telse:
+\t\tvar q := _phase(sprite, IDLE_SPEED)
+\t\tsprite.position.y = 0.0
+\t\tsprite.rotation_degrees = 0.0
+\t\tsprite.scale = Vector2(base.x * (1.0 - sin(q) * IDLE_AMOUNT), base.y * (1.0 + sin(q) * IDLE_AMOUNT))
+
+# Call every frame for anything that hovers, drifts or swims.
+func hover(sprite: Node2D, amount: float = 4.0, speed: float = 2.0) -> void:
+\tif not is_instance_valid(sprite):
+\t\treturn
+\tvar base: Vector2 = _base(sprite)
+\tvar p := _phase(sprite, speed)
+\tsprite.position.y = sin(p) * amount
+\tsprite.scale = Vector2(base.x * (1.0 + sin(p) * 0.05), base.y * (1.0 - sin(p) * 0.05))
+
+# One-shot punch for a pickup, a spawn, or a landing.
+func pop(sprite: Node2D, strength: float = 0.35) -> void:
+\tif not is_instance_valid(sprite):
+\t\treturn
+\tvar base: Vector2 = _base(sprite)
+\tvar tween := sprite.create_tween()
+\ttween.tween_property(sprite, "scale", base * (1.0 + strength), 0.08)
+\ttween.tween_property(sprite, "scale", base, 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+# One-shot squash for an impact - wide and short, then recover.
+func squash(sprite: Node2D, strength: float = 0.3) -> void:
+\tif not is_instance_valid(sprite):
+\t\treturn
+\tvar base: Vector2 = _base(sprite)
+\tvar tween := sprite.create_tween()
+\ttween.tween_property(sprite, "scale", Vector2(base.x * (1.0 + strength), base.y * (1.0 - strength)), 0.06)
+\ttween.tween_property(sprite, "scale", base, 0.18).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+
+# Damage feedback: flash a colour and return to normal.
+func flash(sprite: Node2D, color: Color = Color(1, 0.4, 0.4)) -> void:
+\tif not is_instance_valid(sprite):
+\t\treturn
+\tvar tween := sprite.create_tween()
+\ttween.tween_property(sprite, "modulate", color, 0.05)
+\ttween.tween_property(sprite, "modulate", Color(1, 1, 1), 0.25)
+"""
+
 AMBIENCE_GD = """extends Node
 
 func _ready():
@@ -435,7 +538,20 @@ SYSTEM_PROMPT_BASE = (
     "should you fall back to reusing the key_item sprite tinted via modulate "
     "and scaled, as the example does. Put every gameplay-tuning number - speeds, "
     "rates, durations, counts, radii - in a named variable at the top of "
-    "the script so a human playtester can retune it later. "
+    "the script so a human playtester can retune it later. An Anim autoload "
+    "provides the character animation - the sprites are single still images, "
+    "so this is the only thing making them feel alive, and you must use it. "
+    "Keep a reference to each character's Sprite2D child (the sprite, never "
+    "the Area2D that owns its position - Anim writes local offsets that would "
+    "otherwise fight collision). Every frame, call Anim.walk(sprite, "
+    "is_moving, direction.x) for the player and for anything that walks, "
+    "passing whether it moved this frame and its horizontal direction so it "
+    "bobs, leans and faces the right way; call Anim.hover(sprite) instead for "
+    "anything that floats, drifts or swims. On events, call Anim.pop(sprite) "
+    "when something is collected, rescued or spawned, Anim.squash(sprite) on "
+    "an impact or landing, and Anim.flash(sprite) when the player takes "
+    "damage. Do not write your own scale, rotation or modulate tweens for "
+    "these - Anim owns them. "
     + GODOT4_API_NOTES +
     "Respond with ONLY a single ```gdscript fenced code block, no explanation "
     "before or after it."
@@ -1934,7 +2050,7 @@ def coder(state: GraphState) -> GraphState:
 
     # Pre-flight: catch silently-simplified-away systems (contract check).
     # One bounded correction round-trip, same shape as the filename check.
-    contract = TEMPLATE_CONTRACTS.get(template) or []
+    contract = (TEMPLATE_CONTRACTS.get(template) or []) + UNIVERSAL_CONTRACTS
     violations = [desc for desc, pattern in contract if not re.search(pattern, gdscript)]
     # Forbidden patterns are the inverse: present rather than missing. They run
     # on every path, including fixes, because a fix prompt reacting to a
@@ -1971,6 +2087,7 @@ def coder(state: GraphState) -> GraphState:
     (PROJECT_DIR / "screenshot.gd").write_text(SCREENSHOT_GD, encoding="utf-8")
     (PROJECT_DIR / "sfx.gd").write_text(SFX_GD, encoding="utf-8")
     (PROJECT_DIR / "ambience.gd").write_text(AMBIENCE_GD, encoding="utf-8")
+    (PROJECT_DIR / "anim.gd").write_text(ANIM_GD, encoding="utf-8")
     beats = [lvl.get("outro_beat", "") for lvl in levels]
     (PROJECT_DIR / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
     (PROJECT_DIR / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")
