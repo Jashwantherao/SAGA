@@ -319,6 +319,23 @@ func _base(sprite: Node2D) -> Vector2:
 \t\tsprite.set_meta("anim_base", sprite.scale)
 \treturn sprite.get_meta("anim_base")
 
+# Register a resting and a walking image for a character. walk() then swaps
+# between them, which is what makes a sprite look like it stands up to move
+# and settles when it stops - procedural bobbing alone cannot change a pose.
+# Optional: a character with no walk pose simply keeps its single texture.
+func set_poses(sprite: Sprite2D, idle_texture: Texture2D, walk_texture: Texture2D) -> void:
+\tif not is_instance_valid(sprite):
+\t\treturn
+\tsprite.set_meta("pose_idle", idle_texture)
+\tsprite.set_meta("pose_walk", walk_texture)
+
+func _set_pose(sprite: Node2D, moving: bool) -> void:
+\tif not (sprite is Sprite2D) or not sprite.has_meta("pose_walk"):
+\t\treturn
+\tvar wanted: Texture2D = sprite.get_meta("pose_walk") if moving else sprite.get_meta("pose_idle")
+\tif wanted != null and sprite.texture != wanted:
+\t\tsprite.texture = wanted
+
 # Call every frame for anything that walks. Pass the movement direction so the
 # sprite faces where it is going.
 func walk(sprite: Node2D, moving: bool, dir_x: float = 0.0) -> void:
@@ -327,6 +344,7 @@ func walk(sprite: Node2D, moving: bool, dir_x: float = 0.0) -> void:
 \tvar base: Vector2 = _base(sprite)
 \tif dir_x != 0.0 and sprite is Sprite2D:
 \t\tsprite.flip_h = dir_x < 0.0
+\t_set_pose(sprite, moving)
 \tif moving:
 \t\tvar p := _phase(sprite, BOB_SPEED)
 \t\tsprite.position.y = -abs(sin(p)) * BOB_HEIGHT
@@ -474,6 +492,13 @@ def _asset_manifest(filenames: list[str], design_doc: dict) -> str:
             note = "this level's background, exactly 1024x576"
         elif name.startswith("key_item"):
             note = f"{key_item.get('description', 'the key item')} (role: {key_item.get('role', 'pickup')}), 128x128 with transparency"
+        elif name.startswith("hero_walk"):
+            note = (
+                "the SAME hero in a walking pose - register it with "
+                "Anim.set_poses(hero_sprite, <resting texture>, <this texture>) so the "
+                "hero stands up to move and settles when still. Do not create a "
+                "second sprite for it"
+            )
         elif name.startswith("extra_"):
             # extra_<slug>_00001_.png - recover the slug between the prefix and
             # the generator's numeric suffix.
@@ -539,8 +564,12 @@ SYSTEM_PROMPT_BASE = (
     "and scaled, as the example does. Put every gameplay-tuning number - speeds, "
     "rates, durations, counts, radii - in a named variable at the top of "
     "the script so a human playtester can retune it later. An Anim autoload "
-    "provides the character animation - the sprites are single still images, "
-    "so this is the only thing making them feel alive, and you must use it. "
+    "provides the character animation, and you must use it. When a hero_walk "
+    "asset is listed, call Anim.set_poses(hero_sprite, <hero resting texture>, "
+    "<hero_walk texture>) once in _ready - both are images of the same "
+    "character, and Anim swaps between them so the hero visibly stands up to "
+    "move and settles again when it stops. Never build a second sprite node "
+    "for the walking pose. "
     "Keep a reference to each character's Sprite2D child (the sprite, never "
     "the Area2D that owns its position - Anim writes local offsets that would "
     "otherwise fight collision). Every frame, call Anim.walk(sprite, "

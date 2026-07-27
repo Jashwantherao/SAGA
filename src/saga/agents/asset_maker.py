@@ -23,6 +23,10 @@ STEPS = 4  # Flux schnell's distilled step count
 ICON_WIDTH = 128
 ICON_HEIGHT = 128
 
+# Shared by every hero pose so they render as the same character. Any fixed
+# value works; what matters is that the poses do not each get their own.
+HERO_SEED = 424242
+
 # Icons are GENERATED larger than their final size: Flux composes complete,
 # well-framed subjects far more reliably at 512 than at 128, and the
 # post-process (rembg cut -> alpha crop -> downscale) lands on 128 anyway.
@@ -146,14 +150,37 @@ def asset_maker(state: GraphState) -> GraphState:
     # "plain solid background" in the icon prompts gives rembg a clean subject
     # boundary to cut along - asking Flux for "transparent background" is
     # futile (no alpha channel) and produces busy checkerboard fakes.
+    # The hero is drawn twice, in a resting pose and a walking one, so the
+    # game can swap between them instead of sliding one still image around.
+    # Both share HERO_SEED and differ only in the pose clause: holding the seed
+    # and the description fixed is what keeps them reading as the same
+    # character. Measured on a tabby cat, that gives a usable sit/walk pair -
+    # the palette, collar and style carry over, though eye colour and stripe
+    # detail drift a little. It is not enough control for a multi-frame walk
+    # cycle, which is why there is only one walking pose; the bob and lean in
+    # the Anim autoload supply the stepping motion.
+    hero_common = (
+        f"{design_doc['hero_description']}, full body, whole character visible from "
+        f"head to feet, game sprite, centered, {art_style}, plain solid background"
+    )
     requests = [
         (
-            f"{design_doc['hero_description']}, full body, whole character visible from head "
-            f"to feet, standing, game sprite, centered, plain solid background",
+            f"{design_doc['hero_description']}, at rest, sitting or standing still, "
+            f"relaxed, {hero_common}",
             "hero_sprite",
             ICON_GEN_SIZE,
             ICON_GEN_SIZE,
             True,
+            HERO_SEED,
+        ),
+        (
+            f"{design_doc['hero_description']}, walking, side view, legs apart "
+            f"mid-stride, leaning forward into the movement, {hero_common}",
+            "hero_walk",
+            ICON_GEN_SIZE,
+            ICON_GEN_SIZE,
+            True,
+            HERO_SEED,
         ),
         (
             f"{design_doc['key_item']['description']}, whole object fully visible, small game "
@@ -196,7 +223,12 @@ def asset_maker(state: GraphState) -> GraphState:
         )
 
     sprite_paths = []
-    for seed, (prompt, name, width, height, strip_bg) in enumerate(requests):
+    for index, request in enumerate(requests):
+        prompt, name, width, height, strip_bg = request[:5]
+        # Most assets just take their position as the seed - any value does, as
+        # long as they differ. The hero poses pin an explicit shared seed so
+        # they render the same character.
+        seed = request[5] if len(request) > 5 else index
         path = _generate_image(prompt, name, seed=seed, width=width, height=height, strip_bg=strip_bg)
         sprite_paths.append(str(path))
         print(f"[Asset Maker] Generated {name} -> {path}")
