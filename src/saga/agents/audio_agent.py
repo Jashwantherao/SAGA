@@ -15,21 +15,32 @@ MUSICGEN_URL = "http://127.0.0.1:8189"
 OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent.parent / "output" / "assets"
 
 
-def _check_musicgen_reachable() -> None:
+def _musicgen_ready() -> str | None:
+    """None if BGM can be generated, otherwise why it can't."""
     try:
         resp = httpx.get(f"{MUSICGEN_URL}/health", timeout=5)
         resp.raise_for_status()
         if not resp.json().get("model_loaded"):
-            raise RuntimeError("MusicGen service is up but the model hasn't finished loading yet.")
+            return "the service is up but the model hasn't finished loading"
     except httpx.HTTPError as e:
-        raise RuntimeError(
-            f"MusicGen service is not reachable at {MUSICGEN_URL}. Start it first: "
-            f"cd D:\\AudioCraft && .venv\\Scripts\\python.exe musicgen_server.py"
-        ) from e
+        return f"not reachable at {MUSICGEN_URL} ({type(e).__name__})"
+    return None
 
 
 def audio_agent(state: GraphState) -> GraphState:
-    _check_musicgen_reachable()
+    # Music is the least essential output, the Coder already handles its
+    # absence, and the harness's Music autoload simply stays silent - so an
+    # unavailable service should cost the build its soundtrack, not the whole
+    # game. Every other failure still raises: a service that is up but broken
+    # is a real problem worth surfacing.
+    unavailable = _musicgen_ready()
+    if unavailable:
+        print(
+            f"[Audio Agent] Skipping BGM - MusicGen {unavailable}. Start it with: "
+            f"cd D:\\AudioCraft; .venv\\Scripts\\python.exe musicgen_server.py"
+        )
+        return {"bgm_path": None}
+
     design_doc = state["design_doc"]
 
     prompt = f"{design_doc['audio_mood']} background music for a {design_doc['genre']} game called {design_doc['title']}"

@@ -319,7 +319,9 @@ GODOT4_API_NOTES = (
     "label.add_theme_font_size_override(\"font_size\", n). A physics body must "
     "be inside the tree before move_and_slide() or any body_test_motion() "
     "call. Parse JSON with JSON.parse_string(text), which returns the value "
-    "or null. "
+    "or null. Do not invent geometry helpers on built-in types - Rect2 has "
+    "has_point/intersects/merge/expand/grow and no get_closest_point(); clamp "
+    "a position with Vector2.clamp() or by clamping each axis. "
 )
 
 def _asset_manifest(filenames: list[str], design_doc: dict) -> str:
