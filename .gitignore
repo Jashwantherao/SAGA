@@ -14,3 +14,9 @@ wheels/
 
 # Generated output
 output/
+
+# Training corpus: keep the data, not the (large) generated projects
+!datasets/
+
+# Run logs
+*.log

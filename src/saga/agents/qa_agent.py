@@ -21,6 +21,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from saga.corpus import record_level
 from saga.state import GraphState
 
 GODOT_EXE = "D:\\Godot\\Godot_v4.7-stable_win64_console.exe"
@@ -161,6 +162,21 @@ def qa_agent(state: GraphState) -> GraphState:
         vision_notes = _vision_review(screenshot_path, state.get("design_doc"))
         for note in vision_notes:
             print(f"[QA Agent] {note}")
+
+    # This is the only point in the pipeline where a script is known-good
+    # (compiled, ran, satisfied its template contract) - so it's where the
+    # training corpus gets its verified pairs.
+    script_file = Path(project_dir) / f"Level_{current_level}.gd"
+    record_level(
+        prompt=state.get("coder_prompt"),
+        script=script_file.read_text(encoding="utf-8") if script_file.exists() else "",
+        template=(state.get("design_doc") or {}).get("mechanic_template", "unknown"),
+        model=state.get("coder_model"),
+        level_index=current_level,
+        retry_count=retry_count,
+        design_doc=state.get("design_doc"),
+        vision_notes=vision_notes,
+    )
 
     print("[QA Agent] PASSED - scene ran headlessly with no errors")
     return {
