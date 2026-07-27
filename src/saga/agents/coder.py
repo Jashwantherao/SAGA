@@ -295,6 +295,33 @@ script = ExtResource("1")
 """
 
 
+# Godot 3 -> 4 renames the models reach for most. Every one of these was
+# observed live: a zero-shot platformer burned its entire retry budget on
+# Camera2D alone, repairing one property per pass (current, then
+# smoothing_enabled, then limit_smoothing_enabled) because each round only
+# surfaced the next error. Listing them up front turned a 3-retry convergence
+# into 1. Models trained largely on Godot 3 material reproduce the old names
+# confidently, and QA can only report them one at a time.
+GODOT4_API_NOTES = (
+    "Godot 4 API notes - your training data may predate these renames, and "
+    "getting them wrong is the single most common failure here. Camera2D uses "
+    "`enabled` (not `current`) and `position_smoothing_enabled` / "
+    "`position_smoothing_speed` (not `smoothing_enabled` / `smoothing_speed`); "
+    "there is no `limit_smoothing_enabled`, and make_current() works only once "
+    "the node is inside the tree. Build tweens with create_tween() - "
+    "Tween.new() and interpolate_property() are gone; repeat with "
+    "set_loops() rather than a `loop` property, and never start a tween "
+    "without adding at least one tweener. `yield` is gone; use "
+    "`await`. Signals connect and emit as `sig.connect(callable)` and "
+    "`sig.emit(...)`. Renamed: instance() -> instantiate(), .empty() -> "
+    ".is_empty(), rand_range -> randf_range, OS.get_ticks_msec() -> "
+    "Time.get_ticks_msec(). Set label text size with "
+    "label.add_theme_font_size_override(\"font_size\", n). A physics body must "
+    "be inside the tree before move_and_slide() or any body_test_motion() "
+    "call. Parse JSON with JSON.parse_string(text), which returns the value "
+    "or null. "
+)
+
 SYSTEM_PROMPT_BASE = (
     "You are the Coder agent in an automated game studio. You write GDScript "
     "(Godot 4) attached to a single Node2D root node. The game window is a "
@@ -345,9 +372,10 @@ SYSTEM_PROMPT_BASE = (
     "via modulate and scaled, exactly as the example does - there is no "
     "separate image for it. Put every gameplay-tuning number - speeds, "
     "rates, durations, counts, radii - in a named variable at the top of "
-    "the script so a human playtester can retune it later. Respond with "
-    "ONLY a single ```gdscript fenced code block, no explanation before or "
-    "after it."
+    "the script so a human playtester can retune it later. "
+    + GODOT4_API_NOTES +
+    "Respond with ONLY a single ```gdscript fenced code block, no explanation "
+    "before or after it."
 )
 
 TEMPLATE_REQUIREMENTS = {
@@ -1557,9 +1585,10 @@ FIX_SYSTEM_PROMPT = (
     "exactly as the worked example does. No custom InputMap actions are "
     "defined in this project, so only use Godot's built-in default input "
     "actions (ui_up, ui_down, ui_left, ui_right, and ui_accept for "
-    "start/restart only) - never invent a new action name. Respond with "
-    "ONLY a single ```gdscript fenced code block containing the complete "
-    "corrected script, no explanation before or after it."
+    "start/restart only) - never invent a new action name. "
+    + GODOT4_API_NOTES +
+    "Respond with ONLY a single ```gdscript fenced code block containing the "
+    "complete corrected script, no explanation before or after it."
 )
 
 TUNE_SYSTEM_PROMPT = (

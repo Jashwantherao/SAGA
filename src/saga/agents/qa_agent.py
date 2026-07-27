@@ -27,6 +27,23 @@ from saga.state import GraphState
 GODOT_EXE = "D:\\Godot\\Godot_v4.7-stable_win64_console.exe"
 VISION_MODEL = os.environ.get("SAGA_VISION_MODEL", "gemma4:12b")
 
+# A hosted vision model is enough better than a local 7-12B one to gate on.
+# Measured against a real build whose platforms were untextured grey
+# rectangles: the local model never mentioned them, while three hosted models
+# named them as placeholder art unprompted. nemotron-3-nano-omni was the pick
+# at ~3s with no false positives; llama-3.2-90b-vision agreed but took ~16s,
+# and nemotron-nano-12b-v2-vl caught the real defect but also invented text
+# clipping that was not in the image - which is disqualifying for a gate,
+# since a false positive spends a Coder retry on nothing.
+VISION_BACKEND = os.environ.get("SAGA_VISION_BACKEND", "local")
+VISION_REMOTE_MODEL = os.environ.get(
+    "SAGA_VISION_REMOTE_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+)
+VISION_BASE_URL = os.environ.get("SAGA_VISION_BASE_URL", "https://integrate.api.nvidia.com/v1")
+VISION_KEY_ENV = os.environ.get("SAGA_VISION_KEY_ENV", "NVIDIA_API_KEY")
+# Free tiers have been measured hanging for minutes on models they list.
+VISION_TIMEOUT = float(os.environ.get("SAGA_VISION_TIMEOUT", "90"))
+
 ERROR_PATTERNS = re.compile(
     r"SCRIPT ERROR|Parse Error|Invalid call|Nonexistent function|ERROR:",
     re.IGNORECASE,
@@ -74,43 +91,101 @@ def _find_errors(output: str) -> list[str]:
     return found
 
 
-def _vision_review(screenshot_path: str, design_doc) -> list[str]:
-    """Ask a local vision model whether the screenshot looks like a working
-    game. Non-gating: any failure (model not pulled, bad JSON) returns []."""
-    try:
-        import ollama
+def _vision_prompt(design_doc) -> str:
+    hero = (design_doc or {}).get("hero_description", "the player character")
+    title = (design_doc or {}).get("title", "the game")
+    return (
+        f"This is a screenshot of an auto-generated 2D game called {title!r} "
+        f"taken about one second into gameplay, at 1024x576. The hero is: "
+        f"{hero}. Report only defects you can actually see - do not guess or "
+        "invent problems. Answer ONLY with JSON matching: "
+        '{"hero_visible": bool, "background_fills_screen": bool, '
+        '"text_clipped": bool, "placeholder_art": string or null, '
+        '"looks_broken": string or null}. '
+        "Set text_clipped true only if some text runs off the screen edge or "
+        "is hidden behind another element. Set placeholder_art to a short "
+        "description if plain untextured coloured rectangles are standing in "
+        "for game objects, otherwise null. Set looks_broken if a sprite is "
+        "gigantic, cut off, or floating somewhere nonsensical, otherwise null."
+    )
 
-        hero = (design_doc or {}).get("hero_description", "the player character")
-        title = (design_doc or {}).get("title", "the game")
-        prompt = (
-            f"This is a screenshot of an auto-generated 2D game called {title!r} "
-            f"taken about one second into gameplay. The hero is: {hero}. "
-            "Review it for visual defects and answer ONLY with JSON matching: "
-            '{"hero_visible": bool, "background_fills_screen": bool, '
-            '"ui_text_readable": bool, "looks_broken": string or null}. '
-            "Set looks_broken to a short description if any sprite is "
-            "gigantic, cut off, a plain opaque rectangle, or floating "
-            "somewhere nonsensical - otherwise null."
+
+def _vision_raw(screenshot_path: str, design_doc) -> dict:
+    """Run the configured vision backend and return the parsed verdict."""
+    prompt = _vision_prompt(design_doc)
+
+    if VISION_BACKEND in ("nvidia", "remote", "openai"):
+        import base64
+
+        from saga.llm import chat
+
+        b64 = base64.b64encode(Path(screenshot_path).read_bytes()).decode()
+        text = chat(
+            [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            ]}],
+            model=VISION_REMOTE_MODEL,
+            max_tokens=4000,
+            base_url=VISION_BASE_URL,
+            key_env=VISION_KEY_ENV,
+            timeout=VISION_TIMEOUT,
         )
-        resp = ollama.chat(
-            model=VISION_MODEL,
-            format="json",
-            messages=[{"role": "user", "content": prompt, "images": [screenshot_path]}],
-        )
-        data = json.loads(resp["message"]["content"])
-        findings = []
-        if data.get("hero_visible") is False:
-            findings.append("Vision: hero sprite not clearly visible")
-        if data.get("background_fills_screen") is False:
-            findings.append("Vision: background does not fill the screen")
-        if data.get("ui_text_readable") is False:
-            findings.append("Vision: UI text not readable")
-        if data.get("looks_broken"):
-            findings.append(f"Vision: {data['looks_broken']}")
-        return findings
+        # No JSON mode on every hosted VLM, so salvage the object from prose.
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        return json.loads(match.group(0) if match else text)
+
+    import ollama
+
+    resp = ollama.chat(
+        model=VISION_MODEL,
+        format="json",
+        messages=[{"role": "user", "content": prompt, "images": [screenshot_path]}],
+    )
+    return json.loads(resp["message"]["content"])
+
+
+def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[str]]:
+    """Review the screenshot and split findings by who can actually fix them.
+
+    Returns (gating, advisory). Gating findings are defects the Coder can
+    repair by changing code - a hero that never made it on screen, text
+    running off the edge, a background not stretched to fill. Advisory
+    findings are real but not the Coder's to fix: placeholder art means the
+    Asset Maker never produced a suitable sprite, so failing QA over it would
+    spend retries on a problem no rewrite can solve.
+
+    Any failure (model unavailable, timeout, unparseable reply) returns no
+    findings at all - the vision pass must never fail a build by breaking.
+    """
+    try:
+        data = _vision_raw(screenshot_path, design_doc)
     except Exception as e:
         print(f"[QA Agent] Vision review skipped ({type(e).__name__}: {e})")
-        return []
+        return [], []
+
+    gating, advisory = [], []
+    if data.get("hero_visible") is False:
+        gating.append(
+            "Visual defect: the hero sprite is not visible on screen. Make sure it is "
+            "added to the tree, positioned inside the 1024x576 viewport, and not "
+            "scaled to zero or hidden behind the background."
+        )
+    if data.get("background_fills_screen") is False:
+        gating.append(
+            "Visual defect: the background does not fill the screen. A background "
+            "Sprite2D needs centered = false and position = Vector2.ZERO."
+        )
+    if data.get("text_clipped") is True:
+        gating.append(
+            "Visual defect: on-screen text is clipped or hidden behind another "
+            "element. Reposition the labels so every one is fully readable."
+        )
+    if data.get("looks_broken"):
+        gating.append(f"Visual defect: {data['looks_broken']}")
+    if data.get("placeholder_art"):
+        advisory.append(f"Vision (advisory): {data['placeholder_art']}")
+    return gating, advisory
 
 
 def qa_agent(state: GraphState) -> GraphState:
@@ -156,12 +231,28 @@ def qa_agent(state: GraphState) -> GraphState:
     except Exception as e:
         print(f"[QA Agent] Screenshot pass failed (non-blocking): {e}")
 
-    # 5. Local vision review of the screenshot - also a lens, not a gate.
+    # 5. Vision review. Code-fixable defects gate; everything else is a lens.
+    #
+    # Gating is deliberately limited to the first attempt. A screenshot verdict
+    # is a judgement rather than a compiler error, so if one correction round
+    # does not satisfy it the honest move is to report and move on - looping
+    # would spend the retry budget that real crashes need, and the model may
+    # simply be wrong. This caps vision at one retry per level.
     vision_notes = []
     if screenshot_path:
-        vision_notes = _vision_review(screenshot_path, state.get("design_doc"))
+        gating, advisory = _vision_review(screenshot_path, state.get("design_doc"))
+        vision_notes = gating + advisory
         for note in vision_notes:
             print(f"[QA Agent] {note}")
+        if gating and retry_count == 0:
+            print(f"[QA Agent] FAILED on {len(gating)} visual defect(s) - requesting a fix")
+            return {
+                "qa_passed": False,
+                "qa_errors": gating,
+                "retry_count": retry_count + 1,
+                "screenshot_path": screenshot_path,
+                "vision_notes": vision_notes,
+            }
 
     # This is the only point in the pipeline where a script is known-good
     # (compiled, ran, satisfied its template contract) - so it's where the

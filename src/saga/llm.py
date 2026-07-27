@@ -18,40 +18,61 @@ import os
 DEFAULT_BASE_URL = os.environ.get("SAGA_OPENAI_BASE_URL", "https://api.deepseek.com")
 DEFAULT_KEY_ENV = os.environ.get("SAGA_OPENAI_KEY_ENV", "DEEPSEEK_API_KEY")
 
-_client = None
+# Keyed by (base_url, key_env): agents can legitimately want different
+# providers at once - the Coder on one, the vision reviewer on another - and a
+# fresh client per call would re-open connections.
+_clients: dict[tuple[str, str], object] = {}
 
 
-def _get_client():
-    """Build the client once; a fresh one per call would re-open connections."""
-    global _client
-    if _client is None:
+def _get_client(base_url: str | None = None, key_env: str | None = None):
+    base_url = base_url or DEFAULT_BASE_URL
+    key_env = key_env or DEFAULT_KEY_ENV
+    cached = _clients.get((base_url, key_env))
+    if cached is None:
         from dotenv import load_dotenv
         from openai import OpenAI  # lazy: only needed when a hosted backend runs
 
         # main.py already does this, but standalone drivers and smoke tests
         # don't - load here so every entry point finds the key.
         load_dotenv()
-        api_key = os.environ.get(DEFAULT_KEY_ENV)
+        api_key = os.environ.get(key_env)
         if not api_key:
             raise RuntimeError(
-                f"{DEFAULT_KEY_ENV} is not set. Export it (or put it in .env) to use a "
+                f"{key_env} is not set. Export it (or put it in .env) to use a "
                 f"hosted backend, or switch back to the local one."
             )
-        _client = OpenAI(api_key=api_key, base_url=DEFAULT_BASE_URL)
-    return _client
+        cached = OpenAI(api_key=api_key, base_url=base_url)
+        _clients[(base_url, key_env)] = cached
+    return cached
 
 
-def chat(messages: list[dict], *, model: str, json_mode: bool = False, max_tokens: int = 8192) -> str:
+def chat(
+    messages: list[dict],
+    *,
+    model: str,
+    json_mode: bool = False,
+    max_tokens: int = 8192,
+    base_url: str | None = None,
+    key_env: str | None = None,
+    timeout: float | None = None,
+) -> str:
     """One completion. Returns the raw assistant text.
 
-    json_mode asks for a JSON object rather than a strict schema - DeepSeek's
+    json_mode asks for a JSON object rather than a strict schema - the
     OpenAI-compatible surface offers JSON mode, not schema-constrained output
     like Ollama's `format=<schema>`. The Game Designer's existing _validate()
     plus corrective retry already covers the difference, so schema conformance
     is enforced harness-side either way.
+
+    base_url/key_env override the module defaults for one call, so a second
+    provider needs no second module. timeout matters on free tiers, which have
+    been measured hanging for minutes on models they nominally serve; callers
+    that can degrade gracefully should always set one.
     """
     kwargs = {"model": model, "messages": messages, "max_tokens": max_tokens}
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
-    response = _get_client().chat.completions.create(**kwargs)
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    response = _get_client(base_url, key_env).chat.completions.create(**kwargs)
     return response.choices[0].message.content or ""
