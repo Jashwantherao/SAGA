@@ -307,6 +307,44 @@ const BOB_SPEED := 9.0
 const LEAN_DEGREES := 5.0
 const IDLE_AMOUNT := 0.03
 const IDLE_SPEED := 2.2
+const LEG_SWING := 0.11
+
+# Actual leg movement, without a second drawn frame. Image generation can hold
+# a character consistent across poses but cannot control where its legs are -
+# asking for two consecutive walk frames reliably returns two standing poses -
+# so a stepping gait cannot be drawn. It can be deformed instead: shear the
+# lower part of the sprite sideways on a sine wave, with the left and right
+# halves in opposite phase, and the near and far legs scissor past each other
+# the way they do in a walk. Displacement ramps from zero at the hip to full at
+# the feet so the body stays put while the legs swing under it.
+const LEG_SHADER := "
+shader_type canvas_item;
+uniform float phase = 0.0;
+uniform float amount = 0.0;
+uniform float leg_line = 0.55;
+
+void fragment() {
+\tvec2 uv = UV;
+\tif (uv.y > leg_line) {
+\t\tfloat depth = (uv.y - leg_line) / (1.0 - leg_line);
+\t\t// Front and back must travel in opposite directions to scissor, but a
+\t\t// hard split at the midline shears the two halves apart and tears a gap
+\t\t// down the body at any useful amplitude. A sine across the width crosses
+\t\t// zero at the middle instead, so the halves oppose each other and the
+\t\t// sprite stays continuous.
+\t\tfloat side = sin((uv.x - 0.5) * 3.14159);
+\t\tuv.x += sin(phase) * amount * depth * side;
+\t}
+\t// A shifted sample can fall outside the sprite; the art is alpha-cropped
+\t// tight to its edges, so clamping there would smear the outermost column
+\t// of pixels into a streak instead of letting the leg end.
+\tif (uv.x < 0.0 || uv.x > 1.0) {
+\t\tCOLOR = vec4(0.0);
+\t} else {
+\t\tCOLOR = texture(TEXTURE, uv);
+\t}
+}
+"
 
 # Phase is derived from the clock rather than stored, so callers stay
 # stateless. The per-instance offset stops a row of identical creatures
@@ -329,6 +367,19 @@ func set_poses(sprite: Sprite2D, idle_texture: Texture2D, walk_texture: Texture2
 \tsprite.set_meta("pose_idle", idle_texture)
 \tsprite.set_meta("pose_walk", walk_texture)
 
+func _legs(sprite: Node2D, phase: float, amount: float) -> void:
+\tif not (sprite is CanvasItem):
+\t\treturn
+\tvar mat: ShaderMaterial = sprite.material as ShaderMaterial
+\tif mat == null:
+\t\tvar shader := Shader.new()
+\t\tshader.code = LEG_SHADER
+\t\tmat = ShaderMaterial.new()
+\t\tmat.shader = shader
+\t\tsprite.material = mat
+\tmat.set_shader_parameter("phase", phase)
+\tmat.set_shader_parameter("amount", amount)
+
 func _set_pose(sprite: Node2D, moving: bool) -> void:
 \tif not (sprite is Sprite2D) or not sprite.has_meta("pose_walk"):
 \t\treturn
@@ -347,14 +398,19 @@ func walk(sprite: Node2D, moving: bool, dir_x: float = 0.0) -> void:
 \t_set_pose(sprite, moving)
 \tif moving:
 \t\tvar p := _phase(sprite, BOB_SPEED)
+\t\t# The body bounces at twice the stride rate - one rise per step, two per
+\t\t# full cycle - which is what couples the bob to the legs instead of
+\t\t# leaving them as two unrelated wobbles.
 \t\tsprite.position.y = -abs(sin(p)) * BOB_HEIGHT
 \t\tsprite.rotation_degrees = sin(p * 0.5) * LEAN_DEGREES
 \t\tsprite.scale = Vector2(base.x * (1.0 + abs(sin(p)) * 0.04), base.y * (1.0 - abs(sin(p)) * 0.04))
+\t\t_legs(sprite, p * 0.5, LEG_SWING)
 \telse:
 \t\tvar q := _phase(sprite, IDLE_SPEED)
 \t\tsprite.position.y = 0.0
 \t\tsprite.rotation_degrees = 0.0
 \t\tsprite.scale = Vector2(base.x * (1.0 - sin(q) * IDLE_AMOUNT), base.y * (1.0 + sin(q) * IDLE_AMOUNT))
+\t\t_legs(sprite, 0.0, 0.0)
 
 # Call every frame for anything that hovers, drifts or swims.
 func hover(sprite: Node2D, amount: float = 4.0, speed: float = 2.0) -> void:
