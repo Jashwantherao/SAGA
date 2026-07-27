@@ -54,3 +54,7 @@ class GraphState(TypedDict):
     screenshot_path: Optional[str]
     # Non-gating findings from the local vision model's screenshot review.
     vision_notes: Optional[list[str]]
+    # Set by the Coder so QA can record a verified (brief -> script) training
+    # pair once the level passes; see saga.corpus.
+    coder_prompt: Optional[str]
+    coder_model: Optional[str]

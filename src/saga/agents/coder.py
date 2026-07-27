@@ -32,6 +32,13 @@ from saga.state import GraphState
 
 MODEL = os.environ.get("SAGA_CODER_MODEL", "qwen2.5-coder:14b")
 
+# "ollama" (default, local) or "deepseek"/"openai"/"remote" (hosted, see
+# saga.llm). The hosted path skips the whole local-GPU dance - no VRAM
+# handover, no CUDA-crash retry, no per-template model routing, since none of
+# those constraints exist when the model isn't on this machine.
+CODER_BACKEND = os.environ.get("SAGA_CODER_BACKEND", "ollama")
+REMOTE_MODEL = os.environ.get("SAGA_CODER_REMOTE_MODEL", "deepseek-v4-pro")
+
 # Per-template model routing: the 14B's faithful-imitation window tops out
 # around ~200 lines of few-shot (benchmarked), and it reliably drops the
 # member-variable block when asked to reproduce the 244-line dot_maze
@@ -1608,6 +1615,36 @@ def _stop_gpu_services() -> None:
     print(f"[Coder] Stopped GPU services on ports {GPU_SERVICE_PORTS} to free VRAM")
 
 
+def _is_remote() -> bool:
+    return CODER_BACKEND in ("deepseek", "openai", "remote")
+
+
+def _chat(messages: list[dict], model: str) -> str:
+    """One completion from whichever backend is configured; returns raw text.
+
+    The escalating-backoff retry below exists for a local-only failure: the
+    Ollama runner dying on model load under VRAM pressure. A hosted backend
+    has its own retry semantics in the SDK, so it goes straight through.
+    """
+    if _is_remote():
+        from saga.llm import chat
+
+        return chat(messages, model=model, max_tokens=8192)
+
+    last_error = None
+    for attempt, backoff in enumerate([0, 20, 40, 60]):
+        if backoff:
+            print(f"[Coder] Ollama runner unstable (attempt {attempt}), waiting {backoff}s: {last_error}")
+            time.sleep(backoff)
+        try:
+            return ollama.chat(model=model, messages=messages)["message"]["content"]
+        except (ollama.ResponseError, httpx.ConnectError, httpx.ReadTimeout) as e:
+            last_error = e
+    raise RuntimeError(
+        f"Ollama runner did not recover after 4 attempts for model {model!r}: {last_error}"
+    )
+
+
 def _extract_gdscript(text: str) -> str:
     match = re.search(r"```gdscript\s*\n(.*?)```", text, re.DOTALL)
     if match:
@@ -1646,7 +1683,7 @@ def coder(state: GraphState) -> GraphState:
     # autoload, called by the generated script.
     write_default_sfx(assets_dir)
 
-    if current_level == 0:
+    if current_level == 0 and not _is_remote():
         _stop_gpu_services()
 
     # This level's script sees only ITS background in the asset list -
@@ -1733,42 +1770,22 @@ def coder(state: GraphState) -> GraphState:
         requirements = TEMPLATE_REQUIREMENTS.get(template, TEMPLATE_REQUIREMENTS["collect"])
         system_prompt = f"{SYSTEM_PROMPT_BASE} {requirements}"
 
-    model = TEMPLATE_MODEL_OVERRIDES.get(template, MODEL)
+    # Per-template routing is a local-model workaround (small models drop
+    # declarations on long few-shots); a hosted model handles every template.
+    model = REMOTE_MODEL if _is_remote() else TEMPLATE_MODEL_OVERRIDES.get(template, MODEL)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": example_user},
         {"role": "assistant", "content": example_response},
         {"role": "user", "content": user_prompt},
     ]
-    # The Ollama runner reproducibly dies loading a fresh model right after
-    # ComfyUI's image batch (observed 3/3 runs) - a single fixed-delay retry
-    # was not reliable enough. Retry with increasing backoff; a ConnectError
-    # means the runner hasn't come back up at all yet (asking Ollama to load
-    # a model while the previous runner is still dying), which needs a
-    # longer wait than a ResponseError (a runner that loaded and then died).
-    response = None
-    last_error = None
-    for attempt, backoff in enumerate([0, 20, 40, 60]):
-        if backoff:
-            print(f"[Coder] Ollama runner unstable (attempt {attempt}), waiting {backoff}s: {last_error}")
-            time.sleep(backoff)
-        try:
-            response = ollama.chat(model=model, messages=messages)
-            break
-        except (ollama.ResponseError, httpx.ConnectError, httpx.ReadTimeout) as e:
-            last_error = e
-    if response is None:
-        raise RuntimeError(
-            f"Ollama runner did not recover after 4 attempts for model {model!r}: {last_error}"
-        )
     try:
-        gdscript = _extract_gdscript(response["message"]["content"])
+        gdscript = _extract_gdscript(_chat(messages, model))
     except ValueError:
-        # Local models occasionally drop the fence under long prompts; one
-        # retry recovers nearly all of these without failing the whole run.
+        # Models occasionally drop the fence under long prompts; one retry
+        # recovers nearly all of these without failing the whole run.
         print("[Coder] Response had no code fence, retrying once")
-        response = ollama.chat(model=model, messages=messages)
-        gdscript = _extract_gdscript(response["message"]["content"])
+        gdscript = _extract_gdscript(_chat(messages, model))
 
     # Pre-flight: catch invented asset filenames before wasting a Godot run.
     # One bounded self-correction round-trip; anything still wrong after
@@ -1784,24 +1801,25 @@ def coder(state: GraphState) -> GraphState:
         errors_desc = "\n".join(
             f"- load(\"res://assets/{ref}\") refers to a file that does not exist" for ref in bad_refs
         )
-        retry_response = ollama.chat(
-            model=model,
-            messages=[
-                {"role": "system", "content": FIX_SYSTEM_PROMPT},
-                {"role": "user", "content": example_user},
-                {"role": "assistant", "content": example_response},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Previous script:\n```gdscript\n{gdscript}\n```\n\n"
-                        f"{assets_line}"
-                        f"These errors must be fixed by using only the exact "
-                        f"filenames listed above:\n{errors_desc}\n"
-                    ),
-                },
-            ],
+        gdscript = _extract_gdscript(
+            _chat(
+                [
+                    {"role": "system", "content": FIX_SYSTEM_PROMPT},
+                    {"role": "user", "content": example_user},
+                    {"role": "assistant", "content": example_response},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Previous script:\n```gdscript\n{gdscript}\n```\n\n"
+                            f"{assets_line}"
+                            f"These errors must be fixed by using only the exact "
+                            f"filenames listed above:\n{errors_desc}\n"
+                        ),
+                    },
+                ],
+                model,
+            )
         )
-        gdscript = _extract_gdscript(retry_response["message"]["content"])
 
     # Pre-flight: catch silently-simplified-away systems (contract check).
     # One bounded correction round-trip, same shape as the filename check.
@@ -1813,23 +1831,24 @@ def coder(state: GraphState) -> GraphState:
             f"- the script is missing a required system: {desc} - reproduce it "
             f"exactly as the worked example demonstrates" for desc in violations
         )
-        contract_response = ollama.chat(
-            model=model,
-            messages=[
-                {"role": "system", "content": FIX_SYSTEM_PROMPT},
-                {"role": "user", "content": example_user},
-                {"role": "assistant", "content": example_response},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Previous script:\n```gdscript\n{gdscript}\n```\n\n"
-                        f"{assets_line}"
-                        f"These problems must be fixed:\n{errors_desc}\n"
-                    ),
-                },
-            ],
+        gdscript = _extract_gdscript(
+            _chat(
+                [
+                    {"role": "system", "content": FIX_SYSTEM_PROMPT},
+                    {"role": "user", "content": example_user},
+                    {"role": "assistant", "content": example_response},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Previous script:\n```gdscript\n{gdscript}\n```\n\n"
+                            f"{assets_line}"
+                            f"These problems must be fixed:\n{errors_desc}\n"
+                        ),
+                    },
+                ],
+                model,
+            )
         )
-        gdscript = _extract_gdscript(contract_response["message"]["content"])
 
     (PROJECT_DIR / "project.godot").write_text(
         PROJECT_GODOT_TEMPLATE.format(title=design_doc["title"]), encoding="utf-8"
@@ -1856,4 +1875,11 @@ def coder(state: GraphState) -> GraphState:
     )
     # tune_notes are consumed by this pass; clear them so a subsequent QA
     # retry takes the fix path against the already-tuned script.
-    return {"godot_project_path": str(PROJECT_DIR), "tune_notes": None}
+    result = {"godot_project_path": str(PROJECT_DIR), "tune_notes": None, "coder_model": model}
+    if not qa_errors and not tune_notes:
+        # Only a fresh generation carries the design brief. Fix/tune passes
+        # omit the key entirely rather than setting None, so the original
+        # brief survives in state - a level that passes after two repairs
+        # is still a valid (brief -> working script) training pair.
+        result["coder_prompt"] = user_prompt
+    return result

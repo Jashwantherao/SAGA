@@ -1,13 +1,20 @@
 """Game Designer agent — turns a one-line prompt into a structured game design doc.
 
-Two backends share the same schema and system prompt:
+Three backends share the same schema and system prompt, selected with
+SAGA_DESIGNER_BACKEND:
 - "local" (default): a local model via Ollama's structured outputs. The
   design task is heavily structured by now - template menu with selection
   guidance, per-template lever lists, intensity rules, a strict JSON schema
   - which is exactly the shape of problem a mid-size local model handles,
   and it makes the whole pipeline runnable end to end with zero cloud cost.
-- "claude": the Anthropic API - the premium option for when the key is
-  funded. Select with SAGA_DESIGNER_BACKEND=claude.
+- "deepseek": a hosted OpenAI-compatible model (see saga.llm). Fractions of
+  a cent per game, and it sidesteps the local model's habit of truncating
+  long design docs.
+- "claude": the Anthropic API - the premium option.
+
+The hosted path gets JSON mode rather than schema-constrained decoding, so
+the schema is spelled out in the prompt and _validate() enforces it after
+the fact - which is what that validator was built for.
 """
 
 import json
@@ -19,6 +26,7 @@ CLAUDE_MODEL = "claude-sonnet-5"
 LOCAL_MODEL = os.environ.get(
     "SAGA_DESIGNER_MODEL", "hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q3_K_S"
 )
+REMOTE_MODEL = os.environ.get("SAGA_DESIGNER_REMOTE_MODEL", "deepseek-v4-pro")
 
 MECHANIC_TEMPLATES = [
     "collect",
@@ -258,6 +266,45 @@ def _design_claude(user_prompt: str) -> dict:
     return json.loads(text)
 
 
+def _design_remote(user_prompt: str) -> dict:
+    """Hosted OpenAI-compatible backend (DeepSeek by default).
+
+    JSON mode guarantees valid JSON but not schema conformance, so the schema
+    goes in the prompt and _validate() checks the result - the same
+    corrective-retry path the local backend uses.
+    """
+    from saga.llm import chat
+
+    schema_note = (
+        "Respond with a single JSON object matching this schema exactly - no "
+        "prose, no markdown fence:\n" + json.dumps(DESIGN_DOC_SCHEMA, indent=2)
+    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT + "\n\n" + schema_note},
+        {"role": "user", "content": user_prompt},
+    ]
+    doc = _parse_json_lenient(chat(messages, model=REMOTE_MODEL, json_mode=True))
+
+    problems = _validate(doc)
+    if problems:
+        print(f"[Game Designer] Remote doc invalid, one corrective retry: {problems}")
+        messages.append({"role": "assistant", "content": json.dumps(doc)})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Your design doc has these problems - return the complete "
+                    "corrected doc: " + "; ".join(problems)
+                ),
+            }
+        )
+        doc = _parse_json_lenient(chat(messages, model=REMOTE_MODEL, json_mode=True))
+        problems = _validate(doc)
+        if problems:
+            raise ValueError(f"Remote designer produced an invalid design doc: {problems}")
+    return doc
+
+
 def _design_local(user_prompt: str) -> dict:
     import ollama
 
@@ -299,6 +346,8 @@ def game_designer(state: GraphState) -> GraphState:
     backend = os.environ.get("SAGA_DESIGNER_BACKEND", "local")
     if backend == "claude":
         design_doc = _design_claude(state["user_prompt"])
+    elif backend in ("deepseek", "openai", "remote"):
+        design_doc = _design_remote(state["user_prompt"])
     else:
         design_doc = _design_local(state["user_prompt"])
     design_doc = _normalize(design_doc)
