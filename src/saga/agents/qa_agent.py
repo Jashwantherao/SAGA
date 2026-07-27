@@ -21,6 +21,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from saga.balance import check_level
 from saga.corpus import record_level
 from saga.state import GraphState
 
@@ -215,6 +216,37 @@ def qa_agent(state: GraphState) -> GraphState:
             "retry_count": retry_count + 1,
         }
 
+    # 3. Balance check. The script runs, but that says nothing about whether
+    # its challenge is survivable - a drain that outpaces every refill, or a
+    # pursuer faster than the player, compiles perfectly and is unwinnable.
+    # Purely static and instant, so it runs before the screenshot pass.
+    # Gated on the first attempt only, for the same reason as the vision
+    # review: repeating a verdict the Coder failed to satisfy would spend the
+    # budget real crashes need.
+    script_file = Path(project_dir) / f"Level_{current_level}.gd"
+    balance_notes = []
+    if script_file.exists():
+        template = (state.get("design_doc") or {}).get("mechanic_template", "")
+        bal_gating, balance_notes = check_level(script_file.read_text(encoding="utf-8"), template)
+        for note in bal_gating + balance_notes:
+            print(f"[QA Agent] {note}")
+        if bal_gating and retry_count == 0:
+            print(f"[QA Agent] FAILED on {len(bal_gating)} balance defect(s) - requesting a fix")
+            return {
+                "qa_passed": False,
+                "qa_errors": bal_gating,
+                "retry_count": retry_count + 1,
+                "balance_notes": balance_notes,
+            }
+        if bal_gating:
+            print(
+                f"[QA Agent] WARNING: {len(bal_gating)} balance defect(s) UNRESOLVED "
+                f"after a fix attempt - this level may not be winnable:"
+            )
+            for note in bal_gating:
+                print(f"[QA Agent]   - {note}")
+            balance_notes = bal_gating + balance_notes
+
     # 4. Non-blocking windowed screenshot pass (a window flashes for ~1.5s).
     # screenshot.gd saves frame 60 to res://screenshot.png; it no-ops in the
     # headless runs above.
@@ -253,11 +285,22 @@ def qa_agent(state: GraphState) -> GraphState:
                 "screenshot_path": screenshot_path,
                 "vision_notes": vision_notes,
             }
+        if gating:
+            # The cap has been spent and the defect is still there. Passing is
+            # the lesser evil - looping would burn the budget real crashes need
+            # - but reporting a clean PASS is how a visibly broken build
+            # reaches a human unremarked, so say so loudly instead.
+            print(
+                f"[QA Agent] WARNING: {len(gating)} visual defect(s) UNRESOLVED after "
+                f"a fix attempt - passing so the run can continue, but this build "
+                f"has a known problem:"
+            )
+            for note in gating:
+                print(f"[QA Agent]   - {note}")
 
     # This is the only point in the pipeline where a script is known-good
     # (compiled, ran, satisfied its template contract) - so it's where the
     # training corpus gets its verified pairs.
-    script_file = Path(project_dir) / f"Level_{current_level}.gd"
     record_level(
         prompt=state.get("coder_prompt"),
         script=script_file.read_text(encoding="utf-8") if script_file.exists() else "",
@@ -275,4 +318,5 @@ def qa_agent(state: GraphState) -> GraphState:
         "qa_errors": [],
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes,
+        "balance_notes": balance_notes,
     }
