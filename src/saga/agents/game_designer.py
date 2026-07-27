@@ -19,6 +19,7 @@ the fact - which is what that validator was built for.
 
 import json
 import os
+import re
 
 from saga.state import GraphState
 
@@ -41,6 +42,15 @@ MECHANIC_TEMPLATES = [
 ]
 
 KEY_ITEM_ROLES = ["pickup", "hazard", "switch", "creature", "zone_marker"]
+
+# Every extra sprite is another image generation, so the count is capped to
+# keep the art phase bounded. Four covers the usual shortfall - a platform, an
+# enemy, a wall, a goal - without doubling the run time.
+MAX_EXTRA_SPRITES = 4
+
+# The name becomes a filename prefix, so it has to survive a round trip through
+# the filesystem and the Coder's asset list.
+EXTRA_SPRITE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
 
 DESIGN_DOC_SCHEMA = {
     "type": "object",
@@ -80,6 +90,19 @@ DESIGN_DOC_SCHEMA = {
             "required": ["description", "role"],
             "additionalProperties": False,
         },
+        "extra_sprites": {
+            "type": "array",
+            "maxItems": MAX_EXTRA_SPRITES,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["name", "description"],
+                "additionalProperties": False,
+            },
+        },
     },
     "required": [
         "title",
@@ -95,6 +118,7 @@ DESIGN_DOC_SCHEMA = {
         "art_style",
         "audio_mood",
         "key_item",
+        "extra_sprites",
     ],
     "additionalProperties": False,
 }
@@ -168,10 +192,19 @@ SYSTEM_PROMPT = (
     "at a time on an otherwise empty screen: make each one earn it.\n\n"
     "Hard constraints: playable entirely with HELD arrow-key movement - never "
     "require a discrete button press to win. All interactions are touch-based "
-    "(moving into things). One key_item icon, one hero sprite, one background "
-    "per level. Losing must freeze play and update the on-screen label - never "
-    "remove the player from the scene. Keep each level's scope achievable for "
-    "~100 lines of GDScript."
+    "(moving into things). Losing must freeze play and update the on-screen "
+    "label - never remove the player from the scene. Keep each level's scope "
+    "achievable for ~100 lines of GDScript.\n\n"
+    "Art the game needs: a hero sprite and one background per level are always "
+    f"generated, plus the key_item icon. Use extra_sprites to ask for up to "
+    f"{MAX_EXTRA_SPRITES} MORE things this specific game needs drawn - the "
+    "enemy that chases, the platform that is stood on, the wall, the door, the "
+    "goal. Anything you do not ask for does not exist, and the Coder will have "
+    "to draw it as a plain coloured rectangle, which looks like missing art. "
+    "Name each one lowercase with underscores after what it IS (wall, "
+    "patrol_drone, exit_door) and describe it as concretely as the hero. Ask "
+    "only for things that appear on screen as their own object; do not "
+    "re-request the hero, the key_item, or a background."
 )
 
 
@@ -180,6 +213,12 @@ def _validate(doc: dict) -> list[str]:
     problem list so a corrective retry can quote them verbatim."""
     problems = []
     for key in DESIGN_DOC_SCHEMA["required"]:
+        # extra_sprites is legitimately empty for a game that needs no extra
+        # art, so absence is checked separately from emptiness.
+        if key == "extra_sprites":
+            if not isinstance(doc.get(key), list):
+                problems.append("extra_sprites must be a list (use [] if none are needed)")
+            continue
         if not doc.get(key):
             problems.append(f"missing or empty field {key!r}")
     if doc.get("mechanic_template") not in MECHANIC_TEMPLATES:
@@ -213,6 +252,33 @@ def _normalize(doc: dict) -> dict:
             value = prev
         lvl["intensity"] = value
         prev = value
+
+    # Sprite names become filename prefixes, so repair what is repairable
+    # rather than rejecting a good doc over "Patrol Drone" vs "patrol_drone".
+    # Reserved prefixes would collide with the hero/key_item/background naming
+    # the Coder keys its roles off, and duplicates would overwrite each other.
+    # The cap applies to sprites that survive filtering, so junk entries cost
+    # the game art it could otherwise have had.
+    cleaned, seen = [], set()
+    for sprite in doc.get("extra_sprites") or []:
+        if len(cleaned) >= MAX_EXTRA_SPRITES:
+            break
+        if not isinstance(sprite, dict) or not sprite.get("description"):
+            continue
+        raw = str(sprite.get("name", "")).strip().lower().replace(" ", "_")
+        name = re.sub(r"[^a-z0-9_]", "", raw)[:24].strip("_")
+        if not EXTRA_SPRITE_NAME_RE.match(name):
+            print(f"[Game Designer] dropping extra sprite with unusable name {sprite.get('name')!r}")
+            continue
+        if name in ("hero", "key_item", "level", "background", "bg"):
+            print(f"[Game Designer] dropping extra sprite {name!r} - reserved name")
+            continue
+        if name in seen:
+            print(f"[Game Designer] dropping duplicate extra sprite {name!r}")
+            continue
+        seen.add(name)
+        cleaned.append({"name": name, "description": sprite["description"]})
+    doc["extra_sprites"] = cleaned
     return doc
 
 

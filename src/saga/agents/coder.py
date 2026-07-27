@@ -322,6 +322,34 @@ GODOT4_API_NOTES = (
     "or null. "
 )
 
+def _asset_manifest(filenames: list[str], design_doc: dict) -> str:
+    """List the available images with what each one actually depicts.
+
+    A bare filename list tells the model a file exists but not what is in it,
+    so a purpose-built sprite goes unused and the object gets drawn as a plain
+    ColorRect instead - which is what missing art looks like on screen. The
+    role prefixes are the same ones SYSTEM_PROMPT_BASE describes.
+    """
+    extras = {s["name"]: s["description"] for s in (design_doc.get("extra_sprites") or [])}
+    key_item = design_doc.get("key_item") or {}
+
+    lines = []
+    for name in filenames:
+        if name.startswith("level_"):
+            note = "this level's background, exactly 1024x576"
+        elif name.startswith("key_item"):
+            note = f"{key_item.get('description', 'the key item')} (role: {key_item.get('role', 'pickup')}), 128x128 with transparency"
+        elif name.startswith("extra_"):
+            # extra_<slug>_00001_.png - recover the slug between the prefix and
+            # the generator's numeric suffix.
+            slug = re.sub(r"_\d+_?$", "", name.rsplit(".", 1)[0][len("extra_"):])
+            note = f"{extras.get(slug, slug.replace('_', ' '))}, 128x128 with transparency"
+        else:
+            note = f"{design_doc.get('hero_description', 'the player character')} - the player, 128x128 with transparency"
+        lines.append(f"- {name}: {note}")
+    return "\n".join(lines)
+
+
 SYSTEM_PROMPT_BASE = (
     "You are the Coder agent in an automated game studio. You write GDScript "
     "(Godot 4) attached to a single Node2D root node. The game window is a "
@@ -367,10 +395,13 @@ SYSTEM_PROMPT_BASE = (
     "not create. Load image assets with load(\"res://assets/<filename>\") "
     "using ONLY filenames from the 'Available image assets' list, copied "
     "verbatim - never invent a filename; a load() of a file that does not "
-    "exist crashes QA. When a template needs a second object appearance "
-    "(hazard, patroller, frost, drone), reuse the key_item sprite tinted "
-    "via modulate and scaled, exactly as the example does - there is no "
-    "separate image for it. Put every gameplay-tuning number - speeds, "
+    "exist crashes QA. The asset list says what each image depicts: use the "
+    "one that matches the object you are creating - a sprite named for a wall, "
+    "an enemy or a platform exists precisely so that object is drawn with it. "
+    "Never draw a game object as a plain ColorRect or an untextured rectangle "
+    "while a matching sprite is listed. Only when nothing in the list fits "
+    "should you fall back to reusing the key_item sprite tinted via modulate "
+    "and scaled, as the example does. Put every gameplay-tuning number - speeds, "
     "rates, durations, counts, radii - in a named variable at the top of "
     "the script so a human playtester can retune it later. "
     + GODOT4_API_NOTES +
@@ -1725,6 +1756,7 @@ def coder(state: GraphState) -> GraphState:
     listed_assets = [f for f in asset_filenames if not f.startswith("level_")]
     if level_bg:
         listed_assets.append(level_bg)
+    assets_manifest = _asset_manifest(listed_assets, design_doc)
 
     template = design_doc.get("mechanic_template") or "collect"
     example_user, example_response = FEW_SHOTS[TEMPLATE_TO_FEW_SHOT.get(template, "collect")]
@@ -1745,7 +1777,7 @@ def coder(state: GraphState) -> GraphState:
     # The fix/tune paths need the real asset list too: without it the model
     # cannot recover from an invented-filename error (it has no way to know
     # which files exist) and tends to flail into fallback code instead.
-    assets_line = f"Available image assets (use these EXACT filenames): {', '.join(listed_assets)}\n"
+    assets_line = f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
 
     if qa_errors:
         previous_script = script_file.read_text(encoding="utf-8")
@@ -1794,7 +1826,7 @@ def coder(state: GraphState) -> GraphState:
             f"This is level {current_level + 1} of {total_levels}: "
             f"{level['name']}: {level['description']}\n"
             f"{difficulty_line}"
-            f"Available image assets: {', '.join(listed_assets)}\n"
+            f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
         )
         requirements = TEMPLATE_REQUIREMENTS.get(template, TEMPLATE_REQUIREMENTS["collect"])
         system_prompt = f"{SYSTEM_PROMPT_BASE} {requirements}"

@@ -164,6 +164,23 @@ def asset_maker(state: GraphState) -> GraphState:
             True,
         ),
     ]
+    # Whatever else this particular game needs drawn. Without these the Coder
+    # has a hero, one icon and a background, and everything else - platforms,
+    # enemies, walls - becomes an untextured ColorRect, which is exactly what
+    # missing art looks like on screen. Same icon treatment as key_item: a
+    # plain solid background for rembg to cut along, then alpha-cropped to 128.
+    for extra in design_doc.get("extra_sprites") or []:
+        requests.append(
+            (
+                f"{extra['description']}, whole object fully visible, game sprite, "
+                f"centered, {art_style}, plain solid background",
+                f"extra_{extra['name']}",
+                ICON_GEN_SIZE,
+                ICON_GEN_SIZE,
+                True,
+            )
+        )
+
     for i, level in enumerate(design_doc["levels"]):
         requests.append(
             (

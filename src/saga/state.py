@@ -6,6 +6,13 @@ class KeyItem(TypedDict):
     role: str  # pickup | hazard | switch | creature | zone_marker
 
 
+class ExtraSprite(TypedDict):
+    # Lowercase slug; becomes the filename prefix (extra_<name>_NNNNN_.png) and
+    # is how the Coder refers to the sprite, so it should say what the thing is.
+    name: str
+    description: str  # concrete visual description - drives the 128x128 generation
+
+
 class Level(TypedDict):
     name: str
     description: str  # drives this level's background generation
@@ -33,6 +40,10 @@ class DesignDoc(TypedDict):
     art_style: str
     audio_mood: str
     key_item: KeyItem
+    # Everything else this particular game needs drawn - platforms, enemies,
+    # walls, doors. Without these the Coder has only a hero, one icon and a
+    # background, so it falls back to untextured ColorRects for anything else.
+    extra_sprites: list[ExtraSprite]
 
 
 class GraphState(TypedDict):
