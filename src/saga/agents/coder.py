@@ -81,6 +81,20 @@ TEMPLATE_CONTRACTS = {
 # nothing, which QA cannot see - it is looking for errors, and there are none.
 # Observed after a spurious import failure taught the model to "defend" against
 # a missing singleton by nulling it.
+# Applies to every template: without a call to the Anim autoload the hero is a
+# still PNG sliding around, which is the single loudest tell that a build is a
+# mock-up rather than a game. Cheap to satisfy and easy to omit, so it is
+# checked rather than hoped for.
+UNIVERSAL_CONTRACTS = [
+    (
+        "per-frame character animation via the Anim autoload - call "
+        "Anim.walk(sprite, is_moving, direction.x) each frame for the player "
+        "and anything that walks, or Anim.hover(sprite) for anything that "
+        "floats, so the sprite is not a static image sliding around",
+        r"Anim\.(walk|hover)\(",
+    ),
+]
+
 FORBIDDEN_PATTERNS = [
     (
         "the script declares a local variable that shadows a harness autoload "
@@ -108,6 +122,8 @@ config/features=PackedStringArray("4.7")
 Screenshot="*res://screenshot.gd"
 Sfx="*res://sfx.gd"
 Ambience="*res://ambience.gd"
+Anim="*res://anim.gd"
+Autoplay="*res://autoplay.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -271,6 +287,280 @@ script = ExtResource("1")
 # reliably gets wrong when asked to write it (it invents CPUParticles2D
 # properties), so it lives here with the other harness-owned polish. Skipped
 # headlessly - no visual value, and dummy-renderer particles leak RIDs.
+# Harness-owned character animation. Generated sprites are single static PNGs -
+# there is no sprite sheet and no frame-based animation anywhere in the
+# pipeline - so a hero has always been a still image sliding around, which is
+# what makes these builds read as mock-ups rather than games. Procedural motion
+# closes most of that gap for free: a sprite that bobs while walking, leans
+# into its direction, squashes on impact and breathes when idle is perceived as
+# animated even though it is one frame.
+#
+# It lives in the harness rather than the Coder's prompt for the same reason
+# Sfx does: it must be identical in every game, cannot be silently simplified
+# away, and is pure boilerplate the model would otherwise reinvent badly.
+#
+# Every helper animates a Sprite2D CHILD, never the Area2D that owns gameplay
+# position - the offsets are local, so bobbing cannot fight collision.
+ANIM_GD = """extends Node
+
+const BOB_HEIGHT := 3.0
+const BOB_SPEED := 9.0
+const LEAN_DEGREES := 5.0
+const IDLE_AMOUNT := 0.03
+const IDLE_SPEED := 2.2
+const LEG_SWING := 0.11
+
+# Actual leg movement, without a second drawn frame. Image generation can hold
+# a character consistent across poses but cannot control where its legs are -
+# asking for two consecutive walk frames reliably returns two standing poses -
+# so a stepping gait cannot be drawn. It can be deformed instead: shear the
+# lower part of the sprite sideways on a sine wave, with the left and right
+# halves in opposite phase, and the near and far legs scissor past each other
+# the way they do in a walk. Displacement ramps from zero at the hip to full at
+# the feet so the body stays put while the legs swing under it.
+const LEG_SHADER := "
+shader_type canvas_item;
+uniform float phase = 0.0;
+uniform float amount = 0.0;
+uniform float leg_line = 0.55;
+
+void fragment() {
+\tvec2 uv = UV;
+\tif (uv.y > leg_line) {
+\t\tfloat depth = (uv.y - leg_line) / (1.0 - leg_line);
+\t\t// Front and back must travel in opposite directions to scissor, but a
+\t\t// hard split at the midline shears the two halves apart and tears a gap
+\t\t// down the body at any useful amplitude. A sine across the width crosses
+\t\t// zero at the middle instead, so the halves oppose each other and the
+\t\t// sprite stays continuous.
+\t\tfloat side = sin((uv.x - 0.5) * 3.14159);
+\t\tuv.x += sin(phase) * amount * depth * side;
+\t}
+\t// A shifted sample can fall outside the sprite; the art is alpha-cropped
+\t// tight to its edges, so clamping there would smear the outermost column
+\t// of pixels into a streak instead of letting the leg end.
+\tif (uv.x < 0.0 || uv.x > 1.0) {
+\t\tCOLOR = vec4(0.0);
+\t} else {
+\t\tCOLOR = texture(TEXTURE, uv);
+\t}
+}
+"
+
+# Phase is derived from the clock rather than stored, so callers stay
+# stateless. The per-instance offset stops a row of identical creatures
+# bobbing in lockstep, which reads as one object instead of several.
+func _phase(node: Node2D, speed: float) -> float:
+\treturn Time.get_ticks_msec() / 1000.0 * speed + float(node.get_instance_id() % 97) * 0.13
+
+func _base(sprite: Node2D) -> Vector2:
+\tif not sprite.has_meta("anim_base"):
+\t\tsprite.set_meta("anim_base", sprite.scale)
+\treturn sprite.get_meta("anim_base")
+
+# Register a resting and a walking image for a character. walk() then swaps
+# between them, which is what makes a sprite look like it stands up to move
+# and settles when it stops - procedural bobbing alone cannot change a pose.
+# Optional: a character with no walk pose simply keeps its single texture.
+func set_poses(sprite: Sprite2D, idle_texture: Texture2D, walk_texture: Texture2D) -> void:
+\tif not is_instance_valid(sprite):
+\t\treturn
+\tsprite.set_meta("pose_idle", idle_texture)
+\tsprite.set_meta("pose_walk", walk_texture)
+
+func _legs(sprite: Node2D, phase: float, amount: float) -> void:
+\tif not (sprite is CanvasItem):
+\t\treturn
+\tvar mat: ShaderMaterial = sprite.material as ShaderMaterial
+\tif mat == null:
+\t\tvar shader := Shader.new()
+\t\tshader.code = LEG_SHADER
+\t\tmat = ShaderMaterial.new()
+\t\tmat.shader = shader
+\t\tsprite.material = mat
+\tmat.set_shader_parameter("phase", phase)
+\tmat.set_shader_parameter("amount", amount)
+
+func _set_pose(sprite: Node2D, moving: bool) -> void:
+\tif not (sprite is Sprite2D) or not sprite.has_meta("pose_walk"):
+\t\treturn
+\tvar wanted: Texture2D = sprite.get_meta("pose_walk") if moving else sprite.get_meta("pose_idle")
+\tif wanted != null and sprite.texture != wanted:
+\t\tsprite.texture = wanted
+
+# Call every frame for anything that walks. Pass the movement direction so the
+# sprite faces where it is going.
+func walk(sprite: Node2D, moving: bool, dir_x: float = 0.0) -> void:
+\tif not is_instance_valid(sprite):
+\t\treturn
+\tvar base: Vector2 = _base(sprite)
+\tif dir_x != 0.0 and sprite is Sprite2D:
+\t\tsprite.flip_h = dir_x < 0.0
+\t_set_pose(sprite, moving)
+\tif moving:
+\t\tvar p := _phase(sprite, BOB_SPEED)
+\t\t# The body bounces at twice the stride rate - one rise per step, two per
+\t\t# full cycle - which is what couples the bob to the legs instead of
+\t\t# leaving them as two unrelated wobbles.
+\t\tsprite.position.y = -abs(sin(p)) * BOB_HEIGHT
+\t\tsprite.rotation_degrees = sin(p * 0.5) * LEAN_DEGREES
+\t\tsprite.scale = Vector2(base.x * (1.0 + abs(sin(p)) * 0.04), base.y * (1.0 - abs(sin(p)) * 0.04))
+\t\t_legs(sprite, p * 0.5, LEG_SWING)
+\telse:
+\t\tvar q := _phase(sprite, IDLE_SPEED)
+\t\tsprite.position.y = 0.0
+\t\tsprite.rotation_degrees = 0.0
+\t\tsprite.scale = Vector2(base.x * (1.0 - sin(q) * IDLE_AMOUNT), base.y * (1.0 + sin(q) * IDLE_AMOUNT))
+\t\t_legs(sprite, 0.0, 0.0)
+
+# Call every frame for anything that hovers, drifts or swims.
+func hover(sprite: Node2D, amount: float = 4.0, speed: float = 2.0) -> void:
+\tif not is_instance_valid(sprite):
+\t\treturn
+\tvar base: Vector2 = _base(sprite)
+\tvar p := _phase(sprite, speed)
+\tsprite.position.y = sin(p) * amount
+\tsprite.scale = Vector2(base.x * (1.0 + sin(p) * 0.05), base.y * (1.0 - sin(p) * 0.05))
+
+# One-shot punch for a pickup, a spawn, or a landing.
+func pop(sprite: Node2D, strength: float = 0.35) -> void:
+\tif not is_instance_valid(sprite):
+\t\treturn
+\tvar base: Vector2 = _base(sprite)
+\tvar tween := sprite.create_tween()
+\ttween.tween_property(sprite, "scale", base * (1.0 + strength), 0.08)
+\ttween.tween_property(sprite, "scale", base, 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+# One-shot squash for an impact - wide and short, then recover.
+func squash(sprite: Node2D, strength: float = 0.3) -> void:
+\tif not is_instance_valid(sprite):
+\t\treturn
+\tvar base: Vector2 = _base(sprite)
+\tvar tween := sprite.create_tween()
+\ttween.tween_property(sprite, "scale", Vector2(base.x * (1.0 + strength), base.y * (1.0 - strength)), 0.06)
+\ttween.tween_property(sprite, "scale", base, 0.18).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+
+# Damage feedback: flash a colour and return to normal.
+func flash(sprite: Node2D, color: Color = Color(1, 0.4, 0.4)) -> void:
+\tif not is_instance_valid(sprite):
+\t\treturn
+\tvar tween := sprite.create_tween()
+\ttween.tween_property(sprite, "modulate", color, 0.05)
+\ttween.tween_property(sprite, "modulate", Color(1, 1, 1), 0.25)
+"""
+
+# Harness-owned autoplay probe. QA has only ever proved a script does not
+# crash, which says nothing about whether the game responds to a player at all
+# - a level whose hero cannot move, or whose objective can never change, runs
+# perfectly and reports PASSED. Godot can press its own keys via
+# Input.action_press, so the harness can hold the arrow keys down and watch
+# what happens.
+#
+# Two signals, both template-agnostic. Something in the scene must MOVE when a
+# direction is held, and the status Label - which every template is already
+# required to show game state in - must eventually say something different.
+# A game failing either is inert regardless of what it was trying to be.
+#
+# Deliberately not a win condition: reaching an objective needs skill this
+# cannot fake, so absence of progress here is not evidence of an unwinnable
+# game. It catches the floor, not the ceiling.
+AUTOPLAY_GD = """extends Node
+
+const SETTLE_FRAMES := 20
+const BASELINE_FRAMES := 40
+const HOLD_FRAMES := 45
+const DIRECTIONS := ["ui_right", "ui_down", "ui_left", "ui_up"]
+
+var _frame := 0
+var _leg := -1
+var _held := ""
+var _labels := {}
+var _previous := {}
+var _idle_motion := 0.0
+var _input_motion := 0.0
+var _active := false
+
+func _ready() -> void:
+	_active = "--autoplay" in OS.get_cmdline_user_args()
+	if _active:
+		process_priority = 500
+
+func _collect(node: Node, labels: Array, movers: Array) -> void:
+	if node is Label:
+		labels.append(node)
+	elif node is Node2D and not (node is Sprite2D):
+		# Sprite2D is excluded on purpose: the Anim autoload writes a bob and a
+		# lean into every animated sprite's local position every frame, so
+		# measuring sprites measures the animation rather than the game.
+		movers.append(node)
+	for child in node.get_children():
+		_collect(child, labels, movers)
+
+func _accumulate(movers: Array) -> float:
+	var total := 0.0
+	for m in movers:
+		var id: int = m.get_instance_id()
+		var here: Vector2 = m.global_position
+		if _previous.has(id):
+			total += _previous[id].distance_to(here)
+		_previous[id] = here
+	return total
+
+func _process(_delta: float) -> void:
+	if not _active:
+		return
+	var root: Node = get_tree().current_scene
+	if root == null:
+		return
+	var labels: Array = []
+	var movers: Array = []
+	_collect(root, labels, movers)
+	for l in labels:
+		_labels[l.text] = true
+
+	_frame += 1
+	if _frame < SETTLE_FRAMES:
+		_accumulate(movers)
+		return
+	if _frame == SETTLE_FRAMES:
+		Input.action_press("ui_accept")
+		_accumulate(movers)
+		return
+	if _frame == SETTLE_FRAMES + 1:
+		Input.action_release("ui_accept")
+		_accumulate(movers)
+		return
+
+	# Baseline first, with nothing held. Hazards patrol, creatures drift and
+	# tweens run during this window exactly as they do later, so whatever the
+	# game does on its own is measured before any key is touched.
+	if _frame < SETTLE_FRAMES + BASELINE_FRAMES:
+		_idle_motion += _accumulate(movers)
+		return
+
+	_input_motion += _accumulate(movers)
+	var leg: int = (_frame - SETTLE_FRAMES - BASELINE_FRAMES) / HOLD_FRAMES
+	if leg != _leg:
+		if _held != "":
+			Input.action_release(_held)
+		_leg = leg
+		if _leg >= DIRECTIONS.size():
+			_report()
+			return
+		_held = DIRECTIONS[_leg]
+		Input.action_press(_held)
+
+func _report() -> void:
+	_active = false
+	if _held != "":
+		Input.action_release(_held)
+	# Per-frame rates, since the two windows are different lengths.
+	var idle_rate := _idle_motion / float(BASELINE_FRAMES)
+	var input_rate := _input_motion / float(HOLD_FRAMES * DIRECTIONS.size())
+	print("[AUTOPLAY] idle_rate=%.3f input_rate=%.3f label_states=%d" % [idle_rate, input_rate, _labels.size()])
+	get_tree().quit()
+"""
+
 AMBIENCE_GD = """extends Node
 
 func _ready():
@@ -371,6 +661,13 @@ def _asset_manifest(filenames: list[str], design_doc: dict) -> str:
             note = "this level's background, exactly 1024x576"
         elif name.startswith("key_item"):
             note = f"{key_item.get('description', 'the key item')} (role: {key_item.get('role', 'pickup')}), 128x128 with transparency"
+        elif name.startswith("hero_walk"):
+            note = (
+                "the SAME hero in a walking pose - register it with "
+                "Anim.set_poses(hero_sprite, <resting texture>, <this texture>) so the "
+                "hero stands up to move and settles when still. Do not create a "
+                "second sprite for it"
+            )
         elif name.startswith("extra_"):
             # extra_<slug>_00001_.png - recover the slug between the prefix and
             # the generator's numeric suffix.
@@ -435,7 +732,24 @@ SYSTEM_PROMPT_BASE = (
     "should you fall back to reusing the key_item sprite tinted via modulate "
     "and scaled, as the example does. Put every gameplay-tuning number - speeds, "
     "rates, durations, counts, radii - in a named variable at the top of "
-    "the script so a human playtester can retune it later. "
+    "the script so a human playtester can retune it later. An Anim autoload "
+    "provides the character animation, and you must use it. When a hero_walk "
+    "asset is listed, call Anim.set_poses(hero_sprite, <hero resting texture>, "
+    "<hero_walk texture>) once in _ready - both are images of the same "
+    "character, and Anim swaps between them so the hero visibly stands up to "
+    "move and settles again when it stops. Never build a second sprite node "
+    "for the walking pose. "
+    "Keep a reference to each character's Sprite2D child (the sprite, never "
+    "the Area2D that owns its position - Anim writes local offsets that would "
+    "otherwise fight collision). Every frame, call Anim.walk(sprite, "
+    "is_moving, direction.x) for the player and for anything that walks, "
+    "passing whether it moved this frame and its horizontal direction so it "
+    "bobs, leans and faces the right way; call Anim.hover(sprite) instead for "
+    "anything that floats, drifts or swims. On events, call Anim.pop(sprite) "
+    "when something is collected, rescued or spawned, Anim.squash(sprite) on "
+    "an impact or landing, and Anim.flash(sprite) when the player takes "
+    "damage. Do not write your own scale, rotation or modulate tweens for "
+    "these - Anim owns them. "
     + GODOT4_API_NOTES +
     "Respond with ONLY a single ```gdscript fenced code block, no explanation "
     "before or after it."
@@ -1934,7 +2248,7 @@ def coder(state: GraphState) -> GraphState:
 
     # Pre-flight: catch silently-simplified-away systems (contract check).
     # One bounded correction round-trip, same shape as the filename check.
-    contract = TEMPLATE_CONTRACTS.get(template) or []
+    contract = (TEMPLATE_CONTRACTS.get(template) or []) + UNIVERSAL_CONTRACTS
     violations = [desc for desc, pattern in contract if not re.search(pattern, gdscript)]
     # Forbidden patterns are the inverse: present rather than missing. They run
     # on every path, including fixes, because a fix prompt reacting to a
@@ -1971,6 +2285,8 @@ def coder(state: GraphState) -> GraphState:
     (PROJECT_DIR / "screenshot.gd").write_text(SCREENSHOT_GD, encoding="utf-8")
     (PROJECT_DIR / "sfx.gd").write_text(SFX_GD, encoding="utf-8")
     (PROJECT_DIR / "ambience.gd").write_text(AMBIENCE_GD, encoding="utf-8")
+    (PROJECT_DIR / "anim.gd").write_text(ANIM_GD, encoding="utf-8")
+    (PROJECT_DIR / "autoplay.gd").write_text(AUTOPLAY_GD, encoding="utf-8")
     beats = [lvl.get("outro_beat", "") for lvl in levels]
     (PROJECT_DIR / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
     (PROJECT_DIR / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")

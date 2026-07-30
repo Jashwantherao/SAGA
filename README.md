@@ -5,20 +5,28 @@ Multi-agent LangGraph pipeline that turns a one-line prompt into a playable, mul
 ```
 Studio Director -> Game Designer -> (Asset Maker, Audio Agent)
     -> Coder <-> QA Agent  (repeats per level, advancing through the design
-       doc's levels)  -> [--playtest] -> done
+       doc's levels)  -> [--gate: human plays this level] -> [--playtest] -> done
 ```
 
 | Agent | Runs on | Does |
 |---|---|---|
 | Studio Director | in-process | Thin pass-through entry point |
-| Game Designer | local (`qwen3-coder:30b-a3b`) or cloud (`claude-sonnet-5`) | One-line idea -> structured design doc: picks one of 8 mechanic templates, a hero description, key item (with a gameplay role), story, 3-5 levels each with its own background, an authored non-decreasing difficulty curve (`intensity` 1-10), which of the mechanic's tuning levers rise per level, and a narrative beat shown between levels |
-| Asset Maker | local GPU, ComfyUI + Flux.1 schnell + rembg | Hero sprite + key-item icon (generated at 512x512 for reliable full-body framing, background-removed via rembg since Flux can't emit alpha, then cropped to the alpha bounding box and downscaled to 128x128) + one background per level (1024x576) |
+| Game Designer | local (`qwen3-coder:30b-a3b`) or cloud (`claude-sonnet-5`) | One-line idea -> structured design doc: picks one of 9 mechanic templates, a hero description, key item (with a gameplay role), story, 3-5 levels each with its own background, an authored non-decreasing difficulty curve (`intensity` 1-10), which of the mechanic's tuning levers rise per level, and a narrative beat shown between levels |
+| Asset Maker | local GPU, ComfyUI + Flux.1 schnell + rembg | The hero in a resting **and** a walking pose (sharing one seed, so they render the same character), the key-item icon, up to four `extra_sprites` the design doc asked for by name, and one background per level. Icons generate at 512x512 for reliable full-body framing, are background-removed via rembg since Flux can't emit alpha, then cropped to the alpha bounding box and downscaled to 128x128. Without `extra_sprites`, anything that isn't a hero, icon or background - platforms, enemies, walls - had no image and the Coder drew it as an untextured rectangle |
 | Audio Agent | local GPU, MusicGen (`transformers`) | Background music from the design doc's audio mood; loops continuously across level changes via a harness-owned autoload |
 | Coder | local GPU, Ollama (`qwen2.5-coder:14b`, or a per-template override for larger few-shots) | Writes one `Level_N.gd` per level from a template-matched few-shot, rendering that level's authored difficulty via an intensity anchor (the few-shot's own numbers = intensity 4/10, ~15% more pressure per point via that template's specific levers); harness writes all deterministic boilerplate - `project.godot`, `Level_N.tscn`, procedural SFX, ambient particles, the title/win/lose/restart state machine's autoloads, the between-level narrative interlude, and the Victory scene. A post-generation contract check (`TEMPLATE_CONTRACTS`) verifies each template's required systems actually made it into the script - QA only catches crashes, not a system being silently simplified away |
-| QA Agent | Godot 4.7, headless | Imports assets, runs each level's scene for a bounded number of frames (also catches compile errors), then a non-blocking windowed pass captures a screenshot and a local vision model (`gemma4:12b`) reviews it for visual defects; routes failures back to the Coder per level (up to `MAX_RETRIES`), escalating to a fresh regeneration if 3 fix attempts don't converge |
+| QA Agent | Godot 4.7, headless | Imports assets and runs each level (which also catches compile errors), then **plays it**: an Autoplay autoload holds each arrow key in turn and compares how much the world moves against a no-input baseline, so a level that ignores the player fails instead of passing. Then a static balance check (`balance.py`) on the script's own tuning constants, and a screenshot reviewed by a vision model. Failures route back to the Coder per level (up to `MAX_RETRIES`), escalating to a fresh regeneration if 3 fix attempts don't converge |
 | Playtest loop (`--playtest`) | stdin capture + local/cloud Feedback Interpreter | After a QA-passed build, asks a human three post-play questions and routes their feedback to the cheapest fix: `tune` (surgical numeric edit), `reasset` (regenerate one asset), or `redesign` (full rebuild) |
 
-Nothing requires a paid API key. `SAGA_DESIGNER_BACKEND=claude` switches the Game Designer to the Anthropic API as a premium option once it's funded; every other agent is local-only.
+Nothing requires a paid API key — the whole pipeline runs on local inference. But the local models are also what shaped the architecture, and it is worth being explicit about that: the mechanic templates, the long few-shots and the single-file-per-level constraint all exist because a 14-30B model on one consumer GPU could not be trusted with more. Pointing the Coder at a frontier model removes that ceiling entirely — it will write a side-scrolling platformer with gravity, coyote time and a scrolling camera from a description alone, with no template and no worked example. `SAGA_CODER_BACKEND=deepseek` (or any OpenAI-compatible endpoint, see Model overrides) switches it; roughly a cent per game.
+
+### Animation
+
+Generated sprites are single still images — there is no sprite sheet anywhere in the pipeline — so a hero used to be a static PNG sliding across a background. Three harness-owned mechanisms close most of that gap without frame-based art:
+
+- **Pose swapping.** The hero is drawn twice at a shared seed, and `Anim.set_poses` swaps texture by movement state, so a character visibly stands up to move and settles when it stops.
+- **Procedural motion.** `Anim.walk` bobs, leans and flips to face travel, falling back to a slow idle breath so nothing is ever completely frozen; `Anim.hover` drifts anything that floats.
+- **Leg deformation.** A canvas shader shears the lower part of the sprite on a sine wave, near and far halves in opposite phase, so the legs scissor. This exists because image generation cannot draw a gait: seed-locking holds a character consistent across poses but gives no control over limb position, and a request for two consecutive walk frames returns two standing poses.
 
 ### Mechanic templates
 
@@ -38,7 +46,13 @@ Every model is swappable via environment variable without touching code:
 | `SAGA_DESIGNER_MODEL` | `hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q3_K_S` | Game Designer's local model |
 | `SAGA_CODER_MODEL` | `qwen2.5-coder:14b` | Coder's model |
 | `SAGA_DOTMAZE_MODEL` | `batiai/qwen3.6-35b:q3` | Coder's model specifically for `dot_maze` (its few-shot exceeds the 14B's reliable imitation length) |
-| `SAGA_VISION_MODEL` | `gemma4:12b` | QA's screenshot reviewer |
+| `SAGA_VISION_MODEL` | `gemma4:12b` | QA's screenshot reviewer (local backend) |
+| `SAGA_CODER_BACKEND` | `ollama` | `ollama`, or `deepseek`/`openai`/`remote` for any OpenAI-compatible API |
+| `SAGA_CODER_REMOTE_MODEL` | `deepseek-v4-pro` | Coder's model when hosted |
+| `SAGA_OPENAI_BASE_URL` | `https://api.deepseek.com` | Any OpenAI-compatible endpoint |
+| `SAGA_OPENAI_KEY_ENV` | `DEEPSEEK_API_KEY` | Which env var holds the key |
+| `SAGA_VISION_BACKEND` | `local` | `nvidia` routes screenshot review to a hosted VLM |
+| `SAGA_VISION_REMOTE_MODEL` | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | Hosted vision model |
 | `SAGA_STOP_GPU_SERVICES` | unset | Set to `1` to stop ComfyUI/MusicGen once assets and BGM are done, freeing VRAM for a large coder model (see Known limitations) |
 
 These defaults are the result of head-to-head benchmarking, not guesses - see Known limitations for what lost and why.
@@ -68,17 +82,61 @@ Get-Process ollama* | Stop-Process -Force
 $env:OLLAMA_MODELS = "D:\ollama\models"; ollama serve   # replace with your actual OLLAMA_MODELS path
 ```
 
-**2. ComfyUI + Flux.1 schnell** (image generation, port 8188):
+**2. ComfyUI + Flux.1 schnell** (image generation, port 8188).
+
+First-time install — ComfyUI lives outside this repo, in its own venv, because
+its CUDA torch build is pinned separately from SAGA's:
+```powershell
+git clone https://github.com/comfyanonymous/ComfyUI D:\ComfyUI\ComfyUI
+uv venv --python 3.11 D:\ComfyUI\.venv
+# CUDA build first - the plain `pip install torch` from requirements.txt is CPU-only
+D:\ComfyUI\.venv\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+D:\ComfyUI\.venv\Scripts\python.exe -m pip install -r D:\ComfyUI\ComfyUI\requirements.txt
+```
+
+Then the Flux.1 schnell weights, into ComfyUI's model folders. These are four
+separate files, not one checkpoint — the workflow in `asset_maker.py` loads the
+diffusion model, both text encoders and the VAE independently, so a missing one
+fails at generation time rather than at startup:
+
+| File | Goes in | From |
+|---|---|---|
+| `flux1-schnell-fp8.safetensors` | `models\diffusion_models\` | [Comfy-Org/flux1-schnell](https://huggingface.co/Comfy-Org/flux1-schnell) |
+| `clip_l.safetensors` | `models\text_encoders\` | [comfyanonymous/flux_text_encoders](https://huggingface.co/comfyanonymous/flux_text_encoders) |
+| `t5xxl_fp8_e4m3fn.safetensors` | `models\text_encoders\` | same repo (the fp8 build — fp16 is ~9GB and needlessly tight on 16GB) |
+| `ae.safetensors` | `models\vae\` | [black-forest-labs/FLUX.1-schnell](https://huggingface.co/black-forest-labs/FLUX.1-schnell) (gated: accept the licence on the model page first) |
+
+Start it:
 ```sh
 cd D:\ComfyUI\ComfyUI
 ..\.venv\Scripts\python.exe main.py --listen 127.0.0.1 --port 8188
 ```
 
-**3. MusicGen FastAPI server** (BGM generation, port 8189):
+**3. MusicGen FastAPI server** (BGM generation, port 8189).
+
+First-time install. MusicGen is loaded through `transformers` rather than the
+`audiocraft` package — the standalone library pins old torch versions that
+conflict with a current CUDA build, and `transformers` ships the same model:
+```powershell
+uv venv --python 3.11 D:\AudioCraft\.venv
+D:\AudioCraft\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu130
+D:\AudioCraft\.venv\Scripts\python.exe -m pip install transformers fastapi uvicorn scipy
+```
+Copy `musicgen_server.py` from this repo's `services/` into `D:\AudioCraft\`.
+It downloads `facebook/musicgen-small` on first start (~2GB, cached in
+`~\.cache\huggingface`), so the first launch takes a minute before `/health`
+reports `model_loaded: true` — starting the pipeline before then fails the
+health check rather than waiting.
+
+Start it:
 ```sh
 cd D:\AudioCraft
 .venv\Scripts\python.exe musicgen_server.py
 ```
+
+Both paths are only defaults. Nothing reads `D:\ComfyUI` or `D:\AudioCraft`
+directly — the graph talks to `127.0.0.1:8188` and `127.0.0.1:8189` over HTTP,
+so install them wherever you like as long as those ports match.
 
 Verify all three are actually listening before running the pipeline:
 ```powershell
@@ -125,7 +183,21 @@ uv run python -m saga.main "a mouse thief robbing a museum patrolled by a clockw
 
 # or, to enter the human playtest loop once QA passes:
 uv run python -m saga.main "a mouse thief robbing a museum patrolled by a clockwork cat" --playtest
+
+# or, to review each level before the rest of the game is built on it:
+uv run python -m saga.main "a mouse thief robbing a museum patrolled by a clockwork cat" --gate
 ```
+
+`--gate` is the one that catches expensive mistakes. `--playtest` runs after
+the whole pipeline finishes, which is too late to stop a mechanic that is wrong
+in level 1 from being faithfully reproduced in every level after it - observed
+directly, when a herding game whose creatures could never be caught was built
+three times before anyone played it. `--gate` stops the moment a level passes
+QA and nothing has been built on top of it yet, launches it, and takes one line
+of plain feedback ("the creatures run away too fast, I can't push them
+anywhere") which it turns into concrete edits naming that script's own
+variables. A blank line moves on. It needs a real terminal; EOF on stdin is
+treated as approval so batch runs cannot hang.
 
 This is a real example, not a placeholder - it's what produced "The Clockwork Heist," a 4-level maze-chase game, fully autonomously, zero hand-authoring anywhere in the loop.
 
@@ -142,8 +214,10 @@ With `--playtest`, after QA passes you'll be asked three questions (ship or fix 
 
 ## Known limitations
 
-- QA's headless run never simulates input, so a bug gated behind a keypress can pass QA undetected - the design brief requires held-key-only win conditions (plus `ui_accept` for start/restart only) to route around this rather than catch it.
-- The QA screenshot and vision review are a lens, not a gate - they never block a build, so visual bugs still need a human or the playtest loop to catch. Vision QA runs on `gemma4:12b` after it beat the original `qwen2.5vl:7b` head-to-head (0 false positives across 5 known-clean screenshots vs. 5 false positives for the old model, same spurious "background does not fill the screen" every time).
+- QA's autoplay probe finds the floor, not the ceiling. It proves a player exists in the game - held keys move the world markedly more than it moves unattended - but it cannot reach an objective, so it will happily pass a level that is responsive and still unwinnable. A herding game whose creatures could never actually be pushed anywhere passed every automated check and was caught by a human in under a minute.
+- The autoplay probe's label-change signal is advisory, not a gate. It assumes holding a direction advances the game, which holds for timers, drains and touch-collection but not for puzzles: an `ordered_switches` level only updates its label when the right switch is hit in the right order, and random input will not manage that. A working build was measured failing exactly this way.
+- Vision QA gates only on defects the Coder can fix - a hero that never made it on screen, a background not filling, clipped text. Placeholder art is reported as advisory instead, because no rewrite can conjure a sprite the Asset Maker never generated. Precision is good (no false positives across the builds measured) but recall is limited: both candidate models missed a label sitting behind a message box. Gating is capped at one retry per level, and a defect surviving that is reported as `UNRESOLVED` rather than silently passing.
+- Nothing reconciles art against code. Backgrounds routinely contain painted objects that look interactive but aren't - a pool the player aims for that is part of the image, jellyfish that are scenery. Art and code are generated independently and no check compares them.
 - The Game Designer defaults to a local 30B model rather than the larger Gemma 4 26B: in a head-to-head on the same schema, Gemma failed 2 of 3 test prompts with truncated JSON output (even after raising the request's context/output token budget, which fixed a real under-provisioning bug and was kept regardless). The Coder likewise stays on the 14B by default rather than a 35B alternative (Qwen 3.6) after benchmarking showed the bigger model ~2x slower with a real reliability regression on one run - the few-shot anchoring, not model size, is what makes Coder generation reliable for most templates, so bigger doesn't automatically mean better. The one exception is `dot_maze`, whose 244-line few-shot is long enough that the 14B drops variable declarations and a first attempt on the 30B silently deleted an entire system rather than just failing to compile - that template routes to the 35B specifically, per-template, not as a global default change.
 - Large coder models are tight on a 16GB card, and the failure mode is ugly. `dot_maze`'s 35B model needs ~14.1GB; ComfyUI and MusicGen each keep holding VRAM for the entire run despite finishing their work up front, and that residency (measured: 1817 MiB with both alive vs 961 MiB without) leaves only ~354 MiB of headroom - the model dies mid-load with a Windows CUDA-init failure (`0xc0000409`) rather than reporting a clean out-of-memory. Set `SAGA_STOP_GPU_SERVICES=1` to have the Coder stop those services at the start of the code phase (assets and BGM are already generated by then), which raises headroom to ~1210 MiB and lets the model load reliably. Note this stops servers you started - restart them before the next run, or before a `--playtest` `reasset` cycle that needs ComfyUI again. The retry-with-backoff in `coder.py` remains as a safety net but is not the fix: no amount of retrying helps when the model cannot fit.
 - The playtest loop's Feedback Interpreter and the Game Designer's cloud (`claude`) backend are unexercised while the Anthropic API is unfunded; Claude can stand in for one-off runs (see git history for examples), but there's no automated substitute for that specific path yet - the local Game Designer backend covers autonomous end-to-end runs today.

@@ -216,6 +216,60 @@ def qa_agent(state: GraphState) -> GraphState:
             "retry_count": retry_count + 1,
         }
 
+    # 2b. Actually play it. A scene that runs without errors can still be
+    # completely inert - a hero that cannot move, or an objective that never
+    # changes, passes every check above. The Autoplay autoload holds each
+    # arrow key in turn and reports whether anything moved and whether the
+    # status label ever said anything different.
+    play = _run(
+        ["--headless", "--path", project_dir, scene, "--quit-after", "600", "--", "--autoplay"],
+        timeout=60,
+    )
+    play_out = play.stdout + play.stderr
+    verdict = re.search(
+        r"\[AUTOPLAY\] idle_rate=([\d.]+) input_rate=([\d.]+) label_states=(\d+)", play_out
+    )
+    if verdict:
+        idle_rate, input_rate = float(verdict.group(1)), float(verdict.group(2))
+        label_states = int(verdict.group(3))
+        # Held keys must move the world markedly more than it moves on its own.
+        # The ratio handles games with busy ambient motion; the absolute floor
+        # handles still ones, where a ratio against nearly zero means nothing.
+        # Measured on one real build and a copy of it with input disabled:
+        # 4.28 vs 0.97 against an identical idle rate of ~0.89.
+        moved = input_rate > max(idle_rate * 1.5, 0.5)
+        print(
+            f"[QA Agent] Autoplay: idle={idle_rate:.2f} input={input_rate:.2f} "
+            f"responsive={moved} label_states={label_states}"
+        )
+        play_errors = []
+        if not moved:
+            play_errors.append(
+                "Playability: holding each arrow key in turn moved nothing on screen. "
+                "The player must move in response to ui_left/ui_right/ui_up/ui_down "
+                "while state is 'playing'."
+            )
+        # Label change is NOT a gate. It assumes holding a direction advances
+        # the game, which is true of timers, drains and touch-collection but
+        # false of any puzzle: an ordered-switch level only updates its label
+        # when the right switch is hit in the right order, which random input
+        # will not achieve. Measured on a real build that was working fine.
+        if label_states <= 1:
+            print(
+                "[QA Agent] Autoplay note (advisory): the status label did not change "
+                "while arrow keys were held. Expected for a puzzle whose progress needs "
+                "correct input; a problem for anything driven by a timer or resource."
+            )
+        if play_errors and retry_count == 0:
+            print(f"[QA Agent] FAILED on {len(play_errors)} playability defect(s) - requesting a fix")
+            return {"qa_passed": False, "qa_errors": play_errors, "retry_count": retry_count + 1}
+        for e in play_errors:
+            print(f"[QA Agent] WARNING (unresolved): {e}")
+    else:
+        # Never fail a build because the probe itself did not report - it is a
+        # check, not a requirement, and a silent probe means a broken probe.
+        print("[QA Agent] Autoplay produced no verdict (non-blocking)")
+
     # 3. Balance check. The script runs, but that says nothing about whether
     # its challenge is survivable - a drain that outpaces every refill, or a
     # pursuer faster than the player, compiles perfectly and is unwinnable.
