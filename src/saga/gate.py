@@ -40,20 +40,30 @@ INTERPRET_SYSTEM_PROMPT = (
 )
 
 
-def _launch(project_dir: str, level_index: int) -> None:
+def _launch(project_dir: str, level_index: int) -> "subprocess.Popen | None":
     """Open the level so it can actually be played. Never fatal - a human who
-    cannot launch it can still type a reaction from the screenshot."""
+    cannot launch it can still type a reaction from the screenshot.
+
+    Godot's output is discarded rather than inherited. It prints benign
+    shutdown noise on every exit ("ObjectDB instances were leaked", "resources
+    still in use"), and inheriting the terminal dumps that on top of the
+    feedback prompt at exactly the moment the human is trying to answer it.
+    """
     try:
-        subprocess.Popen(
+        return subprocess.Popen(
             [
                 os.environ.get("SAGA_GODOT_EXE", "D:\\Godot\\Godot_v4.7-stable_win64_console.exe"),
                 "--path",
                 project_dir,
                 f"res://Level_{level_index}.tscn",
-            ]
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
         )
     except Exception as e:
         print(f"[Gate] Could not launch the level ({type(e).__name__}: {e}) - play it manually.")
+        return None
 
 
 def _interpret(feedback: str, script: str) -> list[str]:
@@ -98,8 +108,19 @@ def level_gate(state: GraphState) -> GraphState:
     for note in (state.get("vision_notes") or []) + (state.get("balance_notes") or []):
         print(f"  note: {note}")
     print(f"{'=' * 62}")
-    if project_dir:
-        _launch(project_dir, level_index)
+    proc = _launch(project_dir, level_index) if project_dir else None
+    if proc is not None:
+        print("  Play it, then close the game window to leave your note.")
+        try:
+            # Waiting means the prompt appears on a clean terminal after play,
+            # rather than behind a live game window. The timeout is only a
+            # guard against a window left open and forgotten - a human still
+            # playing is exactly what this gate is for, so it is generous.
+            proc.wait(timeout=float(os.environ.get("SAGA_GATE_PLAY_TIMEOUT", "900")))
+        except subprocess.TimeoutExpired:
+            print("  (still open - leaving it running)")
+        except KeyboardInterrupt:
+            proc.terminate()
 
     try:
         feedback = input("\nWhat's wrong with it? (blank = looks fine, carry on)\n> ").strip()
