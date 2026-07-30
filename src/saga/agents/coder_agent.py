@@ -120,7 +120,20 @@ AGENT_SYSTEM_SUFFIX = (
     "real API before calling it, or read the previous level of this same game to "
     "keep the feel consistent. Prefer rewriting the whole script when you fix "
     "something - write_level replaces the file - but change only what needs "
-    "changing and keep everything that already worked."
+    "changing and keep everything that already worked.\n\n"
+    "Some of what look reports is not yours to fix, and trying anyway is worse "
+    "than leaving it. The sprites are generated separately from your code: if a "
+    "character looks wrong, is the wrong creature entirely, or an object is the "
+    "wrong picture, that is the art, and no change to this script can alter it. "
+    "Only act on look when the CODE placed something badly - a sprite scaled "
+    "absurdly, positioned off-screen, or labels overlapping each other. If two "
+    "consecutive looks report the same thing after you tried to fix it, it was "
+    "never yours; say so in your finish summary and stop.\n\n"
+    "Stop when the level is right, not when the budget runs out. Once "
+    "test_level reports no errors and a responsive player, and you have looked "
+    "once and fixed anything the code caused, call finish. Rewriting a working "
+    "level again for its own sake is how working levels get broken - that has "
+    "happened, and it cost a level its movement."
 )
 
 
@@ -147,6 +160,18 @@ def _safe_path(project_dir: Path, raw: str) -> Path | None:
         return target
     except (ValueError, OSError):
         return None
+
+
+def _score(report: str) -> int:
+    """Rank a test_level report so versions can be compared.
+
+    2 = runs clean and the player is connected, 1 = runs clean, 0 = errors.
+    Deliberately coarse: it exists to stop a regression shipping, not to
+    express taste.
+    """
+    if report.startswith("Errors:") or "timed out" in report:
+        return 0
+    return 2 if "moves the world" in report else 1
 
 
 def _test_level(project_dir: Path, level: int) -> str:
@@ -277,9 +302,11 @@ def coder_agent(state: GraphState) -> GraphState:
         )},
     ]
 
-    # The draft counts: if the agent achieves nothing, the level is still the
+    # Best version seen so far, as (score, script). The draft is the
+    # starting point: if the agent achieves nothing, the level is still the
     # one-shot Coder's output rather than an empty file.
-    wrote_anything = True
+    best: tuple[int, str] = (_score(_test_level(project_dir, level)), draft_script)
+    print(f"[Coder/agent] Draft scores {best[0]}/2 before polishing.")
     for turn in range(MAX_TURNS):
         message = chat_raw(messages, model=MODEL, tools=TOOLS, max_tokens=32000)
         messages.append(message.model_dump(exclude_none=True))
@@ -302,6 +329,14 @@ def coder_agent(state: GraphState) -> GraphState:
                 result = f"Written, {len(script.splitlines())} lines."
             elif name == "test_level":
                 result = _test_level(project_dir, level)
+                # Keep the best version seen, not the last one written. An
+                # agent that keeps editing a working level will eventually
+                # break it - measured: a responsive level (input 4.73 vs idle
+                # 2.18) was rewritten into an unresponsive one (1.53 vs 2.53)
+                # while chasing a defect in the art that no code could fix.
+                score = _score(result)
+                if score > best[0]:
+                    best = (score, (project_dir / f"Level_{level}.gd").read_text(encoding="utf-8"))
             elif name == "look":
                 result = _look(project_dir, level, design_doc)
             elif name == "read_file":
@@ -329,6 +364,16 @@ def coder_agent(state: GraphState) -> GraphState:
         print(f"[Coder/agent] Hit the {MAX_TURNS}-turn budget; keeping the last written version.")
 
     final = (project_dir / f"Level_{level}.gd").read_text(encoding="utf-8")
+    # Ratchet: never ship worse than the best version that was actually
+    # measured. Polish is allowed to fail; it is not allowed to regress.
+    final_score = _score(_test_level(project_dir, level))
+    if final_score < best[0]:
+        print(
+            f"[Coder/agent] Final version scores {final_score}/2 against {best[0]}/2 earlier - "
+            f"reverting to the better version."
+        )
+        (project_dir / f"Level_{level}.gd").write_text(best[1], encoding="utf-8")
+        final = best[1]
     # An agent loop costs many times a single completion, so what it actually
     # changed has to be visible rather than assumed. Line counts are not
     # evidence; the diff is. The draft is kept next to the level so a run can
