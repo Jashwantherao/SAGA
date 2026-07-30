@@ -5,6 +5,8 @@ Studio Director -> Game Designer -> (Asset Maker, Audio Agent)
        levels via advance_level) -> END
 """
 
+import os
+
 from langgraph.graph import END, START, StateGraph
 
 from saga.agents.asset_maker import asset_maker
@@ -54,7 +56,15 @@ def build_graph(human_gate: bool = False):
     graph.add_node("game_designer", game_designer)
     graph.add_node("asset_maker", asset_maker)
     graph.add_node("audio_agent", audio_agent)
-    graph.add_node("coder", coder)
+    # The agentic Coder wraps the one-shot one: it produces the draft, then
+    # the agent runs it, looks at the rendered frame and revises. Opt-in,
+    # because it costs many more calls per level than a single completion.
+    if os.environ.get("SAGA_CODER_AGENTIC") == "1":
+        from saga.agents.coder_agent import coder_agent
+
+        graph.add_node("coder", coder_agent)
+    else:
+        graph.add_node("coder", coder)
     graph.add_node("qa_agent", qa_agent)
     graph.add_node("advance_level", advance_level)
 

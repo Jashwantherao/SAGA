@@ -20,3 +20,6 @@ output/
 
 # Run logs
 *.log
+
+# Agentic Coder keeps the pre-polish draft beside each level for comparison
+output/**/*.draft.gd
