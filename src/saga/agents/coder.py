@@ -123,6 +123,7 @@ Screenshot="*res://screenshot.gd"
 Sfx="*res://sfx.gd"
 Ambience="*res://ambience.gd"
 Anim="*res://anim.gd"
+Autoplay="*res://autoplay.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -446,6 +447,118 @@ func flash(sprite: Node2D, color: Color = Color(1, 0.4, 0.4)) -> void:
 \tvar tween := sprite.create_tween()
 \ttween.tween_property(sprite, "modulate", color, 0.05)
 \ttween.tween_property(sprite, "modulate", Color(1, 1, 1), 0.25)
+"""
+
+# Harness-owned autoplay probe. QA has only ever proved a script does not
+# crash, which says nothing about whether the game responds to a player at all
+# - a level whose hero cannot move, or whose objective can never change, runs
+# perfectly and reports PASSED. Godot can press its own keys via
+# Input.action_press, so the harness can hold the arrow keys down and watch
+# what happens.
+#
+# Two signals, both template-agnostic. Something in the scene must MOVE when a
+# direction is held, and the status Label - which every template is already
+# required to show game state in - must eventually say something different.
+# A game failing either is inert regardless of what it was trying to be.
+#
+# Deliberately not a win condition: reaching an objective needs skill this
+# cannot fake, so absence of progress here is not evidence of an unwinnable
+# game. It catches the floor, not the ceiling.
+AUTOPLAY_GD = """extends Node
+
+const SETTLE_FRAMES := 20
+const BASELINE_FRAMES := 40
+const HOLD_FRAMES := 45
+const DIRECTIONS := ["ui_right", "ui_down", "ui_left", "ui_up"]
+
+var _frame := 0
+var _leg := -1
+var _held := ""
+var _labels := {}
+var _previous := {}
+var _idle_motion := 0.0
+var _input_motion := 0.0
+var _active := false
+
+func _ready() -> void:
+	_active = "--autoplay" in OS.get_cmdline_user_args()
+	if _active:
+		process_priority = 500
+
+func _collect(node: Node, labels: Array, movers: Array) -> void:
+	if node is Label:
+		labels.append(node)
+	elif node is Node2D and not (node is Sprite2D):
+		# Sprite2D is excluded on purpose: the Anim autoload writes a bob and a
+		# lean into every animated sprite's local position every frame, so
+		# measuring sprites measures the animation rather than the game.
+		movers.append(node)
+	for child in node.get_children():
+		_collect(child, labels, movers)
+
+func _accumulate(movers: Array) -> float:
+	var total := 0.0
+	for m in movers:
+		var id: int = m.get_instance_id()
+		var here: Vector2 = m.global_position
+		if _previous.has(id):
+			total += _previous[id].distance_to(here)
+		_previous[id] = here
+	return total
+
+func _process(_delta: float) -> void:
+	if not _active:
+		return
+	var root: Node = get_tree().current_scene
+	if root == null:
+		return
+	var labels: Array = []
+	var movers: Array = []
+	_collect(root, labels, movers)
+	for l in labels:
+		_labels[l.text] = true
+
+	_frame += 1
+	if _frame < SETTLE_FRAMES:
+		_accumulate(movers)
+		return
+	if _frame == SETTLE_FRAMES:
+		Input.action_press("ui_accept")
+		_accumulate(movers)
+		return
+	if _frame == SETTLE_FRAMES + 1:
+		Input.action_release("ui_accept")
+		_accumulate(movers)
+		return
+
+	# Baseline first, with nothing held. Hazards patrol, creatures drift and
+	# tweens run during this window exactly as they do later, so whatever the
+	# game does on its own is measured before any key is touched.
+	if _frame < SETTLE_FRAMES + BASELINE_FRAMES:
+		_idle_motion += _accumulate(movers)
+		return
+
+	_input_motion += _accumulate(movers)
+	var leg: int = (_frame - SETTLE_FRAMES - BASELINE_FRAMES) / HOLD_FRAMES
+	if leg != _leg:
+		if _held != "":
+			Input.action_release(_held)
+		_leg = leg
+		if _leg >= DIRECTIONS.size():
+			_report()
+			return
+		_held = DIRECTIONS[_leg]
+		Input.action_press(_held)
+
+func _report() -> void:
+	_active = false
+	if _held != "":
+		Input.action_release(_held)
+	# Per-frame rates, since the two windows are different lengths.
+	var idle_rate := _idle_motion / float(BASELINE_FRAMES)
+	var input_rate := _input_motion / float(HOLD_FRAMES * DIRECTIONS.size())
+	print("[AUTOPLAY] idle_rate=%.3f input_rate=%.3f label_states=%d" % [idle_rate, input_rate, _labels.size()])
+	get_tree().quit()
 """
 
 AMBIENCE_GD = """extends Node
@@ -2173,6 +2286,7 @@ def coder(state: GraphState) -> GraphState:
     (PROJECT_DIR / "sfx.gd").write_text(SFX_GD, encoding="utf-8")
     (PROJECT_DIR / "ambience.gd").write_text(AMBIENCE_GD, encoding="utf-8")
     (PROJECT_DIR / "anim.gd").write_text(ANIM_GD, encoding="utf-8")
+    (PROJECT_DIR / "autoplay.gd").write_text(AUTOPLAY_GD, encoding="utf-8")
     beats = [lvl.get("outro_beat", "") for lvl in levels]
     (PROJECT_DIR / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
     (PROJECT_DIR / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")
