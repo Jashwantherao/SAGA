@@ -26,9 +26,18 @@ def main() -> None:
         action="store_true",
         help="After the pipeline finishes, enter the human playtest feedback loop",
     )
+    parser.add_argument(
+        "--gate",
+        action="store_true",
+        help=(
+            "Stop after each level passes QA, launch it, and take one line of "
+            "feedback before the next level is built - so a wrong mechanic is "
+            "fixed once instead of reproduced into every level"
+        ),
+    )
     args = parser.parse_args()
 
-    graph = build_graph()
+    graph = build_graph(human_gate=args.gate)
     result = graph.invoke({"user_prompt": args.idea, "design_doc": None})
 
     design_doc = result["design_doc"]
