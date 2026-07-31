@@ -26,6 +26,7 @@ from saga.agents.playtest_feedback import (
     interpret_feedback,
 )
 from saga.agents.qa_agent import qa_agent
+from saga.agents.studio_director import studio_director
 from saga.graph import MAX_RETRIES
 from saga.state import GraphState
 
@@ -52,6 +53,11 @@ def run_coder_qa(state: GraphState) -> None:
         if (state.get("retry_count") or 0) >= MAX_RETRIES:
             print(f"[Playtest] QA failed after MAX_RETRIES={MAX_RETRIES}: {state.get('qa_errors')}")
             return
+        # Same triage the graph runs: the Director decides fix / regenerate /
+        # reasset instead of every failure blindly returning to the Coder.
+        state.update(studio_director(state))
+        if state.get("director_action") == "reasset":
+            state.update(asset_maker(state))
 
 
 def apply_revision_doc(state: GraphState, revision_doc: dict) -> bool:

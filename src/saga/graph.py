@@ -3,6 +3,12 @@
 Studio Director -> Game Designer -> (Asset Maker, Audio Agent)
     -> Coder <-> QA Agent (per level, advancing through the design doc's
        levels via advance_level) -> END
+
+Failures do not loop straight back to the Coder: they return to the Studio
+Director, which triages each one - fix the script, regenerate it fresh, or
+regenerate a wrong art asset first (reasset routes through the Asset Maker,
+whose existing edge into the Coder completes the path). The graph keeps the
+hard budget (MAX_RETRIES); the Director decides direction within it.
 """
 
 import os
@@ -29,7 +35,19 @@ def _route_after_qa(state: GraphState) -> str:
         return "done"
     if (state.get("retry_count") or 0) >= MAX_RETRIES:
         return "done"
-    return "retry"
+    return "triage"
+
+
+def _route_after_director(state: GraphState) -> str:
+    """Intake hands off to the Game Designer; triage decisions route to the
+    agent that can act on them. reasset goes through the Asset Maker, whose
+    existing edge into the Coder completes the rebuild."""
+    action = state.get("director_action")
+    if action == "reasset":
+        return "reasset"
+    if action in ("fix", "regenerate"):
+        return "revise"
+    return "design"
 
 
 def _route_after_gate(state: GraphState) -> str:
@@ -69,7 +87,14 @@ def build_graph(human_gate: bool = False):
     graph.add_node("advance_level", advance_level)
 
     graph.add_edge(START, "studio_director")
-    graph.add_edge("studio_director", "game_designer")
+    # The Director is entered twice: once at START (intake) and again on
+    # every QA failure (triage), so its outgoing edge has to be conditional
+    # on which duty it just performed.
+    graph.add_conditional_edges(
+        "studio_director",
+        _route_after_director,
+        {"design": "game_designer", "revise": "coder", "reasset": "asset_maker"},
+    )
     graph.add_edge("game_designer", "asset_maker")
     graph.add_edge("game_designer", "audio_agent")
     graph.add_edge("asset_maker", "coder")
@@ -83,7 +108,7 @@ def build_graph(human_gate: bool = False):
     graph.add_conditional_edges(
         "qa_agent",
         _route_after_qa,
-        {"retry": "coder", "next_level": next_level_target, "done": END},
+        {"triage": "studio_director", "next_level": next_level_target, "done": END},
     )
     if human_gate:
         from saga.gate import level_gate

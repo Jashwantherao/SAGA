@@ -73,3 +73,9 @@ class GraphState(TypedDict):
     # pair once the level passes; see saga.corpus.
     coder_prompt: Optional[str]
     coder_model: Optional[str]
+    # Studio Director triage: the supervisor's routing decision for the
+    # current QA failure (fix | regenerate | reasset; None outside triage),
+    # and a per-run history of what was already tried so the Director can
+    # recognize a repair that did not take instead of repeating it.
+    director_action: Optional[str]
+    director_history: Optional[list[dict]]

@@ -2129,14 +2129,10 @@ def coder(state: GraphState) -> GraphState:
     qa_errors = state.get("qa_errors") or []
     tune_notes = state.get("tune_notes") or []
 
-    # Escalation: if three fix attempts haven't converged, the fix path is
-    # stuck in a local minimum (observed: the model repeatedly missing a
-    # .bind()/handler-arity mismatch). Spend the remaining retry budget on
-    # fresh regenerations instead - different sampling luck beats repeating
-    # the same failed repair.
-    if qa_errors and (state.get("retry_count") or 0) >= 3:
-        print("[Coder] Fix loop not converging after 3 attempts - regenerating fresh")
-        qa_errors = []
+    # Fix-vs-fresh is no longer decided here: the Studio Director triages
+    # every QA failure and clears qa_errors when it wants a fresh generation
+    # (its deterministic fallback reproduces the escalation that used to be
+    # hardcoded at this spot).
 
     # The fix/tune paths need the real asset list too: without it the model
     # cannot recover from an invented-filename error (it has no way to know
