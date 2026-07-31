@@ -1,10 +1,13 @@
 import subprocess
 
 from saga.agents.qa_agent import (
+    _capture_gameplay_video,
     _find_errors,
     _record_attempt,
     _run_dot_maze_objective_probe,
     _run_maze_objective_probe,
+    _validate_video_verdict,
+    _video_review,
     qa_agent,
 )
 
@@ -214,3 +217,105 @@ def test_missing_objective_verdict_blocks_shipping(monkeypatch):
     assert result is None
     assert blocked is True
     assert "produced no verdict" in errors[0]
+
+
+def test_gameplay_capture_records_autoplay_and_transcodes_mp4(monkeypatch, tmp_path):
+    godot_calls = []
+    ffmpeg_calls = []
+
+    def fake_godot(args, **kwargs):
+        godot_calls.append(args)
+        (tmp_path / "gameplay_Level0.avi").write_bytes(b"avi")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    def fake_ffmpeg(args, **kwargs):
+        ffmpeg_calls.append(args)
+        (tmp_path / "gameplay_Level0.mp4").write_bytes(b"mp4")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr("saga.agents.qa_agent._run", fake_godot)
+    monkeypatch.setattr("saga.agents.qa_agent.subprocess.run", fake_ffmpeg)
+
+    path, errors, blocked = _capture_gameplay_video(
+        str(tmp_path), "res://Level_0.tscn", 0
+    )
+
+    assert errors == []
+    assert blocked is False
+    assert path == str(tmp_path / "gameplay_Level0.mp4")
+    assert "--write-movie" in godot_calls[0]
+    assert "--autoplay" in godot_calls[0]
+    assert "libx264" in ffmpeg_calls[0]
+    assert not (tmp_path / "gameplay_Level0.avi").exists()
+
+
+def _video_verdict(**overrides):
+    result = {
+        "player_visible": True,
+        "player_motion": "moves",
+        "movement_facing": "correct",
+        "animation": "animated",
+        "hud_readable": True,
+        "scene_stable": True,
+        "code_defects": [],
+        "art_advisories": [],
+        "evidence": "The player traverses the scene in four directions.",
+    }
+    result.update(overrides)
+    return result
+
+
+def test_video_review_gates_reversed_facing(monkeypatch):
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._video_raw",
+        lambda *_args: _video_verdict(movement_facing="reversed"),
+    )
+
+    result, gating, advisory, error = _video_review("game.mp4", {})
+
+    assert result["status"] == "failed"
+    assert advisory == []
+    assert error is None
+    assert "faces opposite" in gating[0]
+
+
+def test_video_verdict_requires_complete_structured_evidence():
+    problems = _validate_video_verdict({"player_visible": True})
+
+    assert "player_motion" in " ".join(problems)
+    assert "evidence must be a string" in problems
+
+
+def test_enabled_video_gate_blocks_on_missing_nvidia_verdict(monkeypatch, tmp_path):
+    (tmp_path / "Level_0.gd").write_text("extends Node2D", encoding="utf-8")
+
+    def fake_run(args, **kwargs):
+        output = (
+            "[AUTOPLAY] idle_rate=1.0 input_rate=3.0 label_states=2"
+            if "--autoplay" in args
+            else ""
+        )
+        return subprocess.CompletedProcess(args, 0, output, "")
+
+    monkeypatch.setattr("saga.agents.qa_agent.VIDEO_QA_ENABLED", True)
+    monkeypatch.setattr("saga.agents.qa_agent._run", fake_run)
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._capture_gameplay_video",
+        lambda *_args: (str(tmp_path / "gameplay_Level0.mp4"), [], False),
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._video_review",
+        lambda *_args: (None, [], [], "invalid response"),
+    )
+    state = {
+        "godot_project_path": str(tmp_path),
+        "design_doc": {"mechanic_template": "collect", "levels": [{"name": "L1"}]},
+        "current_level": 0,
+        "retry_count": 0,
+    }
+
+    result = qa_agent(state)
+
+    assert result["ship_blocked"] is True
+    assert result["level_results"][0]["attempts"][-1]["stage"] == "video_qa_probe"
+    assert result["gameplay_video_path"].endswith("gameplay_Level0.mp4")

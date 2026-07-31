@@ -66,6 +66,30 @@ def _godot_check() -> CheckResult:
     return CheckResult("Godot", result.returncode == 0, True, detail)
 
 
+def _ffmpeg_check() -> CheckResult:
+    configured = settings.ffmpeg_exe
+    executable = configured if Path(configured).is_file() else shutil.which(configured)
+    if not executable:
+        return CheckResult(
+            "FFmpeg",
+            False,
+            True,
+            f"not found at {configured!r}; install FFmpeg or set SAGA_FFMPEG_EXE",
+        )
+    try:
+        result = subprocess.run(
+            [executable, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return CheckResult("FFmpeg", False, True, f"{type(exc).__name__}: {exc}")
+    version = (result.stdout or result.stderr).strip().splitlines()
+    detail = version[0] if version else f"exit code {result.returncode}"
+    return CheckResult("FFmpeg", result.returncode == 0, True, detail)
+
+
 def _output_check() -> CheckResult:
     root = Path(settings.output_root).expanduser()
     try:
@@ -110,6 +134,18 @@ def _credential_checks(include_playtest: bool = False) -> list[CheckResult]:
                 "set" if present else "missing for hosted vision QA",
             )
         )
+    if settings.video_qa_enabled and not any(
+        check.name == settings.video_key_env for check in checks
+    ):
+        present = bool(os.environ.get(settings.video_key_env))
+        checks.append(
+            CheckResult(
+                settings.video_key_env,
+                present,
+                True,
+                "set" if present else "missing for NVIDIA gameplay video QA",
+            )
+        )
     if "claude" in backends:
         present = bool(os.environ.get("ANTHROPIC_API_KEY"))
         checks.append(
@@ -134,6 +170,8 @@ def run_checks(include_playtest: bool = False) -> list[CheckResult]:
         _output_check(),
         _godot_check(),
     ]
+    if settings.video_qa_enabled:
+        checks.append(_ffmpeg_check())
 
     needs_ollama = (
         settings.designer_backend == "local"

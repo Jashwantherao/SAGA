@@ -44,6 +44,16 @@ VISION_KEY_ENV = settings.vision_key_env
 # Free tiers have been measured hanging for minutes on models they list.
 VISION_TIMEOUT = settings.vision_timeout
 
+VIDEO_QA_ENABLED = settings.video_qa_enabled
+VIDEO_MODEL = settings.video_model
+VIDEO_BASE_URL = settings.video_base_url
+VIDEO_KEY_ENV = settings.video_key_env
+VIDEO_TIMEOUT = settings.video_timeout
+FFMPEG_EXE = settings.ffmpeg_exe
+VIDEO_CAPTURE_FPS = 30
+VIDEO_CAPTURE_MAX_FRAMES = 260
+VIDEO_REVIEW_FPS = 10
+
 ERROR_PATTERNS = re.compile(
     r"SCRIPT ERROR|Parse Error|Invalid call|Nonexistent function|ERROR:",
     re.IGNORECASE,
@@ -324,6 +334,221 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
     return gating, advisory
 
 
+def _capture_gameplay_video(
+    project_dir: str,
+    scene: str,
+    level_index: int,
+) -> tuple[str | None, list[str], bool]:
+    """Record deterministic autoplay and convert Godot's AVI to compact MP4.
+
+    Returns ``(path, errors, blocked)``. Capture/transcode infrastructure
+    failures block a requested video gate; generated runtime failures remain
+    ordinary Coder-repairable QA failures.
+    """
+    project = Path(project_dir)
+    stem = f"gameplay_Level{level_index}"
+    avi_path = project / f"{stem}.avi"
+    mp4_path = project / f"{stem}.mp4"
+    avi_path.unlink(missing_ok=True)
+    mp4_path.unlink(missing_ok=True)
+
+    capture = _run(
+        [
+            "--path",
+            project_dir,
+            scene,
+            "--write-movie",
+            f"res://{stem}.avi",
+            "--fixed-fps",
+            str(VIDEO_CAPTURE_FPS),
+            "--disable-vsync",
+            "--quit-after",
+            str(VIDEO_CAPTURE_MAX_FRAMES),
+            "--",
+            "--autoplay",
+        ],
+        timeout=120,
+    )
+    output = capture.stdout + capture.stderr
+    capture_errors = _find_errors(output)
+    if capture.returncode != 0 or capture_errors:
+        errors = capture_errors or [
+            f"Gameplay video capture exited with code {capture.returncode}"
+        ]
+        return None, errors, _has_harness_error(errors)
+    if not avi_path.exists() or avi_path.stat().st_size == 0:
+        return (
+            None,
+            ["QA infrastructure: Godot gameplay capture produced no AVI file."],
+            True,
+        )
+
+    try:
+        converted = subprocess.run(
+            [
+                FFMPEG_EXE,
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(avi_path),
+                "-vf",
+                f"fps={VIDEO_REVIEW_FPS},scale=640:-2:flags=lanczos",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "24",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(mp4_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return (
+            None,
+            [f"QA infrastructure: FFmpeg video conversion failed: {type(exc).__name__}: {exc}"],
+            True,
+        )
+    if converted.returncode != 0 or not mp4_path.exists() or mp4_path.stat().st_size == 0:
+        detail = (converted.stderr or converted.stdout or "no MP4 produced").strip()[-500:]
+        return (
+            None,
+            [f"QA infrastructure: FFmpeg video conversion failed: {detail}"],
+            True,
+        )
+    avi_path.unlink(missing_ok=True)
+    return str(mp4_path), [], False
+
+
+def _video_prompt(design_doc) -> str:
+    title = (design_doc or {}).get("title", "the game")
+    hero = (design_doc or {}).get("hero_description", "the player character")
+    return (
+        f"Review this deterministic 8-second gameplay clip from {title!r}. "
+        f"The player character is: {hero}. After a short idle period, the harness "
+        "holds RIGHT, DOWN, LEFT, then UP. Judge only visible evidence across the "
+        "whole clip. Do not infer mechanics or defects that cannot be seen. "
+        "For movement_facing, inspect the horizontal RIGHT and LEFT segments; use "
+        "'reversed' only when the character clearly looks opposite its travel, and "
+        "'indeterminate' for frontal or symmetric art. For animation, use 'sliding' "
+        "only when the player visibly translates as a rigid still image. Return ONLY "
+        "JSON matching exactly: "
+        '{"player_visible": bool, "player_motion": "moves|stationary|indeterminate", '
+        '"movement_facing": "correct|reversed|indeterminate", '
+        '"animation": "animated|sliding|indeterminate", "hud_readable": bool, '
+        '"scene_stable": bool, "code_defects": [string], '
+        '"art_advisories": [string], "evidence": string}. '
+        "code_defects is only for obvious temporal failures fixable in gameplay code, "
+        "such as severe jitter, disappearing required objects, frozen gameplay, or "
+        "broken layering. Put art-quality concerns in art_advisories instead."
+    )
+
+
+def _video_raw(video_path: str, design_doc) -> dict:
+    import base64
+
+    from saga.llm import chat
+
+    encoded = base64.b64encode(Path(video_path).read_bytes()).decode("ascii")
+    text = chat(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "video_url",
+                        "video_url": {"url": f"data:video/mp4;base64,{encoded}"},
+                    },
+                    {"type": "text", "text": _video_prompt(design_doc)},
+                ],
+            }
+        ],
+        model=VIDEO_MODEL,
+        json_mode=True,
+        max_tokens=2000,
+        base_url=VIDEO_BASE_URL,
+        key_env=VIDEO_KEY_ENV,
+        timeout=VIDEO_TIMEOUT,
+        temperature=0.2,
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    return json.loads(match.group(0) if match else text)
+
+
+def _validate_video_verdict(data: dict) -> list[str]:
+    problems = []
+    for field in ("player_visible", "hud_readable", "scene_stable"):
+        if not isinstance(data.get(field), bool):
+            problems.append(f"{field} must be boolean")
+    allowed = {
+        "player_motion": {"moves", "stationary", "indeterminate"},
+        "movement_facing": {"correct", "reversed", "indeterminate"},
+        "animation": {"animated", "sliding", "indeterminate"},
+    }
+    for field, values in allowed.items():
+        if data.get(field) not in values:
+            problems.append(f"{field} must be one of {sorted(values)}")
+    for field in ("code_defects", "art_advisories"):
+        value = data.get(field)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            problems.append(f"{field} must be a list of strings")
+    if not isinstance(data.get("evidence"), str):
+        problems.append("evidence must be a string")
+    return problems
+
+
+def _video_review(
+    video_path: str,
+    design_doc,
+) -> tuple[dict | None, list[str], list[str], str | None]:
+    """Return structured result, gating defects, advisories, infrastructure error."""
+    try:
+        data = _video_raw(video_path, design_doc)
+    except Exception as exc:
+        return None, [], [], f"{type(exc).__name__}: {exc}"
+    problems = _validate_video_verdict(data)
+    if problems:
+        return None, [], [], "; ".join(problems)
+
+    gating = []
+    if data["player_visible"] is False:
+        gating.append("Video defect: the player is not visible during gameplay.")
+    if data["player_motion"] == "stationary":
+        gating.append("Video defect: the player remains stationary while movement input is held.")
+    if data["movement_facing"] == "reversed":
+        gating.append(
+            "Video defect: the player sprite faces opposite its horizontal movement. "
+            "Use Anim.walk(sprite, is_moving, direction.x) and preserve the harness's "
+            "native-left sprite convention."
+        )
+    if data["animation"] == "sliding":
+        gating.append(
+            "Video defect: the player slides as a rigid still image. Register the idle/walk "
+            "textures with Anim.set_poses and call Anim.walk every frame."
+        )
+    if data["hud_readable"] is False:
+        gating.append("Video defect: the HUD becomes unreadable during gameplay.")
+    if data["scene_stable"] is False:
+        gating.append("Video defect: the gameplay scene visibly jitters, tears, or destabilizes.")
+    gating.extend(f"Video defect: {defect}" for defect in data["code_defects"])
+    advisory = [f"Video (advisory): {note}" for note in data["art_advisories"]]
+    result = {
+        "status": "failed" if gating else "passed",
+        "model": VIDEO_MODEL,
+        **data,
+    }
+    return result, gating, advisory, None
+
+
 def _record_attempt(
     state: GraphState,
     *,
@@ -334,6 +559,9 @@ def _record_attempt(
     vision_notes: list[str] | None = None,
     balance_notes: list[str] | None = None,
     objective_result: dict | None = None,
+    gameplay_video_path: str | None = None,
+    video_qa_result: dict | None = None,
+    video_notes: list[str] | None = None,
     blocked: bool = False,
 ) -> list[dict]:
     """Return a new durable QA ledger with this attempt appended.
@@ -354,6 +582,7 @@ def _record_attempt(
     errors = list(errors or [])
     vision_notes = list(vision_notes or [])
     balance_notes = list(balance_notes or [])
+    video_notes = list(video_notes or [])
 
     ledger = [dict(item) for item in (state.get("level_results") or [])]
     entry_index = next(
@@ -372,6 +601,9 @@ def _record_attempt(
             "vision_notes": vision_notes,
             "balance_notes": balance_notes,
             "objective_result": objective_result,
+            "gameplay_video_path": gameplay_video_path,
+            "video_qa_result": video_qa_result,
+            "video_notes": video_notes,
             "coder_model": state.get("coder_model"),
         }
     )
@@ -387,6 +619,9 @@ def _record_attempt(
         "vision_notes": vision_notes,
         "balance_notes": balance_notes,
         "objective_result": objective_result,
+        "gameplay_video_path": gameplay_video_path,
+        "video_qa_result": video_qa_result,
+        "video_notes": video_notes,
         "coder_model": state.get("coder_model"),
     }
     if entry_index is None:
@@ -405,6 +640,9 @@ def _failed_attempt(
     vision_notes: list[str] | None = None,
     balance_notes: list[str] | None = None,
     objective_result: dict | None = None,
+    gameplay_video_path: str | None = None,
+    video_qa_result: dict | None = None,
+    video_notes: list[str] | None = None,
     blocked: bool = False,
 ) -> GraphState:
     retry_count = state.get("retry_count") or 0
@@ -416,6 +654,9 @@ def _failed_attempt(
         "vision_notes": vision_notes or [],
         "balance_notes": balance_notes or [],
         "objective_result": objective_result,
+        "gameplay_video_path": gameplay_video_path,
+        "video_qa_result": video_qa_result,
+        "video_notes": video_notes or [],
         "level_results": _record_attempt(
             state,
             passed=False,
@@ -425,6 +666,9 @@ def _failed_attempt(
             vision_notes=vision_notes,
             balance_notes=balance_notes,
             objective_result=objective_result,
+            gameplay_video_path=gameplay_video_path,
+            video_qa_result=video_qa_result,
+            video_notes=video_notes,
             blocked=blocked,
         ),
         "ship_blocked": blocked,
@@ -642,6 +886,71 @@ def qa_agent(state: GraphState) -> GraphState:
                 objective_result=objective_result,
             )
 
+    # 7. Required gameplay video review when explicitly enabled. Unlike the
+    # screenshot, this observes temporal defects: reversed facing, rigid
+    # sliding, frozen motion, jitter, and objects disappearing mid-play.
+    gameplay_video_path = None
+    video_qa_result = None
+    video_notes = []
+    if VIDEO_QA_ENABLED:
+        gameplay_video_path, video_errors, video_blocked = _capture_gameplay_video(
+            project_dir,
+            scene,
+            current_level,
+        )
+        if video_errors:
+            label = "BLOCKED" if video_blocked else "FAILED"
+            print(f"[QA Agent] {label} gameplay video capture: {video_errors}")
+            return _failed_attempt(
+                state,
+                stage="video_capture_probe" if video_blocked else "video_capture",
+                errors=video_errors,
+                screenshot_path=screenshot_path,
+                vision_notes=vision_notes,
+                balance_notes=balance_notes,
+                objective_result=objective_result,
+                blocked=video_blocked,
+            )
+        print(f"[QA Agent] Gameplay video captured -> {gameplay_video_path}")
+        video_qa_result, video_gating, video_notes, video_error = _video_review(
+            gameplay_video_path,
+            state.get("design_doc"),
+        )
+        if video_error:
+            error = f"QA infrastructure: NVIDIA video QA produced no valid verdict ({video_error})."
+            print(f"[QA Agent] BLOCKED: {error}")
+            return _failed_attempt(
+                state,
+                stage="video_qa_probe",
+                errors=[error],
+                screenshot_path=screenshot_path,
+                vision_notes=vision_notes,
+                balance_notes=balance_notes,
+                objective_result=objective_result,
+                gameplay_video_path=gameplay_video_path,
+                blocked=True,
+            )
+        for note in video_gating + video_notes:
+            print(f"[QA Agent] {note}")
+        if video_gating:
+            print(f"[QA Agent] FAILED on {len(video_gating)} gameplay video defect(s)")
+            return _failed_attempt(
+                state,
+                stage="video_qa",
+                errors=video_gating,
+                screenshot_path=screenshot_path,
+                vision_notes=vision_notes,
+                balance_notes=balance_notes,
+                objective_result=objective_result,
+                gameplay_video_path=gameplay_video_path,
+                video_qa_result=video_qa_result,
+                video_notes=video_notes,
+            )
+        print(
+            f"[QA Agent] NVIDIA video QA passed: "
+            f"{video_qa_result['evidence']}"
+        )
+
     # This is the only point in the pipeline where a script is known-good
     # (compiled, ran, satisfied its template contract) - so it's where the
     # training corpus gets its verified pairs.
@@ -653,7 +962,7 @@ def qa_agent(state: GraphState) -> GraphState:
         level_index=current_level,
         retry_count=retry_count,
         design_doc=state.get("design_doc"),
-        vision_notes=vision_notes,
+        vision_notes=vision_notes + video_notes,
     )
 
     print("[QA Agent] PASSED - scene ran headlessly with no errors")
@@ -664,6 +973,9 @@ def qa_agent(state: GraphState) -> GraphState:
         "vision_notes": vision_notes,
         "balance_notes": balance_notes,
         "objective_result": objective_result,
+        "gameplay_video_path": gameplay_video_path,
+        "video_qa_result": video_qa_result,
+        "video_notes": video_notes,
         "level_results": _record_attempt(
             state,
             passed=True,
@@ -672,6 +984,9 @@ def qa_agent(state: GraphState) -> GraphState:
             vision_notes=vision_notes,
             balance_notes=balance_notes,
             objective_result=objective_result,
+            gameplay_video_path=gameplay_video_path,
+            video_qa_result=video_qa_result,
+            video_notes=video_notes,
         ),
         "ship_blocked": False,
     }

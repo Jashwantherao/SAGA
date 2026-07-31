@@ -40,7 +40,9 @@ def assess_ship_status(result: dict) -> tuple[str, bool]:
         return "failed", False
 
     has_warnings = any(
-        (item.get("vision_notes") or []) or (item.get("balance_notes") or [])
+        (item.get("vision_notes") or [])
+        or (item.get("balance_notes") or [])
+        or (item.get("video_notes") or [])
         for item in by_index.values()
     )
     return ("passed_with_warnings" if has_warnings else "passed"), True
@@ -156,6 +158,8 @@ def main() -> None:
         )
     if result.get("screenshot_path"):
         print(f"Screenshot: {result['screenshot_path']}", file=sys.stderr)
+    if result.get("gameplay_video_path"):
+        print(f"Gameplay video: {result['gameplay_video_path']}", file=sys.stderr)
 
     if args.playtest and ship_ready:
         from saga.playtest import playtest_loop
@@ -170,7 +174,7 @@ def main() -> None:
     ship_status, ship_ready = assess_ship_status(result)
     level_results = result.get("level_results") or []
     manifest = {
-        "manifest_version": 2,
+        "manifest_version": 3,
         "run_dir": result["run_dir"],
         "idea": args.idea,
         "title": (result.get("design_doc") or {}).get("title"),
@@ -183,6 +187,9 @@ def main() -> None:
         "sprite_paths": result.get("sprite_paths") or [],
         "bgm_path": result.get("bgm_path"),
         "screenshot_path": result.get("screenshot_path"),
+        "gameplay_video_path": result.get("gameplay_video_path"),
+        "video_qa_result": result.get("video_qa_result"),
+        "video_notes": result.get("video_notes") or [],
         "qa_errors": result.get("qa_errors") or [],
         "vision_notes": result.get("vision_notes") or [],
         "balance_notes": result.get("balance_notes") or [],

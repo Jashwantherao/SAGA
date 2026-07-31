@@ -56,3 +56,16 @@ def test_clean_complete_ledger_passes():
 def test_required_probe_failure_blocks_shipping():
     status, ready = assess_ship_status(_result([], qa_passed=False, blocked=True))
     assert (status, ready) == ("blocked", False)
+
+
+def test_video_advisory_is_reported_as_a_shippable_warning():
+    status, ready = assess_ship_status(
+        _result(
+            [
+                {"level_index": 0, "status": "passed", "video_notes": ["minor art drift"]},
+                {"level_index": 1, "status": "passed"},
+            ]
+        )
+    )
+
+    assert (status, ready) == ("passed_with_warnings", True)

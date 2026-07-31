@@ -6,6 +6,8 @@ def test_settings_read_environment_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("SAGA_CODER_AGENTIC", "true")
     monkeypatch.setenv("SAGA_AGENT_MAX_TURNS", "7")
     monkeypatch.setenv("SAGA_OUTPUT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SAGA_VIDEO_QA", "true")
+    monkeypatch.setenv("SAGA_VIDEO_MODEL", "test-video-model")
 
     configured = Settings.from_environment()
 
@@ -13,6 +15,8 @@ def test_settings_read_environment_overrides(monkeypatch, tmp_path):
     assert configured.coder_agentic is True
     assert configured.agent_max_turns == 7
     assert configured.output_root == str(tmp_path)
+    assert configured.video_qa_enabled is True
+    assert configured.video_model == "test-video-model"
 
 
 def test_invalid_numeric_setting_has_a_useful_error(monkeypatch):
@@ -24,3 +28,9 @@ def test_invalid_numeric_setting_has_a_useful_error(monkeypatch):
         assert "SAGA_VISION_TIMEOUT must be a number" in str(exc)
     else:
         raise AssertionError("invalid timeout was accepted")
+
+
+def test_video_qa_is_opt_in(monkeypatch):
+    monkeypatch.delenv("SAGA_VIDEO_QA", raising=False)
+
+    assert Settings.from_environment().video_qa_enabled is False

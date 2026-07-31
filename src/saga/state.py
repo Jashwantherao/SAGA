@@ -68,6 +68,11 @@ class GraphState(TypedDict, total=False):
     # (and cleared) by the Coder's tune path.
     tune_notes: Optional[list[str]]
     screenshot_path: Optional[str]
+    # Optional deterministic 8-second autoplay clip and the required
+    # structured NVIDIA verdict produced when SAGA_VIDEO_QA=1.
+    gameplay_video_path: Optional[str]
+    video_qa_result: Optional[dict]
+    video_notes: Optional[list[str]]
     # Non-gating findings from the local vision model's screenshot review.
     vision_notes: Optional[list[str]]
     # Non-gating findings from the balance check - a level that is winnable but
@@ -75,7 +80,7 @@ class GraphState(TypedDict, total=False):
     # they feed the playtest loop rather than failing a build; see saga.balance.
     balance_notes: Optional[list[str]]
     # Structured evidence from a mechanic-specific objective solver. For
-    # dot_maze this includes collected/total/remaining counts and frame cost.
+    # collectible mazes this includes counts, win state, and frame cost.
     objective_result: Optional[dict]
     # Set by the Coder so QA can record a verified (brief -> script) training
     # pair once the level passes; see saga.corpus.
