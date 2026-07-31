@@ -19,15 +19,16 @@ failure this project keeps rediscovering.
 """
 
 import json
-import os
 import re
 import subprocess
 from pathlib import Path
 
+from saga.config import settings
+from saga.safety import UnsafeGeneratedCodeError, assert_safe_gdscript
 from saga.state import GraphState
 
-MAX_TURNS = int(os.environ.get("SAGA_AGENT_MAX_TURNS", "14"))
-MODEL = os.environ.get("SAGA_CODER_REMOTE_MODEL", "deepseek-v4-pro")
+MAX_TURNS = settings.agent_max_turns
+MODEL = settings.coder_remote_model
 
 TOOLS = [
     {
@@ -120,7 +121,9 @@ AGENT_SYSTEM_SUFFIX = (
     "real API before calling it, or read the previous level of this same game to "
     "keep the feel consistent. Prefer rewriting the whole script when you fix "
     "something - write_level replaces the file - but change only what needs "
-    "changing and keep everything that already worked.\n\n"
+    "changing and keep everything that already worked. write_level rejects host "
+    "filesystem, process, shell, networking, native-extension, external-URI, and "
+    "non-asset resource APIs; gameplay code never needs those capabilities.\n\n"
     "Some of what look reports is not yours to fix, and trying anyway is worse "
     "than leaving it. The sprites are generated separately from your code: if a "
     "character looks wrong, is the wrong creature entirely, or an object is the "
@@ -178,6 +181,10 @@ def _test_level(project_dir: Path, level: int) -> str:
     from saga.agents.qa_agent import GODOT_EXE, _find_errors
 
     scene = f"res://Level_{level}.tscn"
+    try:
+        assert_safe_gdscript((project_dir / f"Level_{level}.gd").read_text(encoding="utf-8"))
+    except (OSError, UnsafeGeneratedCodeError) as exc:
+        return f"Errors:\n- {exc}"
     try:
         subprocess.run(
             [GODOT_EXE, "--headless", "--path", str(project_dir), "--import", "--quit"],
@@ -272,14 +279,14 @@ def coder_agent(state: GraphState) -> GraphState:
     job is the part the one-shot Coder structurally cannot do: see the result
     and act on it.
     """
-    from saga.agents.coder import PROJECT_DIR, coder
+    from saga.agents.coder import coder
     from saga.llm import chat_raw
 
     level = state.get("current_level") or 0
     design_doc = state["design_doc"]
-    project_dir = Path(PROJECT_DIR)
 
     draft = coder(state)
+    project_dir = Path(draft["godot_project_path"])
     draft_script = (project_dir / f"Level_{level}.gd").read_text(encoding="utf-8")
     print(f"[Coder/agent] Draft written ({len(draft_script.splitlines())} lines); polishing.")
 
@@ -324,9 +331,13 @@ def coder_agent(state: GraphState) -> GraphState:
             if name == "write_level":
                 script = args.get("gdscript") or ""
                 script = re.sub(r"^```(?:gdscript|gd)?\n|```$", "", script.strip())
-                (project_dir / f"Level_{level}.gd").write_text(script, encoding="utf-8")
-                wrote_anything = True
-                result = f"Written, {len(script.splitlines())} lines."
+                try:
+                    assert_safe_gdscript(script)
+                except UnsafeGeneratedCodeError as exc:
+                    result = f"Refused unsafe script: {exc}"
+                else:
+                    (project_dir / f"Level_{level}.gd").write_text(script, encoding="utf-8")
+                    result = f"Written, {len(script.splitlines())} lines."
             elif name == "test_level":
                 result = _test_level(project_dir, level)
                 # Keep the best version seen, not the last one written. An

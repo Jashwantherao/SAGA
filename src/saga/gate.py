@@ -18,9 +18,9 @@ not the human's.
 """
 
 import json
-import os
 import subprocess
 
+from saga.config import settings
 from saga.state import GraphState
 
 # Vague reactions are the norm from a real playtester ("feels floaty", "the cat
@@ -52,7 +52,7 @@ def _launch(project_dir: str, level_index: int) -> "subprocess.Popen | None":
     try:
         return subprocess.Popen(
             [
-                os.environ.get("SAGA_GODOT_EXE", "D:\\Godot\\Godot_v4.7-stable_win64_console.exe"),
+                settings.godot_exe,
                 "--path",
                 project_dir,
                 f"res://Level_{level_index}.tscn",
@@ -79,7 +79,7 @@ def _interpret(feedback: str, script: str) -> list[str]:
                     "content": f"Level script:\n```gdscript\n{script}\n```\n\nPlaytester said: {feedback}\n",
                 },
             ],
-            model=os.environ.get("SAGA_GATE_MODEL", "deepseek-v4-pro"),
+            model=settings.gate_model,
             json_mode=True,
             max_tokens=8000,
         )
@@ -116,7 +116,7 @@ def level_gate(state: GraphState) -> GraphState:
             # rather than behind a live game window. The timeout is only a
             # guard against a window left open and forgotten - a human still
             # playing is exactly what this gate is for, so it is generous.
-            proc.wait(timeout=float(os.environ.get("SAGA_GATE_PLAY_TIMEOUT", "900")))
+            proc.wait(timeout=settings.gate_play_timeout)
         except subprocess.TimeoutExpired:
             print("  (still open - leaving it running)")
         except KeyboardInterrupt:

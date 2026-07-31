@@ -31,11 +31,12 @@ direction, the harness enforces limits.
 """
 
 import json
-import os
 
+from saga.config import settings
 from saga.state import GraphState
+from saga.workspace import create_run_dir
 
-REMOTE_MODEL = os.environ.get("SAGA_DIRECTOR_REMOTE_MODEL", "deepseek-v4-pro")
+REMOTE_MODEL = settings.director_remote_model
 CLAUDE_MODEL = "claude-sonnet-5"
 
 ROUTES = ["fix", "regenerate", "reasset"]
@@ -95,13 +96,20 @@ def studio_director(state: GraphState) -> GraphState:
     if state.get("design_doc") and state.get("qa_errors"):
         return _triage(state)
     print(f"[Studio Director] Received prompt: {state['user_prompt']!r}")
-    return {"user_prompt": state["user_prompt"], "design_doc": None, "director_action": None}
+    run_dir = state.get("run_dir") or str(create_run_dir())
+    print(f"[Studio Director] Run workspace: {run_dir}")
+    return {
+        "user_prompt": state["user_prompt"],
+        "run_dir": run_dir,
+        "design_doc": None,
+        "director_action": None,
+    }
 
 
 def _triage(state: GraphState) -> GraphState:
     from saga.graph import MAX_RETRIES  # lazy: graph.py imports this module
 
-    backend = os.environ.get("SAGA_DIRECTOR_BACKEND", "local")
+    backend = settings.director_backend
     retry_count = state.get("retry_count") or 0
     print(
         f"[Studio Director] Level {(state.get('current_level') or 0) + 1} failed QA "
@@ -123,13 +131,13 @@ def _triage(state: GraphState) -> GraphState:
 
 
 def _director_model(state: GraphState) -> str:
-    override = os.environ.get("SAGA_DIRECTOR_MODEL")
+    override = settings.director_model
     if override:
         return override
     # Default to whatever model the Coder just used: triage runs between
     # Coder attempts, so sharing its model means the decision costs no VRAM
     # swap - on a 16GB card a model swap each retry would dominate the loop.
-    from saga.agents.coder import MODEL, TEMPLATE_MODEL_OVERRIDES
+    from saga.agents.coder_backend import MODEL, TEMPLATE_MODEL_OVERRIDES
 
     template = (state.get("design_doc") or {}).get("mechanic_template", "")
     return TEMPLATE_MODEL_OVERRIDES.get(template, MODEL)

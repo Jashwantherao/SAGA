@@ -11,10 +11,11 @@ from pathlib import Path
 
 import httpx
 
+from saga.config import settings
 from saga.state import GraphState
+from saga.workspace import assets_dir
 
-COMFYUI_URL = "http://127.0.0.1:8188"
-OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent.parent / "output" / "assets"
+COMFYUI_URL = settings.comfyui_url
 
 STEPS = 4  # Flux schnell's distilled step count
 
@@ -26,6 +27,12 @@ ICON_HEIGHT = 128
 # Shared by every hero pose so they render as the same character. Any fixed
 # value works; what matters is that the poses do not each get their own.
 HERO_SEED = 424242
+
+# With the fixed hero seed, Flux consistently composes side-view characters
+# facing screen-left. Make that an explicit generation contract and let the
+# Anim autoload mirror the texture for rightward movement. Leaving the native
+# direction implicit made every otherwise-correct controller look reversed.
+HERO_NATIVE_FACING = "screen-left, head and body pointing toward the left edge"
 
 # Icons are GENERATED larger than their final size: Flux composes complete,
 # well-framed subjects far more reliably at 512 than at 128, and the
@@ -113,7 +120,10 @@ def _generate_image(
     height: int,
     strip_bg: bool = False,
     timeout: float = 120,
+    output_dir: Path | None = None,
 ) -> Path:
+    if output_dir is None:
+        raise ValueError("output_dir is required for isolated asset generation")
     workflow = _build_workflow(prompt, filename_prefix, seed, width, height)
     resp = httpx.post(f"{COMFYUI_URL}/prompt", json={"prompt": workflow}, timeout=30)
     resp.raise_for_status()
@@ -131,8 +141,11 @@ def _generate_image(
                 params={"filename": image_info["filename"], "subfolder": image_info["subfolder"], "type": image_info["type"]},
                 timeout=30,
             ).content
-            OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            out_path = OUTPUT_DIR / image_info["filename"]
+            output_dir.mkdir(parents=True, exist_ok=True)
+            # ComfyUI adds a numeric suffix that changes on every request.
+            # Store a stable logical filename inside this run so re-assets can
+            # overwrite the image without invalidating every generated script.
+            out_path = output_dir / f"{filename_prefix}.png"
             if strip_bg:
                 image_bytes = _strip_background(image_bytes)
             out_path.write_bytes(image_bytes)
@@ -145,6 +158,7 @@ def asset_maker(state: GraphState) -> GraphState:
     _check_comfyui_reachable()
     design_doc = state["design_doc"]
     art_style = design_doc["art_style"]
+    output_dir = assets_dir(state)
 
     # Icons get the rembg pass (strip_bg); level backgrounds keep every pixel.
     # "plain solid background" in the icon prompts gives rembg a clean subject
@@ -161,12 +175,13 @@ def asset_maker(state: GraphState) -> GraphState:
     # the Anim autoload supply the stepping motion.
     hero_common = (
         f"{design_doc['hero_description']}, full body, whole character visible from "
-        f"head to feet, game sprite, centered, {art_style}, plain solid background"
+        f"head to feet, side view, {HERO_NATIVE_FACING}, game sprite, centered, "
+        f"{art_style}, plain solid background"
     )
     requests = [
         (
             f"{design_doc['hero_description']}, at rest, sitting or standing still, "
-            f"relaxed, {hero_common}",
+            f"relaxed, still facing screen-left, {hero_common}",
             "hero_sprite",
             ICON_GEN_SIZE,
             ICON_GEN_SIZE,
@@ -174,8 +189,8 @@ def asset_maker(state: GraphState) -> GraphState:
             HERO_SEED,
         ),
         (
-            f"{design_doc['hero_description']}, walking, side view, legs apart "
-            f"mid-stride, leaning forward into the movement, {hero_common}",
+            f"{design_doc['hero_description']}, walking toward screen-left, legs apart "
+            f"mid-stride, leaning left into the movement, {hero_common}",
             "hero_walk",
             ICON_GEN_SIZE,
             ICON_GEN_SIZE,
@@ -229,7 +244,15 @@ def asset_maker(state: GraphState) -> GraphState:
         # long as they differ. The hero poses pin an explicit shared seed so
         # they render the same character.
         seed = request[5] if len(request) > 5 else index
-        path = _generate_image(prompt, name, seed=seed, width=width, height=height, strip_bg=strip_bg)
+        path = _generate_image(
+            prompt,
+            name,
+            seed=seed,
+            width=width,
+            height=height,
+            strip_bg=strip_bg,
+            output_dir=output_dir,
+        )
         sprite_paths.append(str(path))
         print(f"[Asset Maker] Generated {name} -> {path}")
 

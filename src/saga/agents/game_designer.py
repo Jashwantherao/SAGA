@@ -18,16 +18,14 @@ the fact - which is what that validator was built for.
 """
 
 import json
-import os
 import re
 
+from saga.config import settings
 from saga.state import GraphState
 
 CLAUDE_MODEL = "claude-sonnet-5"
-LOCAL_MODEL = os.environ.get(
-    "SAGA_DESIGNER_MODEL", "hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q3_K_S"
-)
-REMOTE_MODEL = os.environ.get("SAGA_DESIGNER_REMOTE_MODEL", "deepseek-v4-pro")
+LOCAL_MODEL = settings.designer_model
+REMOTE_MODEL = settings.designer_remote_model
 
 MECHANIC_TEMPLATES = [
     "collect",
@@ -208,7 +206,20 @@ SYSTEM_PROMPT = (
 )
 
 
-def _validate(doc: dict) -> list[str]:
+def _level_system_prompt(level_count: int | None) -> str:
+    if level_count is None:
+        return SYSTEM_PROMPT
+    return (
+        SYSTEM_PROMPT
+        + f"\n\nRUN OVERRIDE: Design exactly {level_count} level"
+        + ("" if level_count == 1 else "s")
+        + ". This exact count overrides the normal 3-5 level instruction. "
+        "For a one-level game, make that level a complete compact arc with a "
+        "clear setup, climax, and resolved ending; use intensity 4-6."
+    )
+
+
+def _validate(doc: dict, level_count: int | None = None) -> list[str]:
     """Structural checks a local model can plausibly get wrong; returned as a
     problem list so a corrective retry can quote them verbatim."""
     problems = []
@@ -229,7 +240,10 @@ def _validate(doc: dict) -> list[str]:
     if not key_item.get("description"):
         problems.append("key_item.description is required")
     levels = doc.get("levels") or []
-    if not 3 <= len(levels) <= 5:
+    if level_count is not None and len(levels) != level_count:
+        unit = "level" if level_count == 1 else "levels"
+        problems.append(f"need exactly {level_count} {unit}, got {len(levels)}")
+    elif level_count is None and not 3 <= len(levels) <= 5:
         problems.append(f"need 3-5 levels, got {len(levels)}")
     for i, lvl in enumerate(levels):
         for field in ("name", "description", "outro_beat", "pressure_notes"):
@@ -313,14 +327,14 @@ def _parse_json_lenient(text: str) -> dict:
         return json.loads(salvaged)
 
 
-def _design_claude(user_prompt: str) -> dict:
+def _design_claude(user_prompt: str, level_count: int | None = None) -> dict:
     import anthropic
 
     client = anthropic.Anthropic()
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=4096,
-        system=SYSTEM_PROMPT,
+        system=_level_system_prompt(level_count),
         thinking={"type": "adaptive"},
         output_config={
             "effort": "high",
@@ -332,7 +346,7 @@ def _design_claude(user_prompt: str) -> dict:
     return json.loads(text)
 
 
-def _design_remote(user_prompt: str) -> dict:
+def _design_remote(user_prompt: str, level_count: int | None = None) -> dict:
     """Hosted OpenAI-compatible backend (DeepSeek by default).
 
     JSON mode guarantees valid JSON but not schema conformance, so the schema
@@ -346,12 +360,15 @@ def _design_remote(user_prompt: str) -> dict:
         "prose, no markdown fence:\n" + json.dumps(DESIGN_DOC_SCHEMA, indent=2)
     )
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT + "\n\n" + schema_note},
+        {
+            "role": "system",
+            "content": _level_system_prompt(level_count) + "\n\n" + schema_note,
+        },
         {"role": "user", "content": user_prompt},
     ]
     doc = _parse_json_lenient(chat(messages, model=REMOTE_MODEL, json_mode=True))
 
-    problems = _validate(doc)
+    problems = _validate(doc, level_count)
     if problems:
         print(f"[Game Designer] Remote doc invalid, one corrective retry: {problems}")
         messages.append({"role": "assistant", "content": json.dumps(doc)})
@@ -365,13 +382,13 @@ def _design_remote(user_prompt: str) -> dict:
             }
         )
         doc = _parse_json_lenient(chat(messages, model=REMOTE_MODEL, json_mode=True))
-        problems = _validate(doc)
+        problems = _validate(doc, level_count)
         if problems:
             raise ValueError(f"Remote designer produced an invalid design doc: {problems}")
     return doc
 
 
-def _design_local(user_prompt: str) -> dict:
+def _design_local(user_prompt: str, level_count: int | None = None) -> dict:
     import ollama
 
     # A 3-5 level design doc with several string fields per level easily
@@ -381,13 +398,13 @@ def _design_local(user_prompt: str) -> dict:
     options = {"num_ctx": 8192, "num_predict": 4096}
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": _level_system_prompt(level_count)},
         {"role": "user", "content": user_prompt},
     ]
     response = ollama.chat(model=LOCAL_MODEL, messages=messages, format=DESIGN_DOC_SCHEMA, options=options)
     doc = _parse_json_lenient(response["message"]["content"])
 
-    problems = _validate(doc)
+    problems = _validate(doc, level_count)
     if problems:
         print(f"[Game Designer] Local doc invalid, one corrective retry: {problems}")
         messages.append({"role": "assistant", "content": json.dumps(doc)})
@@ -402,20 +419,21 @@ def _design_local(user_prompt: str) -> dict:
         )
         response = ollama.chat(model=LOCAL_MODEL, messages=messages, format=DESIGN_DOC_SCHEMA, options=options)
         doc = _parse_json_lenient(response["message"]["content"])
-        problems = _validate(doc)
+        problems = _validate(doc, level_count)
         if problems:
             raise ValueError(f"Local designer produced an invalid design doc: {problems}")
     return doc
 
 
 def game_designer(state: GraphState) -> GraphState:
-    backend = os.environ.get("SAGA_DESIGNER_BACKEND", "local")
+    backend = settings.designer_backend
+    level_count = state.get("requested_levels")
     if backend == "claude":
-        design_doc = _design_claude(state["user_prompt"])
+        design_doc = _design_claude(state["user_prompt"], level_count)
     elif backend in ("deepseek", "openai", "remote"):
-        design_doc = _design_remote(state["user_prompt"])
+        design_doc = _design_remote(state["user_prompt"], level_count)
     else:
-        design_doc = _design_local(state["user_prompt"])
+        design_doc = _design_local(state["user_prompt"], level_count)
     design_doc = _normalize(design_doc)
 
     print(

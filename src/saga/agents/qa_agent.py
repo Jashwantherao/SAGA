@@ -16,17 +16,18 @@ the human and the playtest loop.
 """
 
 import json
-import os
 import re
 import subprocess
 from pathlib import Path
 
 from saga.balance import check_level
+from saga.config import settings
 from saga.corpus import record_level
+from saga.safety import UnsafeGeneratedCodeError, assert_safe_gdscript
 from saga.state import GraphState
 
-GODOT_EXE = "D:\\Godot\\Godot_v4.7-stable_win64_console.exe"
-VISION_MODEL = os.environ.get("SAGA_VISION_MODEL", "gemma4:12b")
+GODOT_EXE = settings.godot_exe
+VISION_MODEL = settings.vision_model
 
 # A hosted vision model is enough better than a local 7-12B one to gate on.
 # Measured against a real build whose platforms were untextured grey
@@ -36,18 +37,25 @@ VISION_MODEL = os.environ.get("SAGA_VISION_MODEL", "gemma4:12b")
 # and nemotron-nano-12b-v2-vl caught the real defect but also invented text
 # clipping that was not in the image - which is disqualifying for a gate,
 # since a false positive spends a Coder retry on nothing.
-VISION_BACKEND = os.environ.get("SAGA_VISION_BACKEND", "local")
-VISION_REMOTE_MODEL = os.environ.get(
-    "SAGA_VISION_REMOTE_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
-)
-VISION_BASE_URL = os.environ.get("SAGA_VISION_BASE_URL", "https://integrate.api.nvidia.com/v1")
-VISION_KEY_ENV = os.environ.get("SAGA_VISION_KEY_ENV", "NVIDIA_API_KEY")
+VISION_BACKEND = settings.vision_backend
+VISION_REMOTE_MODEL = settings.vision_remote_model
+VISION_BASE_URL = settings.vision_base_url
+VISION_KEY_ENV = settings.vision_key_env
 # Free tiers have been measured hanging for minutes on models they list.
-VISION_TIMEOUT = float(os.environ.get("SAGA_VISION_TIMEOUT", "90"))
+VISION_TIMEOUT = settings.vision_timeout
 
 ERROR_PATTERNS = re.compile(
     r"SCRIPT ERROR|Parse Error|Invalid call|Nonexistent function|ERROR:",
     re.IGNORECASE,
+)
+
+OBJECTIVE_VERDICT = re.compile(
+    r"\[OBJECTIVE\] status=(passed|failed) template=([a-z_]+) "
+    r"reason=([a-z_]+) collected=(\d+) total=(\d+) remaining=(\d+) frames=(\d+)"
+)
+OBJECTIVE_DETAIL = re.compile(
+    r"\[OBJECTIVE_DETAIL\] node=\S+ position=\(([-\d.]+),([-\d.]+)\) "
+    r"(?:ghost|ignored)=false"
 )
 
 # Godot's forced `--quit-after` shutdown doesn't wait for the AudioServer to
@@ -60,15 +68,43 @@ BENIGN_EXIT_NOISE = re.compile(
     re.IGNORECASE,
 )
 
+HARNESS_SCRIPT_ERROR = re.compile(
+    r"res://(?:autoplay|objective_probe|screenshot|sfx|music|ambience|anim|game|"
+    r"interlude|victory)\.gd",
+    re.IGNORECASE,
+)
+
+
+def _has_harness_error(errors: list[str]) -> bool:
+    """Return true when generated code cannot possibly repair the failure."""
+    return any(HARNESS_SCRIPT_ERROR.search(error) for error in errors)
+
 
 def _run(args: list[str], cwd: str | None = None, timeout: float = 60) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [GODOT_EXE, *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    command = [GODOT_EXE, *args]
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        return subprocess.CompletedProcess(
+            command,
+            124,
+            stdout=stdout,
+            stderr=f"ERROR: Godot timed out after {timeout:.0f}s",
+        )
+    except OSError as exc:
+        return subprocess.CompletedProcess(
+            command,
+            127,
+            stdout="",
+            stderr=f"ERROR: Could not start Godot: {type(exc).__name__}: {exc}",
+        )
 
 
 def _find_errors(output: str) -> list[str]:
@@ -90,6 +126,105 @@ def _find_errors(output: str) -> list[str]:
             if len(found) >= 10:
                 break
     return found
+
+
+def _run_maze_objective_probe(
+    project_dir: str,
+    scene: str,
+    template: str,
+) -> tuple[dict | None, list[str], bool]:
+    """Run and parse the harness-owned collectible-maze completion solver.
+
+    Returns ``(result, errors, blocked)``. ``blocked`` is reserved for a
+    missing/broken required probe; an ordinary failed completion verdict is a
+    generated-level defect that the Coder can repair.
+    """
+    probe = _run(
+        [
+            "--headless",
+            "--path",
+            project_dir,
+            scene,
+            "--quit-after",
+            "12030",
+            "--",
+            "--objective-probe",
+            f"--objective-template={template}",
+        ],
+        timeout=150,
+    )
+    output = probe.stdout + probe.stderr
+    process_errors = _find_errors(output)
+    if probe.returncode != 0 or process_errors:
+        errors = process_errors or [f"Objective probe exited with code {probe.returncode}"]
+        blocked = any("objective_probe.gd" in error for error in errors)
+        return None, errors, blocked
+
+    verdict = OBJECTIVE_VERDICT.search(output)
+    if not verdict:
+        return (
+            None,
+            [f"QA infrastructure: {template} objective probe produced no verdict."],
+            True,
+        )
+
+    status, reported_template, reason, collected, total, remaining, frames = verdict.groups()
+    result = {
+        "status": status,
+        "template": reported_template,
+        "reason": reason,
+        "collected": int(collected),
+        "total": int(total),
+        "remaining": int(remaining),
+        "frames": int(frames),
+    }
+    if reported_template != template:
+        return (
+            result,
+            [
+                "QA infrastructure: objective probe reported template "
+                f"{reported_template!r} while testing {template!r}."
+            ],
+            True,
+        )
+    blocked_positions = [
+        [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
+    ]
+    if blocked_positions:
+        result["blocked_positions"] = blocked_positions
+    if status == "failed":
+        position_note = ""
+        if blocked_positions:
+            formatted = ", ".join(f"({x:g}, {y:g})" for x, y in blocked_positions)
+            position_note = f" Suspect unreachable Area2D positions: {formatted}."
+        return (
+            result,
+            [
+                f"Objective completion: {template} solver failed "
+                f"({reason}); collected {collected}/{total} with {remaining} remaining. "
+                "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                f"{position_note}"
+            ],
+            False,
+        )
+    if int(remaining) != 0 or int(collected) < int(total):
+        return (
+            result,
+            [
+                "Objective completion: probe reported a pass without collecting every pickup "
+                f"({collected}/{total}, {remaining} remaining)."
+            ],
+            True,
+        )
+    return result, [], False
+
+
+def _run_dot_maze_objective_probe(
+    project_dir: str,
+    scene: str,
+) -> tuple[dict | None, list[str], bool]:
+    """Compatibility wrapper for existing callers and developer tooling."""
+    return _run_maze_objective_probe(project_dir, scene, "dot_maze")
 
 
 def _vision_prompt(design_doc) -> str:
@@ -189,18 +324,142 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
     return gating, advisory
 
 
+def _record_attempt(
+    state: GraphState,
+    *,
+    passed: bool,
+    stage: str,
+    errors: list[str] | None = None,
+    screenshot_path: str | None = None,
+    vision_notes: list[str] | None = None,
+    balance_notes: list[str] | None = None,
+    objective_result: dict | None = None,
+    blocked: bool = False,
+) -> list[dict]:
+    """Return a new durable QA ledger with this attempt appended.
+
+    LangGraph node updates replace ordinary list fields, so this helper copies
+    the existing ledger instead of mutating state in place. The compact
+    current-step fields remain useful to the Coder and Director; this ledger
+    is the source of truth for reporting and the final ship decision.
+    """
+    current_level = state.get("current_level") or 0
+    retry_count = state.get("retry_count") or 0
+    design_levels = (state.get("design_doc") or {}).get("levels") or []
+    level_name = (
+        design_levels[current_level].get("name", f"Level {current_level + 1}")
+        if current_level < len(design_levels)
+        else f"Level {current_level + 1}"
+    )
+    errors = list(errors or [])
+    vision_notes = list(vision_notes or [])
+    balance_notes = list(balance_notes or [])
+
+    ledger = [dict(item) for item in (state.get("level_results") or [])]
+    entry_index = next(
+        (i for i, item in enumerate(ledger) if item.get("level_index") == current_level),
+        None,
+    )
+    previous = ledger[entry_index] if entry_index is not None else {}
+    attempts = [dict(item) for item in previous.get("attempts", [])]
+    attempts.append(
+        {
+            "attempt": retry_count + 1,
+            "status": "blocked" if blocked else ("passed" if passed else "failed"),
+            "stage": stage,
+            "errors": errors,
+            "screenshot_path": screenshot_path,
+            "vision_notes": vision_notes,
+            "balance_notes": balance_notes,
+            "objective_result": objective_result,
+            "coder_model": state.get("coder_model"),
+        }
+    )
+    entry = {
+        "level_index": current_level,
+        "level_number": current_level + 1,
+        "name": level_name,
+        "status": "blocked" if blocked else ("passed" if passed else "failed"),
+        "attempts": attempts,
+        "retry_count": retry_count if passed else retry_count + 1,
+        "qa_errors": errors,
+        "screenshot_path": screenshot_path,
+        "vision_notes": vision_notes,
+        "balance_notes": balance_notes,
+        "objective_result": objective_result,
+        "coder_model": state.get("coder_model"),
+    }
+    if entry_index is None:
+        ledger.append(entry)
+    else:
+        ledger[entry_index] = entry
+    return sorted(ledger, key=lambda item: item.get("level_index", 0))
+
+
+def _failed_attempt(
+    state: GraphState,
+    *,
+    stage: str,
+    errors: list[str],
+    screenshot_path: str | None = None,
+    vision_notes: list[str] | None = None,
+    balance_notes: list[str] | None = None,
+    objective_result: dict | None = None,
+    blocked: bool = False,
+) -> GraphState:
+    retry_count = state.get("retry_count") or 0
+    return {
+        "qa_passed": False,
+        "qa_errors": errors,
+        "retry_count": retry_count + 1,
+        "screenshot_path": screenshot_path,
+        "vision_notes": vision_notes or [],
+        "balance_notes": balance_notes or [],
+        "objective_result": objective_result,
+        "level_results": _record_attempt(
+            state,
+            passed=False,
+            stage=stage,
+            errors=errors,
+            screenshot_path=screenshot_path,
+            vision_notes=vision_notes,
+            balance_notes=balance_notes,
+            objective_result=objective_result,
+            blocked=blocked,
+        ),
+        "ship_blocked": blocked,
+    }
+
+
 def qa_agent(state: GraphState) -> GraphState:
     project_dir = state["godot_project_path"]
     retry_count = state.get("retry_count") or 0
     current_level = state.get("current_level") or 0
     scene = f"res://Level_{current_level}.tscn"
+    script_file = Path(project_dir) / f"Level_{current_level}.gd"
+
+    # Defense in depth: the Coder checks before writing, and QA checks again
+    # immediately before launching Godot so agentic edits or manual changes
+    # cannot bypass the generated-code policy.
+    try:
+        assert_safe_gdscript(script_file.read_text(encoding="utf-8"))
+    except (OSError, UnsafeGeneratedCodeError) as exc:
+        print(f"[QA Agent] BLOCKED unsafe or unreadable generated script: {exc}")
+        return _failed_attempt(state, stage="safety", errors=[str(exc)])
 
     # 1. Import assets
     import_result = _run(["--headless", "--path", project_dir, "--import", "--quit"])
     import_errors = _find_errors(import_result.stdout + import_result.stderr)
     if import_result.returncode != 0 or import_errors:
-        print(f"[QA Agent] FAILED at import step: {import_errors or 'non-zero exit'}")
-        return {"qa_passed": False, "qa_errors": import_errors or ["Import step failed"], "retry_count": retry_count + 1}
+        blocked = _has_harness_error(import_errors)
+        label = "BLOCKED" if blocked else "FAILED"
+        print(f"[QA Agent] {label} at import step: {import_errors or 'non-zero exit'}")
+        return _failed_attempt(
+            state,
+            stage="harness" if blocked else "import",
+            errors=import_errors or ["Import step failed"],
+            blocked=blocked,
+        )
 
     # 2. Actually run THIS level's scene for a bounded number of frames -
     # this also catches compile errors (a broken script fails to load),
@@ -209,12 +468,18 @@ def qa_agent(state: GraphState) -> GraphState:
     run_result = _run(["--headless", "--path", project_dir, scene, "--quit-after", "120"], timeout=30)
     run_errors = _find_errors(run_result.stdout + run_result.stderr)
     if run_result.returncode != 0 or run_errors:
-        print(f"[QA Agent] FAILED at scene run: {run_errors or f'exit code {run_result.returncode}'}")
-        return {
-            "qa_passed": False,
-            "qa_errors": run_errors or [f"Scene run exited with code {run_result.returncode}"],
-            "retry_count": retry_count + 1,
-        }
+        blocked = _has_harness_error(run_errors)
+        label = "BLOCKED" if blocked else "FAILED"
+        print(
+            f"[QA Agent] {label} at scene run: "
+            f"{run_errors or f'exit code {run_result.returncode}'}"
+        )
+        return _failed_attempt(
+            state,
+            stage="harness" if blocked else "scene_run",
+            errors=run_errors or [f"Scene run exited with code {run_result.returncode}"],
+            blocked=blocked,
+        )
 
     # 2b. Actually play it. A scene that runs without errors can still be
     # completely inert - a hero that cannot move, or an objective that never
@@ -226,6 +491,20 @@ def qa_agent(state: GraphState) -> GraphState:
         timeout=60,
     )
     play_out = play.stdout + play.stderr
+    play_process_errors = _find_errors(play_out)
+    if play.returncode != 0 or play_process_errors:
+        blocked = _has_harness_error(play_process_errors)
+        label = "BLOCKED" if blocked else "FAILED"
+        print(
+            f"[QA Agent] {label} during autoplay: "
+            f"{play_process_errors or f'exit code {play.returncode}'}"
+        )
+        return _failed_attempt(
+            state,
+            stage="harness" if blocked else "autoplay",
+            errors=play_process_errors or [f"Autoplay exited with code {play.returncode}"],
+            blocked=blocked,
+        )
     verdict = re.search(
         r"\[AUTOPLAY\] idle_rate=([\d.]+) input_rate=([\d.]+) label_states=(\d+)", play_out
     )
@@ -260,48 +539,72 @@ def qa_agent(state: GraphState) -> GraphState:
                 "while arrow keys were held. Expected for a puzzle whose progress needs "
                 "correct input; a problem for anything driven by a timer or resource."
             )
-        if play_errors and retry_count == 0:
+        if play_errors:
             print(f"[QA Agent] FAILED on {len(play_errors)} playability defect(s) - requesting a fix")
-            return {"qa_passed": False, "qa_errors": play_errors, "retry_count": retry_count + 1}
-        for e in play_errors:
-            print(f"[QA Agent] WARNING (unresolved): {e}")
+            return _failed_attempt(state, stage="playability", errors=play_errors)
     else:
-        # Never fail a build because the probe itself did not report - it is a
-        # check, not a requirement, and a silent probe means a broken probe.
-        print("[QA Agent] Autoplay produced no verdict (non-blocking)")
+        # A silent required probe means QA did not establish playability. This
+        # is a harness/infrastructure block, not generated code to send through
+        # six speculative Coder repairs.
+        error = "QA infrastructure: autoplay produced no verdict, so responsiveness is unknown."
+        print(f"[QA Agent] BLOCKED: {error}")
+        return _failed_attempt(
+            state,
+            stage="autoplay_probe",
+            errors=[error],
+            blocked=True,
+        )
 
-    # 3. Balance check. The script runs, but that says nothing about whether
+    # 3. Mechanic-specific objective completion. Generic autoplay proves the
+    # player responds; for deterministic mechanics we also require the actual
+    # objective to be reachable and its real win state to fire.
+    template = (state.get("design_doc") or {}).get("mechanic_template", "")
+    objective_result = None
+    if template in {"dot_maze", "maze_chase"}:
+        objective_result, objective_errors, objective_blocked = _run_maze_objective_probe(
+            project_dir,
+            scene,
+            template,
+        )
+        if objective_errors:
+            label = "BLOCKED" if objective_blocked else "FAILED"
+            print(f"[QA Agent] {label} {template} objective completion: {objective_errors}")
+            return _failed_attempt(
+                state,
+                stage="objective_probe" if objective_blocked else "objective_completion",
+                errors=objective_errors,
+                objective_result=objective_result,
+                blocked=objective_blocked,
+            )
+        print(
+            f"[QA Agent] Objective: collected {objective_result['collected']}/"
+            f"{objective_result['total']} pickups and reached won in "
+            f"{objective_result['frames']} frames"
+        )
+
+    # 4. Balance check. The script runs, but that says nothing about whether
     # its challenge is survivable - a drain that outpaces every refill, or a
     # pursuer faster than the player, compiles perfectly and is unwinnable.
-    # Purely static and instant, so it runs before the screenshot pass.
-    # Gated on the first attempt only, for the same reason as the vision
-    # review: repeating a verdict the Coder failed to satisfy would spend the
-    # budget real crashes need.
-    script_file = Path(project_dir) / f"Level_{current_level}.gd"
+    # Purely static and instant, so it runs before the screenshot pass. A
+    # definitive unwinnability finding remains gating on every attempt; the
+    # retry ledger makes a persistent defect visible instead of laundering it
+    # into a pass.
     balance_notes = []
     if script_file.exists():
-        template = (state.get("design_doc") or {}).get("mechanic_template", "")
         bal_gating, balance_notes = check_level(script_file.read_text(encoding="utf-8"), template)
         for note in bal_gating + balance_notes:
             print(f"[QA Agent] {note}")
-        if bal_gating and retry_count == 0:
-            print(f"[QA Agent] FAILED on {len(bal_gating)} balance defect(s) - requesting a fix")
-            return {
-                "qa_passed": False,
-                "qa_errors": bal_gating,
-                "retry_count": retry_count + 1,
-                "balance_notes": balance_notes,
-            }
         if bal_gating:
-            print(
-                f"[QA Agent] WARNING: {len(bal_gating)} balance defect(s) UNRESOLVED "
-                f"after a fix attempt - this level may not be winnable:"
+            print(f"[QA Agent] FAILED on {len(bal_gating)} balance defect(s) - requesting a fix")
+            return _failed_attempt(
+                state,
+                stage="balance",
+                errors=bal_gating,
+                balance_notes=balance_notes,
+                objective_result=objective_result,
             )
-            for note in bal_gating:
-                print(f"[QA Agent]   - {note}")
-            balance_notes = bal_gating + balance_notes
 
-    # 4. Non-blocking windowed screenshot pass (a window flashes for ~1.5s).
+    # 5. Non-blocking windowed screenshot pass (a window flashes for ~1.5s).
     # screenshot.gd saves frame 60 to res://screenshot.png; it no-ops in the
     # headless runs above.
     screenshot_path = None
@@ -317,40 +620,27 @@ def qa_agent(state: GraphState) -> GraphState:
     except Exception as e:
         print(f"[QA Agent] Screenshot pass failed (non-blocking): {e}")
 
-    # 5. Vision review. Code-fixable defects gate; everything else is a lens.
-    #
-    # Gating is deliberately limited to the first attempt. A screenshot verdict
-    # is a judgement rather than a compiler error, so if one correction round
-    # does not satisfy it the honest move is to report and move on - looping
-    # would spend the retry budget that real crashes need, and the model may
-    # simply be wrong. This caps vision at one retry per level.
+    # 6. Vision review. Code-fixable defects gate on every attempt; everything
+    # else is advisory. A noisy provider can still be disabled or switched,
+    # but a configured gate cannot leave a known defect behind and call the
+    # level clean.
     vision_notes = []
     if screenshot_path:
         gating, advisory = _vision_review(screenshot_path, state.get("design_doc"))
         vision_notes = gating + advisory
         for note in vision_notes:
             print(f"[QA Agent] {note}")
-        if gating and retry_count == 0:
-            print(f"[QA Agent] FAILED on {len(gating)} visual defect(s) - requesting a fix")
-            return {
-                "qa_passed": False,
-                "qa_errors": gating,
-                "retry_count": retry_count + 1,
-                "screenshot_path": screenshot_path,
-                "vision_notes": vision_notes,
-            }
         if gating:
-            # The cap has been spent and the defect is still there. Passing is
-            # the lesser evil - looping would burn the budget real crashes need
-            # - but reporting a clean PASS is how a visibly broken build
-            # reaches a human unremarked, so say so loudly instead.
-            print(
-                f"[QA Agent] WARNING: {len(gating)} visual defect(s) UNRESOLVED after "
-                f"a fix attempt - passing so the run can continue, but this build "
-                f"has a known problem:"
+            print(f"[QA Agent] FAILED on {len(gating)} visual defect(s) - requesting a fix")
+            return _failed_attempt(
+                state,
+                stage="vision",
+                errors=gating,
+                screenshot_path=screenshot_path,
+                vision_notes=vision_notes,
+                balance_notes=balance_notes,
+                objective_result=objective_result,
             )
-            for note in gating:
-                print(f"[QA Agent]   - {note}")
 
     # This is the only point in the pipeline where a script is known-good
     # (compiled, ran, satisfied its template contract) - so it's where the
@@ -373,4 +663,15 @@ def qa_agent(state: GraphState) -> GraphState:
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes,
         "balance_notes": balance_notes,
+        "objective_result": objective_result,
+        "level_results": _record_attempt(
+            state,
+            passed=True,
+            stage="complete",
+            screenshot_path=screenshot_path,
+            vision_notes=vision_notes,
+            balance_notes=balance_notes,
+            objective_result=objective_result,
+        ),
+        "ship_blocked": False,
     }

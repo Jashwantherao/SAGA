@@ -11,8 +11,6 @@ whose existing edge into the Coder completes the path). The graph keeps the
 hard budget (MAX_RETRIES); the Director decides direction within it.
 """
 
-import os
-
 from langgraph.graph import END, START, StateGraph
 
 from saga.agents.asset_maker import asset_maker
@@ -21,12 +19,15 @@ from saga.agents.coder import coder
 from saga.agents.game_designer import game_designer
 from saga.agents.qa_agent import qa_agent
 from saga.agents.studio_director import studio_director
+from saga.config import settings
 from saga.state import GraphState
 
 MAX_RETRIES = 6
 
 
 def _route_after_qa(state: GraphState) -> str:
+    if state.get("ship_blocked"):
+        return "done"
     if state.get("qa_passed"):
         design_doc = state.get("design_doc") or {}
         total_levels = len(design_doc.get("levels") or [None])
@@ -60,7 +61,12 @@ def advance_level(state: GraphState) -> GraphState:
     retry budget."""
     next_level = (state.get("current_level") or 0) + 1
     print(f"[Graph] Level {next_level + 1} up next")
-    return {"current_level": next_level, "qa_errors": None, "retry_count": 0}
+    return {
+        "current_level": next_level,
+        "qa_errors": None,
+        "retry_count": 0,
+        "ship_blocked": False,
+    }
 
 
 def build_graph(human_gate: bool = False):
@@ -77,7 +83,7 @@ def build_graph(human_gate: bool = False):
     # The agentic Coder wraps the one-shot one: it produces the draft, then
     # the agent runs it, looks at the rendered frame and revises. Opt-in,
     # because it costs many more calls per level than a single completion.
-    if os.environ.get("SAGA_CODER_AGENTIC") == "1":
+    if settings.coder_agentic:
         from saga.agents.coder_agent import coder_agent
 
         graph.add_node("coder", coder_agent)

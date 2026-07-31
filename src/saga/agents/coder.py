@@ -3,7 +3,7 @@
 The harness writes the deterministic boilerplate itself (project.godot, a bare
 Main.tscn scene, the Screenshot and Sfx autoloads, and the synthesized SFX
 WAVs) since hand-authoring correct .tscn/resource plumbing is a poor fit for
-an LLM. The model's only job is to write Main.gd - the actual gameplay logic
+an LLM. The model's only job is to write one Level_N.gd gameplay script
 - given the design doc and the list of already-generated asset filenames.
 
 The design doc's mechanic_template selects both a template-specific
@@ -17,105 +17,28 @@ still exercises gameplay), Sfx autoload calls, and a CPUParticles2D ambient
 effect.
 """
 
-import os
 import re
 import shutil
-import subprocess
-import time
 from pathlib import Path
 
-import httpx
-import ollama
-
+from saga.agents.coder_backend import (
+    MODEL,
+    REMOTE_MODEL,
+    TEMPLATE_MODEL_OVERRIDES,
+    chat as _chat,
+    extract_gdscript as _extract_gdscript,
+    is_remote as _is_remote,
+    stop_gpu_services as _stop_gpu_services,
+)
+from saga.agents.coder_contracts import (
+    FORBIDDEN_PATTERNS,
+    TEMPLATE_CONTRACTS,
+    UNIVERSAL_CONTRACTS,
+)
+from saga.safety import assert_safe_gdscript, scan_generated_gdscript
 from saga.sfx import write_default_sfx
 from saga.state import GraphState
-
-MODEL = os.environ.get("SAGA_CODER_MODEL", "qwen2.5-coder:14b")
-
-# "ollama" (default, local) or "deepseek"/"openai"/"remote" (hosted, see
-# saga.llm). The hosted path skips the whole local-GPU dance - no VRAM
-# handover, no CUDA-crash retry, no per-template model routing, since none of
-# those constraints exist when the model isn't on this machine.
-CODER_BACKEND = os.environ.get("SAGA_CODER_BACKEND", "ollama")
-REMOTE_MODEL = os.environ.get("SAGA_CODER_REMOTE_MODEL", "deepseek-v4-pro")
-
-# Per-template model routing: the 14B's faithful-imitation window tops out
-# around ~200 lines of few-shot (benchmarked), and it reliably drops the
-# member-variable block when asked to reproduce the 244-line dot_maze
-# example. Templates whose few-shots exceed that window route to the larger
-# MoE (3B active params, so still fast) instead of slimming the game down.
-TEMPLATE_MODEL_OVERRIDES = {
-    "dot_maze": os.environ.get("SAGA_DOTMAZE_MODEL", "batiai/qwen3.6-35b:q3"),
-}
-
-# Structural contracts per template: regex patterns whose absence means the
-# model silently simplified a required system away (observed: a generation
-# that compiled and passed QA with no walls, immobile ghosts, and no ghost
-# collision - "not using arrays for simplicity"). Violations get one
-# correction round-trip with the missing systems named; QA cannot catch
-# hollowness, only crashes, so this check is the only line of defense.
-TEMPLATE_CONTRACTS = {
-    "dot_maze": [
-        ("the Rect2 wall array and axis-separated wall collision", r"Rect2\("),
-        ("ghost movement (patrol via move_toward plus a hunter moving toward the player)", r"move_toward"),
-        ("the ghost-touch handler connected via player.area_entered", r"player\.area_entered\.connect"),
-    ],
-    "maze_chase": [
-        ("the Rect2 wall array and axis-separated wall collision", r"Rect2\("),
-        ("the patroller-touch handler connected via player.area_entered", r"player\.area_entered\.connect"),
-    ],
-    # Both of these were missing from a shipped build that passed QA cleanly
-    # and was unplayable: creatures fled from any distance, so they could
-    # never be approached, and nothing stopped a creature fleeing once it
-    # reached the pool, so the goal could never be filled.
-    "herd_to_goal": [
-        ("the panic radius that keeps creatures still until the player is close", r"panic_radius"),
-        ("the settled flag that stops a creature fleeing once it reaches the goal", r"settled"),
-    ],
-}
-
-# Applies to every template. The harness autoloads are engine globals, so a
-# script that declares `var Game = null` shadows the real one and every guarded
-# call becomes a no-op: no sound, and Game.level_complete() never fires, so the
-# game cannot advance past its first level. It runs flawlessly and does
-# nothing, which QA cannot see - it is looking for errors, and there are none.
-# Observed after a spurious import failure taught the model to "defend" against
-# a missing singleton by nulling it.
-# Applies to every template: without a call to the Anim autoload the hero is a
-# still PNG sliding around, which is the single loudest tell that a build is a
-# mock-up rather than a game. Cheap to satisfy and easy to omit, so it is
-# checked rather than hoped for.
-UNIVERSAL_CONTRACTS = [
-    (
-        "per-frame character animation via the Anim autoload - call "
-        "Anim.walk(sprite, is_moving, direction.x) each frame for the player "
-        "and anything that walks, or Anim.hover(sprite) for anything that "
-        "floats, so the sprite is not a static image sliding around",
-        r"Anim\.(walk|hover)\(",
-    ),
-]
-
-FORBIDDEN_PATTERNS = [
-    (
-        "the script declares a local variable that shadows a harness autoload "
-        "(Game, Sfx, Music, Ambience). These are engine globals - call them "
-        "directly as Game.level_complete() and Sfx.play(...) with no null "
-        "checks and no local declaration, or they silently do nothing",
-        r"var\s+(?:Game|Sfx|Music|Ambience|Screenshot|Interlude|Victory)\b",
-    ),
-    (
-        "Game.level_complete() is wrapped in a null check, which means it may "
-        "never run and the game can never advance a level. Call it directly",
-        r"if\s+Game\s*!=\s*null",
-    ),
-    (
-        "the script uses 'Sprite', which does not exist in Godot 4 - it was "
-        "renamed Sprite2D (or Sprite3D in 3D). Replace every use, as a type "
-        "hint, constructor, or 'is' check, with Sprite2D",
-        r"\bSprite\b",
-    ),
-]
-PROJECT_DIR = Path(__file__).resolve().parent.parent.parent.parent / "output" / "godot_project"
+from saga.workspace import project_dir as run_project_dir
 
 PROJECT_GODOT_TEMPLATE = """config_version=5
 
@@ -130,6 +53,7 @@ Sfx="*res://sfx.gd"
 Ambience="*res://ambience.gd"
 Anim="*res://anim.gd"
 Autoplay="*res://autoplay.gd"
+ObjectiveProbe="*res://objective_probe.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -394,14 +318,15 @@ func _set_pose(sprite: Node2D, moving: bool) -> void:
 \tif wanted != null and sprite.texture != wanted:
 \t\tsprite.texture = wanted
 
-# Call every frame for anything that walks. Pass the movement direction so the
-# sprite faces where it is going.
+# Hero assets have one explicit orientation contract: their native texture
+# faces screen-left. Pass the movement direction and mirror only for rightward
+# motion. Vertical movement preserves the most recent horizontal facing.
 func walk(sprite: Node2D, moving: bool, dir_x: float = 0.0) -> void:
 \tif not is_instance_valid(sprite):
 \t\treturn
 \tvar base: Vector2 = _base(sprite)
 \tif dir_x != 0.0 and sprite is Sprite2D:
-\t\tsprite.flip_h = dir_x < 0.0
+\t\tsprite.flip_h = dir_x > 0.0
 \t_set_pose(sprite, moving)
 \tif moving:
 \t\tvar p := _phase(sprite, BOB_SPEED)
@@ -567,6 +492,359 @@ func _report() -> void:
 	get_tree().quit()
 """
 
+# Harness-owned objective solver for the first mechanic with a deterministic
+# win condition. Generic autoplay proves that input moves the game; this probe
+# separately proves that every spawned dot is spatially reachable and that
+# collecting them drives the generated script into its real `won` state.
+# Ghost collisions are disabled so this is a logic/reachability test rather
+# than a skill or difficulty benchmark (the balance pass covers enemy speed).
+OBJECTIVE_PROBE_GD = """extends Node
+
+const GRID := 16.0
+const GRID_WIDTH := 64
+const GRID_HEIGHT := 36
+const START_DELAY_FRAMES := 10
+const MAX_FRAMES := 12000
+
+var _active := false
+var _template := "dot_maze"
+var _frame := 0
+var _root: Node
+var _player: Area2D
+var _walls: Array = []
+var _ignored_ids := {}
+var _path: Array[Vector2] = []
+var _target: Area2D
+var _exit: Area2D
+var _phase := "pickups"
+var _arrival_frame := -1
+var _initial_total := 0
+var _detail_areas: Array = []
+
+func _ready() -> void:
+	var arguments := OS.get_cmdline_user_args()
+	_active = "--objective-probe" in arguments
+	for argument in arguments:
+		if argument.begins_with("--objective-template="):
+			_template = argument.trim_prefix("--objective-template=")
+	if _active:
+		process_priority = 600
+
+func _has_property(object: Object, property_name: String) -> bool:
+	for property in object.get_property_list():
+		if str(property.get("name", "")) == property_name:
+			return true
+	return false
+
+func _read_property(object: Object, names: Array, fallback = null):
+	for property_name in names:
+		if _has_property(object, property_name):
+			return object.get(property_name)
+	return fallback
+
+func _collect_areas(node: Node, areas: Array) -> void:
+	for child in node.get_children():
+		if child is Area2D:
+			areas.append(child)
+		_collect_areas(child, areas)
+
+func _looks_like_exit(area: Area2D) -> bool:
+	if "exit" in str(area.name).to_lower():
+		return true
+	for connection in area.area_entered.get_connections():
+		var callback = connection.get("callable")
+		if callback is Callable and "exit" in str(callback.get_method()).to_lower():
+			return true
+	return false
+
+func _find_exit() -> Area2D:
+	var explicit = _read_property(
+		_root, ["exit_door", "exit_door_area", "exit_area"], null
+	)
+	if explicit is Area2D:
+		return explicit
+	var areas: Array = []
+	_collect_areas(_root, areas)
+	for area in areas:
+		if _looks_like_exit(area):
+			return area
+	return null
+
+func _remaining_pickups() -> Array:
+	if _root == null or not is_instance_valid(_root):
+		return []
+	var areas: Array = []
+	_collect_areas(_root, areas)
+	var pickups: Array = []
+	for area in areas:
+		if area == _player:
+			continue
+		if _ignored_ids.has(area.get_instance_id()):
+			continue
+		if not area.is_queued_for_deletion():
+			pickups.append(area)
+	return pickups
+
+func _cell(position: Vector2) -> Vector2i:
+	return Vector2i(
+		clampi(int(floor(position.x / GRID)), 0, GRID_WIDTH - 1),
+		clampi(int(floor(position.y / GRID)), 0, GRID_HEIGHT - 1)
+	)
+
+func _center(cell: Vector2i) -> Vector2:
+	return Vector2(cell) * GRID + Vector2.ONE * (GRID * 0.5)
+
+func _blocked(cell: Vector2i) -> bool:
+	if cell.x < 0 or cell.x >= GRID_WIDTH or cell.y < 0 or cell.y >= GRID_HEIGHT:
+		return true
+	var half_size = float(_read_property(_root, ["player_half_size", "player_half"], 14.0))
+	var center := _center(cell)
+	var player_rect := Rect2(center - Vector2.ONE * half_size, Vector2.ONE * half_size * 2.0)
+	for wall in _walls:
+		if typeof(wall) == TYPE_RECT2 and player_rect.intersects(wall):
+			return true
+	return false
+
+func _flood(start: Vector2i) -> Dictionary:
+	var queue: Array[Vector2i] = [start]
+	var head := 0
+	var came_from := {start: start}
+	var distance := {start: 0}
+	var directions: Array[Vector2i] = [
+		Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP
+	]
+	while head < queue.size():
+		var current := queue[head]
+		head += 1
+		for direction: Vector2i in directions:
+			var next_cell: Vector2i = current + direction
+			if came_from.has(next_cell) or _blocked(next_cell):
+				continue
+			came_from[next_cell] = current
+			distance[next_cell] = int(distance[current]) + 1
+			queue.append(next_cell)
+	return {"came_from": came_from, "distance": distance}
+
+func _placement_preflight() -> bool:
+	var start := _cell(_player.global_position)
+	if _blocked(start):
+		_fail("player_spawn_blocked")
+		return false
+	var flood := _flood(start)
+	var distance: Dictionary = flood.distance
+	_detail_areas = []
+	for pickup in _remaining_pickups():
+		if not distance.has(_cell(pickup.global_position)):
+			_detail_areas.append(pickup)
+	if not _detail_areas.is_empty():
+		_fail("unreachable_pickup")
+		return false
+	return true
+
+func _plan_path() -> bool:
+	var pickups := _remaining_pickups()
+	if pickups.is_empty():
+		_path = []
+		_target = null
+		return true
+
+	var start := _cell(_player.global_position)
+	if _blocked(start):
+		_fail("player_spawn_blocked")
+		return false
+	var flood := _flood(start)
+	var came_from: Dictionary = flood.came_from
+	var distance: Dictionary = flood.distance
+
+	var best_pickup: Area2D
+	var best_cell := Vector2i.ZERO
+	var best_distance := 1 << 30
+	for pickup in pickups:
+		var pickup_cell := _cell(pickup.global_position)
+		if distance.has(pickup_cell) and int(distance[pickup_cell]) < best_distance:
+			best_pickup = pickup
+			best_cell = pickup_cell
+			best_distance = int(distance[pickup_cell])
+	if best_pickup == null:
+		_fail("unreachable_pickup")
+		return false
+
+	var cells: Array[Vector2i] = []
+	var cursor := best_cell
+	while cursor != start:
+		cells.push_front(cursor)
+		cursor = came_from[cursor]
+	_path = []
+	for cell in cells:
+		_path.append(_center(cell))
+	# Finish at the exact Area2D position so Godot's real overlap signal fires.
+	_path.append(best_pickup.global_position)
+	_target = best_pickup
+	_arrival_frame = -1
+	return true
+
+func _plan_exit() -> bool:
+	if _exit == null or not is_instance_valid(_exit):
+		_fail("exit_disappeared")
+		return false
+	var raw_walls = _read_property(
+		_root, ["wall_rects", "walls", "active_wall_rects"], []
+	)
+	if typeof(raw_walls) == TYPE_ARRAY:
+		_walls = raw_walls
+	var start := _cell(_player.global_position)
+	if _blocked(start):
+		_fail("player_blocked_after_unlock")
+		return false
+	var flood := _flood(start)
+	var came_from: Dictionary = flood.came_from
+	var distance: Dictionary = flood.distance
+	var exit_cell := _cell(_exit.global_position)
+	if not distance.has(exit_cell):
+		_detail_areas = [_exit]
+		_fail("unreachable_exit")
+		return false
+	var cells: Array[Vector2i] = []
+	var cursor := exit_cell
+	while cursor != start:
+		cells.push_front(cursor)
+		cursor = came_from[cursor]
+	_path = []
+	for cell in cells:
+		_path.append(_center(cell))
+	_path.append(_exit.global_position)
+	_target = _exit
+	_phase = "exit"
+	_arrival_frame = -1
+	return true
+
+func _ignore_area(candidate) -> void:
+	if candidate is Area2D:
+		_ignored_ids[candidate.get_instance_id()] = true
+		candidate.collision_layer = 0
+		candidate.collision_mask = 0
+		candidate.monitoring = false
+		candidate.monitorable = false
+
+func _ignore_areas(candidate) -> void:
+	if typeof(candidate) == TYPE_ARRAY:
+		for area in candidate:
+			_ignore_area(area)
+
+func _initialize() -> bool:
+	_root = get_tree().current_scene
+	if _root == null:
+		return false
+	var candidate = _read_property(_root, ["player"])
+	if not (candidate is Area2D):
+		_fail("missing_player_interface")
+		return false
+	_player = candidate
+	var raw_walls = _read_property(_root, ["wall_rects", "walls", "active_wall_rects"], [])
+	if typeof(raw_walls) != TYPE_ARRAY:
+		_fail("missing_wall_interface")
+		return false
+	_walls = raw_walls
+
+	_ignore_areas(_read_property(_root, ["ghosts"], []))
+	_ignore_areas(_read_property(_root, ["patrollers"], []))
+	_ignore_area(_read_property(_root, ["patroller", "hunter"], null))
+	_exit = _find_exit()
+	if _exit != null:
+		_ignored_ids[_exit.get_instance_id()] = true
+
+	var pickups := _remaining_pickups()
+	_initial_total = int(_read_property(
+		_root, ["total_dots", "total_gems", "total_pickups"], pickups.size()
+	))
+	if _initial_total <= 0 or pickups.is_empty():
+		_fail("no_pickups")
+		return false
+	if not _placement_preflight():
+		return false
+	return _plan_path()
+
+func _state() -> String:
+	return str(_read_property(_root, ["state"], "unknown"))
+
+func _physics_process(_delta: float) -> void:
+	if not _active:
+		return
+	_frame += 1
+	if _frame < START_DELAY_FRAMES:
+		return
+	if _root == null:
+		if not _initialize():
+			return
+
+	if get_tree().current_scene != _root or _state() == "won":
+		_pass()
+		return
+	if _state() == "over":
+		_fail("lose_state")
+		return
+	if _frame >= MAX_FRAMES:
+		_fail("timeout")
+		return
+
+	if _target == null or not is_instance_valid(_target) or _target.is_queued_for_deletion():
+		if _phase == "exit":
+			_fail("exit_disappeared")
+			return
+		if not _plan_path():
+			return
+		if _target == null:
+			# Every pickup has disappeared; allow its signal one physics frame to
+			# update state to won before deciding that completion logic is broken.
+			if _state() == "won":
+				_pass()
+			elif _exit != null:
+				_plan_exit()
+			elif _frame % 30 == 0:
+				_fail("win_state_not_reached")
+			return
+
+	if not _path.is_empty():
+		var waypoint := _path[0]
+		_player.global_position = _player.global_position.move_toward(waypoint, GRID * 0.75)
+		if _player.global_position.distance_to(waypoint) < 1.0:
+			_path.pop_front()
+	elif _phase == "exit":
+		if _arrival_frame < 0:
+			_arrival_frame = _frame
+		elif _frame - _arrival_frame >= 30:
+			_fail("exit_did_not_win")
+
+func _counts() -> Dictionary:
+	var remaining := _remaining_pickups().size() if _root != null else 0
+	return {
+		"remaining": remaining,
+		"collected": maxi(0, _initial_total - remaining),
+		"total": _initial_total,
+	}
+
+func _pass() -> void:
+	if not _active:
+		return
+	_active = false
+	var counts := _counts()
+	print("[OBJECTIVE] status=passed template=%s reason=none collected=%d total=%d remaining=%d frames=%d" % [_template, counts.collected, counts.total, counts.remaining, _frame])
+	get_tree().quit()
+
+func _fail(reason: String) -> void:
+	if not _active:
+		return
+	_active = false
+	var counts := _counts()
+	var reported_areas := _detail_areas if not _detail_areas.is_empty() else _remaining_pickups()
+	for area in reported_areas.slice(0, 12):
+		print("[OBJECTIVE_DETAIL] node=%s position=(%.1f,%.1f) ignored=%s" % [area.name, area.global_position.x, area.global_position.y, str(_ignored_ids.has(area.get_instance_id()))])
+	if reported_areas.size() > 12:
+		print("[OBJECTIVE_DETAIL] omitted=%d" % (reported_areas.size() - 12))
+	print("[OBJECTIVE] status=failed template=%s reason=%s collected=%d total=%d remaining=%d frames=%d" % [_template, reason, counts.collected, counts.total, counts.remaining, _frame])
+	get_tree().quit()
+"""
+
 AMBIENCE_GD = """extends Node
 
 func _ready():
@@ -678,8 +956,8 @@ def _asset_manifest(filenames: list[str], design_doc: dict) -> str:
                 "second sprite for it"
             )
         elif name.startswith("extra_"):
-            # extra_<slug>_00001_.png - recover the slug between the prefix and
-            # the generator's numeric suffix.
+            # Stable files are extra_<slug>.png; the regex also accepts older
+            # ComfyUI-numbered files collected before run isolation.
             slug = re.sub(r"_\d+_?$", "", name.rsplit(".", 1)[0][len("extra_"):])
             note = f"{extras.get(slug, slug.replace('_', ' '))}, 128x128 with transparency"
         else:
@@ -739,7 +1017,12 @@ SYSTEM_PROMPT_BASE = (
     "Never draw a game object as a plain ColorRect or an untextured rectangle "
     "while a matching sprite is listed. Only when nothing in the list fits "
     "should you fall back to reusing the key_item sprite tinted via modulate "
-    "and scaled, as the example does. Put every gameplay-tuning number - speeds, "
+    "and scaled, as the example does. "
+    "Generated level scripts run on the host, so never use FileAccess, "
+    "DirAccess, ResourceSaver, OS process/shell/environment methods, networking "
+    "classes, native extensions, user://, file://, or web URLs. Resource loads "
+    "are limited to the exact res://assets/* paths listed in the brief. "
+    "Put every gameplay-tuning number - speeds, "
     "rates, durations, counts, radii - in a named variable at the top of "
     "the script so a human playtester can retune it later. An Anim autoload "
     "provides the character animation, and you must use it. When a hero_walk "
@@ -2006,89 +2289,6 @@ TUNE_SYSTEM_PROMPT = (
 )
 
 
-# Ports of the GPU services that are finished by the time the Coder runs.
-# ComfyUI and MusicGen both hold VRAM for the whole run despite having done
-# their single pass of work up front (assets and BGM). On a 16GB card that
-# residency is the difference between a 13GB coder model loading and dying:
-# measured 1817 MiB held with both running vs 961 MiB without, against a
-# model that needs ~14.1GB - i.e. 354 MiB headroom (crashes) vs 1210 MiB
-# (loads). Opt-in because the user starts these servers themselves.
-GPU_SERVICE_PORTS = (8188, 8189)
-
-
-def _stop_gpu_services() -> None:
-    """Free VRAM held by finished services so a large coder model can load.
-
-    Enabled with SAGA_STOP_GPU_SERVICES=1. Only needed when the Coder's model
-    is large enough to be near the card's ceiling; harmless but unnecessary
-    for the default 14B. Note this stops servers the user started - they must
-    be restarted before the next pipeline run (or before a --playtest
-    `reasset` cycle, which needs ComfyUI again).
-    """
-    if os.environ.get("SAGA_STOP_GPU_SERVICES") != "1":
-        return
-    for port in GPU_SERVICE_PORTS:
-        subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                f"Get-NetTCPConnection -LocalPort {port} -State Listen "
-                f"-ErrorAction SilentlyContinue | ForEach-Object "
-                f"{{ Stop-Process -Id $_.OwningProcess -Force -Confirm:$false }}",
-            ],
-            capture_output=True,
-        )
-    time.sleep(5)  # let the driver actually reclaim before the model loads
-    print(f"[Coder] Stopped GPU services on ports {GPU_SERVICE_PORTS} to free VRAM")
-
-
-def _is_remote() -> bool:
-    return CODER_BACKEND in ("deepseek", "openai", "remote")
-
-
-def _chat(messages: list[dict], model: str) -> str:
-    """One completion from whichever backend is configured; returns raw text.
-
-    The escalating-backoff retry below exists for a local-only failure: the
-    Ollama runner dying on model load under VRAM pressure. A hosted backend
-    has its own retry semantics in the SDK, so it goes straight through.
-    """
-    if _is_remote():
-        from saga.llm import chat
-
-        # Reasoning models spend most of the budget thinking before emitting a
-        # line: two measured level generations used 18.2k and 18.9k completion
-        # tokens for ~370 lines of output. At 8192 the script is cut off
-        # mid-file, which surfaces as "no fenced code block" rather than as a
-        # truncation, so the headroom here is deliberate.
-        return chat(messages, model=model, max_tokens=32000)
-
-    last_error = None
-    for attempt, backoff in enumerate([0, 20, 40, 60]):
-        if backoff:
-            print(f"[Coder] Ollama runner unstable (attempt {attempt}), waiting {backoff}s: {last_error}")
-            time.sleep(backoff)
-        try:
-            return ollama.chat(model=model, messages=messages)["message"]["content"]
-        except (ollama.ResponseError, httpx.ConnectError, httpx.ReadTimeout) as e:
-            last_error = e
-    raise RuntimeError(
-        f"Ollama runner did not recover after 4 attempts for model {model!r}: {last_error}"
-    )
-
-
-def _extract_gdscript(text: str) -> str:
-    match = re.search(r"```gdscript\s*\n(.*?)```", text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    # Fall back to a generic fenced block if the model didn't tag it
-    match = re.search(r"```\s*\n(.*?)```", text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    raise ValueError("Coder agent response did not contain a fenced code block")
-
-
 def coder(state: GraphState) -> GraphState:
     design_doc = state["design_doc"]
     sprite_paths = state.get("sprite_paths") or []
@@ -2096,9 +2296,10 @@ def coder(state: GraphState) -> GraphState:
     current_level = state.get("current_level") or 0
     levels = design_doc["levels"]
     total_levels = len(levels)
+    project_dir = run_project_dir(state)
 
-    PROJECT_DIR.mkdir(parents=True, exist_ok=True)
-    assets_dir = PROJECT_DIR / "assets"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    assets_dir = project_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
 
     asset_filenames = []
@@ -2134,7 +2335,7 @@ def coder(state: GraphState) -> GraphState:
     template = design_doc.get("mechanic_template") or "collect"
     example_user, example_response = FEW_SHOTS[TEMPLATE_TO_FEW_SHOT.get(template, "collect")]
 
-    script_file = PROJECT_DIR / f"Level_{current_level}.gd"
+    script_file = project_dir / f"Level_{current_level}.gd"
     qa_errors = state.get("qa_errors") or []
     tune_notes = state.get("tune_notes") or []
 
@@ -2284,22 +2485,55 @@ def coder(state: GraphState) -> GraphState:
             )
         )
 
-    (PROJECT_DIR / "project.godot").write_text(
+    # Security pre-flight: model output is untrusted code that QA will execute.
+    # Give the Coder one chance to remove unnecessary host capabilities, then
+    # fail closed if any survive.
+    safety_findings = scan_generated_gdscript(gdscript)
+    if safety_findings:
+        print(
+            f"[Coder] Unsafe generated API use, requesting one correction: "
+            f"{[finding.message() for finding in safety_findings]}"
+        )
+        errors_desc = "\n".join(f"- {finding.message()}" for finding in safety_findings)
+        gdscript = _extract_gdscript(
+            _chat(
+                [
+                    {"role": "system", "content": FIX_SYSTEM_PROMPT},
+                    {"role": "user", "content": example_user},
+                    {"role": "assistant", "content": example_response},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Previous script:\n```gdscript\n{gdscript}\n```\n\n"
+                            f"{assets_line}"
+                            "Remove every forbidden host capability below. The level "
+                            "needs only scene, input, animation, and exact res://assets/ "
+                            f"loads:\n{errors_desc}\n"
+                        ),
+                    },
+                ],
+                model,
+            )
+        )
+    assert_safe_gdscript(gdscript)
+
+    (project_dir / "project.godot").write_text(
         PROJECT_GODOT_TEMPLATE.format(title=design_doc["title"]), encoding="utf-8"
     )
-    (PROJECT_DIR / "screenshot.gd").write_text(SCREENSHOT_GD, encoding="utf-8")
-    (PROJECT_DIR / "sfx.gd").write_text(SFX_GD, encoding="utf-8")
-    (PROJECT_DIR / "ambience.gd").write_text(AMBIENCE_GD, encoding="utf-8")
-    (PROJECT_DIR / "anim.gd").write_text(ANIM_GD, encoding="utf-8")
-    (PROJECT_DIR / "autoplay.gd").write_text(AUTOPLAY_GD, encoding="utf-8")
+    (project_dir / "screenshot.gd").write_text(SCREENSHOT_GD, encoding="utf-8")
+    (project_dir / "sfx.gd").write_text(SFX_GD, encoding="utf-8")
+    (project_dir / "ambience.gd").write_text(AMBIENCE_GD, encoding="utf-8")
+    (project_dir / "anim.gd").write_text(ANIM_GD, encoding="utf-8")
+    (project_dir / "autoplay.gd").write_text(AUTOPLAY_GD, encoding="utf-8")
+    (project_dir / "objective_probe.gd").write_text(OBJECTIVE_PROBE_GD, encoding="utf-8")
     beats = [lvl.get("outro_beat", "") for lvl in levels]
-    (PROJECT_DIR / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
-    (PROJECT_DIR / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")
-    (PROJECT_DIR / "interlude.gd").write_text(INTERLUDE_GD, encoding="utf-8")
-    (PROJECT_DIR / "Interlude.tscn").write_text(INTERLUDE_TSCN, encoding="utf-8")
-    (PROJECT_DIR / "victory.gd").write_text(VICTORY_GD, encoding="utf-8")
-    (PROJECT_DIR / "Victory.tscn").write_text(VICTORY_TSCN, encoding="utf-8")
-    (PROJECT_DIR / f"Level_{current_level}.tscn").write_text(
+    (project_dir / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
+    (project_dir / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")
+    (project_dir / "interlude.gd").write_text(INTERLUDE_GD, encoding="utf-8")
+    (project_dir / "Interlude.tscn").write_text(INTERLUDE_TSCN, encoding="utf-8")
+    (project_dir / "victory.gd").write_text(VICTORY_GD, encoding="utf-8")
+    (project_dir / "Victory.tscn").write_text(VICTORY_TSCN, encoding="utf-8")
+    (project_dir / f"Level_{current_level}.tscn").write_text(
         _build_level_tscn(current_level), encoding="utf-8"
     )
     script_file.write_text(gdscript, encoding="utf-8")
@@ -2307,11 +2541,11 @@ def coder(state: GraphState) -> GraphState:
     action = "Fixed" if qa_errors else ("Tuned" if tune_notes else "Generated")
     print(
         f"[Coder] {action} level {current_level + 1}/{total_levels} "
-        f"({template}, model={model}) -> {PROJECT_DIR}"
+        f"({template}, model={model}) -> {project_dir}"
     )
     # tune_notes are consumed by this pass; clear them so a subsequent QA
     # retry takes the fix path against the already-tuned script.
-    result = {"godot_project_path": str(PROJECT_DIR), "tune_notes": None, "coder_model": model}
+    result = {"godot_project_path": str(project_dir), "tune_notes": None, "coder_model": model}
     if not qa_errors and not tune_notes:
         # Only a fresh generation carries the design brief. Fix/tune passes
         # omit the key entirely rather than setting None, so the original

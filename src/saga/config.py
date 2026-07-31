@@ -1,0 +1,150 @@
+"""Central configuration for SAGA.
+
+The settings module loads ``.env`` before reading any environment-backed
+value. Importing agent modules through ``saga.graph`` therefore cannot freeze
+defaults before the CLI has a chance to load the user's configuration.
+"""
+
+from dataclasses import dataclass
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
+
+def _env(name: str, default: str) -> str:
+    return os.environ.get(name, default).strip()
+
+
+def _optional_env(name: str) -> str | None:
+    value = os.environ.get(name)
+    return value.strip() if value and value.strip() else None
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+
+
+@dataclass(frozen=True)
+class Settings:
+    openai_base_url: str
+    openai_key_env: str
+
+    designer_backend: str
+    designer_model: str
+    designer_remote_model: str
+
+    director_backend: str
+    director_model: str | None
+    director_remote_model: str
+
+    coder_backend: str
+    coder_model: str
+    coder_remote_model: str
+    dotmaze_model: str
+    coder_agentic: bool
+    stop_gpu_services: bool
+    agent_max_turns: int
+
+    vision_backend: str
+    vision_model: str
+    vision_remote_model: str
+    vision_base_url: str
+    vision_key_env: str
+    vision_timeout: float
+
+    ollama_url: str
+    comfyui_url: str
+    musicgen_url: str
+    output_root: str
+    godot_exe: str
+    gate_model: str
+    gate_play_timeout: float
+
+    feedback_backend: str
+    feedback_model: str
+
+    @classmethod
+    def from_environment(cls) -> "Settings":
+        coder_model = _env("SAGA_CODER_MODEL", "qwen2.5-coder:14b")
+        coder_remote_model = _env("SAGA_CODER_REMOTE_MODEL", "deepseek-v4-pro")
+        feedback_backend = _env("SAGA_FEEDBACK_BACKEND", "local").lower()
+        if feedback_backend == "claude":
+            feedback_default = "claude-sonnet-5"
+        elif feedback_backend in {"deepseek", "openai", "remote"}:
+            feedback_default = coder_remote_model
+        else:
+            feedback_default = coder_model
+        return cls(
+            openai_base_url=_env("SAGA_OPENAI_BASE_URL", "https://api.deepseek.com").rstrip("/"),
+            openai_key_env=_env("SAGA_OPENAI_KEY_ENV", "DEEPSEEK_API_KEY"),
+            designer_backend=_env("SAGA_DESIGNER_BACKEND", "local").lower(),
+            designer_model=_env(
+                "SAGA_DESIGNER_MODEL",
+                "hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q3_K_S",
+            ),
+            designer_remote_model=_env("SAGA_DESIGNER_REMOTE_MODEL", "deepseek-v4-pro"),
+            director_backend=_env("SAGA_DIRECTOR_BACKEND", "local").lower(),
+            director_model=_optional_env("SAGA_DIRECTOR_MODEL"),
+            director_remote_model=_env("SAGA_DIRECTOR_REMOTE_MODEL", "deepseek-v4-pro"),
+            coder_backend=_env("SAGA_CODER_BACKEND", "ollama").lower(),
+            coder_model=coder_model,
+            coder_remote_model=coder_remote_model,
+            dotmaze_model=_env("SAGA_DOTMAZE_MODEL", "batiai/qwen3.6-35b:q3"),
+            coder_agentic=_bool_env("SAGA_CODER_AGENTIC"),
+            stop_gpu_services=_bool_env("SAGA_STOP_GPU_SERVICES"),
+            agent_max_turns=_int_env("SAGA_AGENT_MAX_TURNS", 14),
+            vision_backend=_env("SAGA_VISION_BACKEND", "local").lower(),
+            vision_model=_env("SAGA_VISION_MODEL", "gemma4:12b"),
+            vision_remote_model=_env(
+                "SAGA_VISION_REMOTE_MODEL",
+                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+            ),
+            vision_base_url=_env(
+                "SAGA_VISION_BASE_URL",
+                "https://integrate.api.nvidia.com/v1",
+            ).rstrip("/"),
+            vision_key_env=_env("SAGA_VISION_KEY_ENV", "NVIDIA_API_KEY"),
+            vision_timeout=_float_env("SAGA_VISION_TIMEOUT", 90.0),
+            ollama_url=_env("SAGA_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/"),
+            comfyui_url=_env("SAGA_COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/"),
+            musicgen_url=_env("SAGA_MUSICGEN_URL", "http://127.0.0.1:8189").rstrip("/"),
+            output_root=_env(
+                "SAGA_OUTPUT_ROOT",
+                str(Path(__file__).resolve().parents[2] / "output"),
+            ),
+            godot_exe=_env(
+                "SAGA_GODOT_EXE",
+                "D:\\Godot\\Godot_v4.7-stable_win64_console.exe",
+            ),
+            gate_model=_env("SAGA_GATE_MODEL", "deepseek-v4-pro"),
+            gate_play_timeout=_float_env("SAGA_GATE_PLAY_TIMEOUT", 900.0),
+            feedback_backend=feedback_backend,
+            feedback_model=_env("SAGA_FEEDBACK_MODEL", feedback_default),
+        )
+
+
+settings = Settings.from_environment()
+# The Ollama SDK reads OLLAMA_HOST. Mirror SAGA's central URL unless the user
+# explicitly configured the SDK variable themselves.
+os.environ.setdefault("OLLAMA_HOST", settings.ollama_url)

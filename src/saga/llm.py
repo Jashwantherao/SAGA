@@ -15,8 +15,11 @@ quality rather than cost.
 
 import os
 
-DEFAULT_BASE_URL = os.environ.get("SAGA_OPENAI_BASE_URL", "https://api.deepseek.com")
-DEFAULT_KEY_ENV = os.environ.get("SAGA_OPENAI_KEY_ENV", "DEEPSEEK_API_KEY")
+from saga.config import settings
+
+
+DEFAULT_BASE_URL = settings.openai_base_url
+DEFAULT_KEY_ENV = settings.openai_key_env
 
 # Keyed by (base_url, key_env): agents can legitimately want different
 # providers at once - the Coder on one, the vision reviewer on another - and a
