@@ -108,6 +108,12 @@ FORBIDDEN_PATTERNS = [
         "never run and the game can never advance a level. Call it directly",
         r"if\s+Game\s*!=\s*null",
     ),
+    (
+        "the script uses 'Sprite', which does not exist in Godot 4 - it was "
+        "renamed Sprite2D (or Sprite3D in 3D). Replace every use, as a type "
+        "hint, constructor, or 'is' check, with Sprite2D",
+        r"\bSprite\b",
+    ),
 ]
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent.parent / "output" / "godot_project"
 
@@ -624,7 +630,10 @@ script = ExtResource("1")
 # confidently, and QA can only report them one at a time.
 GODOT4_API_NOTES = (
     "Godot 4 API notes - your training data may predate these renames, and "
-    "getting them wrong is the single most common failure here. Camera2D uses "
+    "getting them wrong is the single most common failure here. There is no "
+    "class named `Sprite` - Godot 4 renamed it `Sprite2D` (or `Sprite3D` in "
+    "3D); every sprite node, type hint, and `is` check must say Sprite2D. "
+    "Camera2D uses "
     "`enabled` (not `current`) and `position_smoothing_enabled` / "
     "`position_smoothing_speed` (not `smoothing_enabled` / `smoothing_speed`); "
     "there is no `limit_smoothing_enabled`, and make_current() works only once "
