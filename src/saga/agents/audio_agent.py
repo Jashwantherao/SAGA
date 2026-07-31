@@ -9,10 +9,11 @@ from pathlib import Path
 
 import httpx
 
+from saga.config import settings
 from saga.state import GraphState
+from saga.workspace import assets_dir
 
-MUSICGEN_URL = "http://127.0.0.1:8189"
-OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent.parent / "output" / "assets"
+MUSICGEN_URL = settings.musicgen_url
 
 
 def _musicgen_ready() -> str | None:
@@ -53,9 +54,10 @@ def audio_agent(state: GraphState) -> GraphState:
     resp.raise_for_status()
     result = resp.json()
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_dir = assets_dir(state)
+    output_dir.mkdir(parents=True, exist_ok=True)
     src_path = Path(result["path"])
-    dest_path = OUTPUT_DIR / src_path.name
+    dest_path = output_dir / src_path.name
     shutil.copy(src_path, dest_path)
 
     print(f"[Audio Agent] Generated {result['duration_seconds']:.1f}s of BGM in {result['generation_time_seconds']:.1f}s -> {dest_path}")

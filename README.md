@@ -5,18 +5,22 @@ Multi-agent LangGraph pipeline that turns a one-line prompt into a playable, mul
 ```
 Studio Director -> Game Designer -> (Asset Maker, Audio Agent)
     -> Coder <-> QA Agent  (repeats per level, advancing through the design
-       doc's levels)  -> [--gate: human plays this level] -> [--playtest] -> done
+       doc's levels; every failure returns to the Studio Director, which
+       triages it: fix / regenerate / new art)
+    -> [--gate: human plays this level] -> [--playtest] -> done
 ```
 
 | Agent | Runs on | Does |
 |---|---|---|
-| Studio Director | in-process | Thin pass-through entry point |
+| Studio Director | local (shares the Coder's model) or cloud | Intake, then supervision: every QA failure comes back to it and it routes the failure to the cheapest plausible fix - hand the errors to the Coder (with a one-line diagnosis when the evidence supports one), discard the script and regenerate fresh (when its own history shows a repair that didn't take), or re-describe one art asset and rebuild on top of it. Any failure of the triage call falls back to the deterministic fix-then-regenerate policy it replaced; the graph still owns the retry budget |
 | Game Designer | local (`qwen3-coder:30b-a3b`) or cloud (`claude-sonnet-5`) | One-line idea -> structured design doc: picks one of 9 mechanic templates, a hero description, key item (with a gameplay role), story, 3-5 levels each with its own background, an authored non-decreasing difficulty curve (`intensity` 1-10), which of the mechanic's tuning levers rise per level, and a narrative beat shown between levels |
 | Asset Maker | local GPU, ComfyUI + Flux.1 schnell + rembg | The hero in a resting **and** a walking pose (sharing one seed, so they render the same character), the key-item icon, up to four `extra_sprites` the design doc asked for by name, and one background per level. Icons generate at 512x512 for reliable full-body framing, are background-removed via rembg since Flux can't emit alpha, then cropped to the alpha bounding box and downscaled to 128x128. Without `extra_sprites`, anything that isn't a hero, icon or background - platforms, enemies, walls - had no image and the Coder drew it as an untextured rectangle |
 | Audio Agent | local GPU, MusicGen (`transformers`) | Background music from the design doc's audio mood; loops continuously across level changes via a harness-owned autoload |
 | Coder | local GPU, Ollama (`qwen2.5-coder:14b`, or a per-template override for larger few-shots) | Writes one `Level_N.gd` per level from a template-matched few-shot, rendering that level's authored difficulty via an intensity anchor (the few-shot's own numbers = intensity 4/10, ~15% more pressure per point via that template's specific levers); harness writes all deterministic boilerplate - `project.godot`, `Level_N.tscn`, procedural SFX, ambient particles, the title/win/lose/restart state machine's autoloads, the between-level narrative interlude, and the Victory scene. A post-generation contract check (`TEMPLATE_CONTRACTS`) verifies each template's required systems actually made it into the script - QA only catches crashes, not a system being silently simplified away |
-| QA Agent | Godot 4.7, headless | Imports assets and runs each level (which also catches compile errors), then **plays it**: an Autoplay autoload holds each arrow key in turn and compares how much the world moves against a no-input baseline, so a level that ignores the player fails instead of passing. Then a static balance check (`balance.py`) on the script's own tuning constants, and a screenshot reviewed by a vision model. Failures route back to the Coder per level (up to `MAX_RETRIES`), escalating to a fresh regeneration if 3 fix attempts don't converge |
-| Playtest loop (`--playtest`) | stdin capture + local/cloud Feedback Interpreter | After a QA-passed build, asks a human three post-play questions and routes their feedback to the cheapest fix: `tune` (surgical numeric edit), `reasset` (regenerate one asset), or `redesign` (full rebuild) |
+| QA Agent | Godot 4.7, headless | Imports assets and runs each level (which also catches compile errors), then **plays it**: Autoplay holds each arrow key and compares motion against an idle baseline. For `dot_maze` and `maze_chase`, a second harness-owned probe flood-fills the live wall geometry, preflights every pickup placement, moves the real player through valid corridors, collects every spawned pickup, follows an unlocked exit when present, and requires the generated script to enter its actual `won` state. Then static balance checks and screenshot vision review run. Every attempt is retained in `run.json`; unresolved gating defects cannot become clean passes |
+| Playtest loop (`--playtest`) | stdin capture + local, OpenAI-compatible, or Claude Feedback Interpreter | After a QA-passed build, asks a human three post-play questions and routes their feedback to the cheapest fix: `tune` (a targeted `Level_N.gd` numeric edit), `reasset` (regenerate assets and rebuild affected references), or `redesign` (full rebuild) |
+
+Two kinds of decisions run this studio, and the split is deliberate. Models make the judgment calls: what game to design, what code to write, and - since the Studio Director became a real supervisor - where every failure should be routed, a decision that used to be a hardcoded `if`. The harness owns everything that must not be creative: retry budgets, template contracts, the QA gates, and all the deterministic Godot boilerplate. When no model is reachable for a judgment call, each agent degrades to a deterministic fallback rather than blocking the run. The opt-in agentic Coder (`SAGA_CODER_AGENTIC=1`) extends the same principle to the code itself: a tool-using loop that runs, looks at, and revises its own level, with a measured score ratchet so it can never ship worse than its draft.
 
 Nothing requires a paid API key — the whole pipeline runs on local inference. But the local models are also what shaped the architecture, and it is worth being explicit about that: the mechanic templates, the long few-shots and the single-file-per-level constraint all exist because a 14-30B model on one consumer GPU could not be trusted with more. Pointing the Coder at a frontier model removes that ceiling entirely — it will write a side-scrolling platformer with gravity, coyote time and a scrolling camera from a description alone, with no template and no worked example. `SAGA_CODER_BACKEND=deepseek` (or any OpenAI-compatible endpoint, see Model overrides) switches it; roughly a cent per game.
 
@@ -24,7 +28,7 @@ Nothing requires a paid API key — the whole pipeline runs on local inference. 
 
 Generated sprites are single still images — there is no sprite sheet anywhere in the pipeline — so a hero used to be a static PNG sliding across a background. Three harness-owned mechanisms close most of that gap without frame-based art:
 
-- **Pose swapping.** The hero is drawn twice at a shared seed, and `Anim.set_poses` swaps texture by movement state, so a character visibly stands up to move and settles when it stops.
+- **Pose swapping.** The hero is drawn twice at a shared seed with an explicit screen-left native facing, and `Anim.set_poses` swaps texture by movement state. `Anim.walk` mirrors that native pose only for rightward travel, so the character visibly stands up to move, settles when it stops, and faces its actual movement direction.
 - **Procedural motion.** `Anim.walk` bobs, leans and flips to face travel, falling back to a slow idle breath so nothing is ever completely frozen; `Anim.hover` drifts anything that floats.
 - **Leg deformation.** A canvas shader shears the lower part of the sprite on a sine wave, near and far halves in opposite phase, so the legs scissor. This exists because image generation cannot draw a gait: seed-locking holds a character consistent across poses but gives no control over limb position, and a request for two consecutive walk frames returns two standing poses.
 
@@ -43,6 +47,9 @@ Every model is swappable via environment variable without touching code:
 | Variable | Default | Controls |
 |---|---|---|
 | `SAGA_DESIGNER_BACKEND` | `local` | `local` or `claude` |
+| `SAGA_DIRECTOR_BACKEND` | `local` | Studio Director triage: `local`, `claude`, or `deepseek`/`openai`/`remote` |
+| `SAGA_DIRECTOR_MODEL` | the Coder's model | Director's local triage model. Defaults to whatever the Coder is using so a triage between attempts costs no VRAM swap |
+| `SAGA_DIRECTOR_REMOTE_MODEL` | `deepseek-v4-pro` | Director's model when hosted |
 | `SAGA_DESIGNER_MODEL` | `hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q3_K_S` | Game Designer's local model |
 | `SAGA_CODER_MODEL` | `qwen2.5-coder:14b` | Coder's model |
 | `SAGA_DOTMAZE_MODEL` | `batiai/qwen3.6-35b:q3` | Coder's model specifically for `dot_maze` (its few-shot exceeds the 14B's reliable imitation length) |
@@ -53,6 +60,8 @@ Every model is swappable via environment variable without touching code:
 | `SAGA_OPENAI_KEY_ENV` | `DEEPSEEK_API_KEY` | Which env var holds the key |
 | `SAGA_VISION_BACKEND` | `local` | `nvidia` routes screenshot review to a hosted VLM |
 | `SAGA_VISION_REMOTE_MODEL` | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | Hosted vision model |
+| `SAGA_FEEDBACK_BACKEND` | `local` | Playtest interpreter: `local`, `claude`, or `deepseek`/`openai`/`remote` |
+| `SAGA_FEEDBACK_MODEL` | the matching local/remote default | Playtest interpreter model |
 | `SAGA_STOP_GPU_SERVICES` | unset | Set to `1` to stop ComfyUI/MusicGen once assets and BGM are done, freeing VRAM for a large coder model (see Known limitations) |
 
 These defaults are the result of head-to-head benchmarking, not guesses - see Known limitations for what lost and why.
@@ -63,7 +72,7 @@ These defaults are the result of head-to-head benchmarking, not guesses - see Kn
 
 ```sh
 uv sync
-cp .env.example .env   # then edit .env and add your ANTHROPIC_API_KEY
+cp .env.example .env   # add ANTHROPIC_API_KEY only when selecting a Claude backend
 ```
 
 ### Local GPU services (everything else)
@@ -146,7 +155,7 @@ Invoke-WebRequest http://127.0.0.1:8189/health -UseBasicParsing | Select StatusC
 ```
 All three should return `200`. If any hangs or refuses the connection, that service isn't actually up yet - check its terminal window for errors before moving on.
 
-**Godot 4.7** (QA Agent) — download the portable build and update `GODOT_EXE` in `src/saga/agents/qa_agent.py` if your install path differs from `D:\Godot\Godot_v4.7-stable_win64_console.exe`.
+**Godot 4.7** (QA Agent) — download the portable build and set `SAGA_GODOT_EXE` in `.env` if your install path differs from `D:\Godot\Godot_v4.7-stable_win64_console.exe`.
 
 **rembg** (Asset Maker's background removal) is a `uv sync` dependency, no separate service - but its first call downloads the ~170MB U2-Net model to `~/.u2net/`.
 
@@ -179,7 +188,11 @@ Once all three local services are confirmed up (see above):
 
 ```sh
 uv sync
+uv run saga --doctor
 uv run python -m saga.main "a mouse thief robbing a museum patrolled by a clockwork cat"
+
+# quick one-level end-to-end prototype
+uv run python -m saga.main --levels 1 "a mouse thief robbing a one-room vault"
 
 # or, to enter the human playtest loop once QA passes:
 uv run python -m saga.main "a mouse thief robbing a museum patrolled by a clockwork cat" --playtest
@@ -201,25 +214,26 @@ treated as approval so batch runs cannot hang.
 
 This is a real example, not a placeholder - it's what produced "The Clockwork Heist," a 4-level maze-chase game, fully autonomously, zero hand-authoring anywhere in the loop.
 
-What happens, in order: Studio Director passes your prompt to the Game Designer, which returns a full design doc (title, mechanic, 3-5 levels with an authored difficulty curve and narrative beats) printed to the console and saved to `output/design_doc.json`; Asset Maker and Audio Agent then generate the hero/key-item/background art and the BGM in parallel; the Coder writes each level's GDScript and QA Agent builds and verifies it in Godot, retrying failures automatically (up to `MAX_RETRIES` per level) before moving to the next level. Total time for a 3-4 level game is typically several minutes, dominated by image generation and Coder retries.
+What happens, in order: Studio Director allocates an isolated `output/runs/<run-id>/` workspace and passes your prompt to the Game Designer, which returns a full design doc (title, mechanic, 3-5 levels with an authored difficulty curve and narrative beats) printed to the console and saved in that workspace; Asset Maker and Audio Agent then generate the hero/key-item/background art and the BGM in parallel; the Coder writes each level's GDScript and QA Agent builds and verifies it in Godot, with every failure triaged by the Studio Director - repair the script, regenerate it fresh, or regenerate a wrong asset - within `MAX_RETRIES` per level before moving to the next level. Total time for a 3-4 level game is typically several minutes, dominated by image generation and Coder retries.
 
-Final output reports sprite/BGM paths, the generated Godot project path, final QA status per level (pass/fail + retry count), and each level's screenshot path.
+Final output reports sprite/BGM paths, the generated Godot project path, aggregate QA status, and the latest screenshot. The isolated run directory also contains `design_doc.json` and a machine-readable versioned `run.json` manifest. Its `level_results` ledger retains every QA attempt, error, retry, advisory and screenshot per level; `ship_ready` is true only when every designed level has a recorded clean pass. Advisory-only builds are labelled `passed_with_warnings`, and a required QA probe that cannot produce a verdict is labelled `blocked` rather than silently passing.
 
 To play the result:
 ```sh
-"D:\Godot\Godot_v4.7-stable_win64_console.exe" --path output\godot_project
+"D:\Godot\Godot_v4.7-stable_win64_console.exe" --path output\runs\<run-id>\godot_project
 ```
 
 With `--playtest`, after QA passes you'll be asked three questions (ship or fix / anything look or sound wrong / how did it feel), then a Feedback Interpreter routes your answer to a `tune` (numeric edit), `reasset` (art/audio regeneration), or `redesign` (full rebuild) pass automatically, for up to `MAX_PLAYTEST_CYCLES` rounds.
 
 ## Known limitations
 
-- QA's autoplay probe finds the floor, not the ceiling. It proves a player exists in the game - held keys move the world markedly more than it moves unattended - but it cannot reach an objective, so it will happily pass a level that is responsive and still unwinnable. A herding game whose creatures could never actually be pushed anywhere passed every automated check and was caught by a human in under a minute.
+- Generic autoplay still finds the floor, not the ceiling: it proves a player responds to input but does not reach an objective. `dot_maze` and `maze_chase` are the first exceptions: their shared deterministic objective probe verifies spawn clearance, pickup reachability, collection, optional exit traversal, and the real win state. The remaining templates still need equivalent mechanic-specific solvers; a herding game whose creatures could never actually be pushed anywhere remains the motivating failure case.
 - The autoplay probe's label-change signal is advisory, not a gate. It assumes holding a direction advances the game, which holds for timers, drains and touch-collection but not for puzzles: an `ordered_switches` level only updates its label when the right switch is hit in the right order, and random input will not manage that. A working build was measured failing exactly this way.
-- Vision QA gates only on defects the Coder can fix - a hero that never made it on screen, a background not filling, clipped text. Placeholder art is reported as advisory instead, because no rewrite can conjure a sprite the Asset Maker never generated. Precision is good (no false positives across the builds measured) but recall is limited: both candidate models missed a label sitting behind a message box. Gating is capped at one retry per level, and a defect surviving that is reported as `UNRESOLVED` rather than silently passing.
+- Vision QA gates only on defects the Coder can fix - a hero that never made it on screen, a background not filling, clipped text. Placeholder art is reported as advisory instead, because no rewrite can conjure a sprite the Asset Maker never generated. Precision is good (no false positives across the builds measured) but recall is limited: both candidate models missed a label sitting behind a message box. A code-fixable visual defect remains a failed QA attempt until it is repaired or the retry budget is exhausted; it can no longer be converted into a clean pass after one correction.
 - Nothing reconciles art against code. Backgrounds routinely contain painted objects that look interactive but aren't - a pool the player aims for that is part of the image, jellyfish that are scenery. Art and code are generated independently and no check compares them.
 - The Game Designer defaults to a local 30B model rather than the larger Gemma 4 26B: in a head-to-head on the same schema, Gemma failed 2 of 3 test prompts with truncated JSON output (even after raising the request's context/output token budget, which fixed a real under-provisioning bug and was kept regardless). The Coder likewise stays on the 14B by default rather than a 35B alternative (Qwen 3.6) after benchmarking showed the bigger model ~2x slower with a real reliability regression on one run - the few-shot anchoring, not model size, is what makes Coder generation reliable for most templates, so bigger doesn't automatically mean better. The one exception is `dot_maze`, whose 244-line few-shot is long enough that the 14B drops variable declarations and a first attempt on the 30B silently deleted an entire system rather than just failing to compile - that template routes to the 35B specifically, per-template, not as a global default change.
 - Large coder models are tight on a 16GB card, and the failure mode is ugly. `dot_maze`'s 35B model needs ~14.1GB; ComfyUI and MusicGen each keep holding VRAM for the entire run despite finishing their work up front, and that residency (measured: 1817 MiB with both alive vs 961 MiB without) leaves only ~354 MiB of headroom - the model dies mid-load with a Windows CUDA-init failure (`0xc0000409`) rather than reporting a clean out-of-memory. Set `SAGA_STOP_GPU_SERVICES=1` to have the Coder stop those services at the start of the code phase (assets and BGM are already generated by then), which raises headroom to ~1210 MiB and lets the model load reliably. Note this stops servers you started - restart them before the next run, or before a `--playtest` `reasset` cycle that needs ComfyUI again. The retry-with-backoff in `coder.py` remains as a safety net but is not the fix: no amount of retrying helps when the model cannot fit.
-- The playtest loop's Feedback Interpreter and the Game Designer's cloud (`claude`) backend are unexercised while the Anthropic API is unfunded; Claude can stand in for one-off runs (see git history for examples), but there's no automated substitute for that specific path yet - the local Game Designer backend covers autonomous end-to-end runs today.
+- The cloud (`claude`) backends of the Game Designer, Studio Director, and Feedback Interpreter remain less exercised than the local paths while the Anthropic API is unfunded. Every role has a local or OpenAI-compatible path, so this no longer blocks autonomous or human-playtest runs.
+- The Studio Director's triage has been validated on synthetic failure evidence — fix on a first-time compile error, regenerate on an error that survived two repairs, reasset on an art-side defect: all three routed correctly on the local 14B — but not yet against a full autonomous run's real failure distribution. Its `reasset` route also regenerates every asset, not just the one it re-described, because the Asset Maker only works in batches.
 - No Art Director agent yet — Asset Maker and Audio Agent read the design doc directly.
 - Background art tends toward perspective rendering while gameplay is flat top-down, causing objects to visually "float" against the scene. Asset Maker's background prompt now explicitly requests a strict top-down orthographic view, which measurably helps (walls read as blocks with visible tops instead of a receding vanishing-point corridor) but doesn't fully eliminate it - Flux follows perspective instructions unreliably, a known limitation of diffusion image models generally, not something prompt wording alone can fully close.

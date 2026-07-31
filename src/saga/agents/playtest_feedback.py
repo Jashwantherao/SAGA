@@ -2,10 +2,10 @@
 into routable revisions.
 
 Two pieces: capture_playtest_feedback() asks the human three questions on
-stdin after they play the build, and interpret_feedback() is a cloud-Claude
-call (same cloud-for-judgment / local-for-production split as the Game
-Designer) that converts the raw answers plus the current design doc and
-Main.gd into a structured FeedbackRevision: which route each issue takes
+stdin after they play the build, and interpret_feedback() uses a configurable
+local, OpenAI-compatible, or Claude backend to convert the raw answers plus the
+current design doc and generated Level_N.gd scripts into a structured
+FeedbackRevision: which route each issue takes
 (tune / reasset / redesign / out_of_scope) and the concrete delta. The
 routing itself lives in saga.playtest, a thin CLI driver around the agent
 functions - a blocking input() inside a LangGraph node would couple graph
@@ -15,11 +15,8 @@ compiled graph.
 
 import json
 
-import anthropic
-
+from saga.config import settings
 from saga.state import DesignDoc
-
-MODEL = "claude-sonnet-5"
 
 # Human cycles cost minutes of a real person's attention plus possible GPU
 # regeneration. Cycle one catches the show-stopper, two catches the tuning,
@@ -49,8 +46,18 @@ FEEDBACK_REVISION_SCHEMA = {
                     # redesign: mechanic_template | theme_thread | win_condition | lose_condition
                     # tune / out_of_scope: ""
                     "target_field": {"type": "string"},
+                    # tune: 1-based level number, or 0 when the same change
+                    # applies to every level. Other routes use 0.
+                    "target_level": {"type": "integer", "minimum": 0},
                 },
-                "required": ["route", "evidence", "diagnosis", "delta", "target_field"],
+                "required": [
+                    "route",
+                    "evidence",
+                    "diagnosis",
+                    "delta",
+                    "target_field",
+                    "target_level",
+                ],
                 "additionalProperties": False,
             },
         },
@@ -64,13 +71,15 @@ INTERPRETER_SYSTEM_PROMPT = (
     "human just played the current build and answered three questions. Your "
     "job is to convert their words into the cheapest set of revisions that "
     "plausibly fixes what they experienced. You are given their answers, the "
-    "game's design doc (JSON), and the complete Main.gd source.\n\n"
+    "game's design doc (JSON), and every generated Level_N.gd source file.\n\n"
     "Routes, in strict cost order - always pick the cheapest route that can "
     "plausibly fix the symptom:\n"
-    "1. tune - numeric edits to Main.gd: movement speed, lives, timer "
+    "1. tune - numeric edits to one or more Level_N.gd scripts: movement speed, lives, timer "
     "durations, hazard/patroller velocity, drain/refill rates, spawn counts "
     "and positions, collision radii. The delta names the exact variable or "
-    "literal with before -> after values read from the provided source.\n"
+    "literal with before -> after values read from the provided source. Set "
+    "target_level to its 1-based level number, or 0 only when the same change "
+    "should be applied to every level.\n"
     "2. reasset - re-describe one generated asset and regenerate it: "
     "art_style, audio_mood, or key_item.description. Costs real GPU time. "
     "Use only when the complaint is about how something looks or sounds, "
@@ -80,7 +89,8 @@ INTERPRETER_SYSTEM_PROMPT = (
     "lose_condition and rebuild from the Game Designer down. The most "
     "expensive route. Use only when the mechanic itself contradicts the "
     "premise or the human rejected the core loop - not merely its numbers. "
-    "The delta is the complete new value for target_field.\n\n"
+    "The delta is the complete new value for target_field. For reasset, "
+    "redesign, and out_of_scope set target_level to 0.\n\n"
     "Humans often prescribe solutions ('make me faster') when they mean "
     "symptoms ('I couldn't reach the pool in time'). Diagnose the symptom "
     "from their words and the source before choosing a delta - the right fix "
@@ -128,18 +138,83 @@ def capture_playtest_feedback() -> dict[str, str]:
     }
 
 
-def interpret_feedback(answers: dict[str, str], design_doc: DesignDoc, main_gd: str) -> dict:
-    """Cloud-Claude call turning raw playtest answers into a FeedbackRevision."""
-    client = anthropic.Anthropic()
-
+def interpret_feedback(
+    answers: dict[str, str],
+    design_doc: DesignDoc,
+    level_scripts: dict[int, str],
+) -> dict:
+    """Turn raw playtest answers into a validated FeedbackRevision."""
+    scripts = "\n\n".join(
+        f"Level {index + 1} (Level_{index}.gd):\n```gdscript\n{script}\n```"
+        for index, script in sorted(level_scripts.items())
+    )
     user_content = (
         f"Playtest answers:\n{json.dumps(answers, indent=2)}\n\n"
         f"Design doc:\n{json.dumps(design_doc, indent=2)}\n\n"
-        f"Main.gd:\n```gdscript\n{main_gd}\n```\n"
+        f"Generated level scripts:\n{scripts}\n"
     )
 
+    backend = settings.feedback_backend
+    if backend == "claude":
+        revision_doc = _interpret_claude(user_content)
+    elif backend in {"deepseek", "openai", "remote"}:
+        revision_doc = _interpret_remote(user_content)
+    else:
+        revision_doc = _interpret_local(user_content)
+
+    problems = _validate_revision_doc(revision_doc, len(design_doc.get("levels") or []))
+    if problems:
+        raise ValueError(f"Feedback interpreter produced an invalid revision document: {problems}")
+
+    routes = [revision["route"] for revision in revision_doc["revisions"]]
+    print(
+        f"[Feedback Interpreter/{backend}] verdict={revision_doc['verdict']!r}, "
+        f"routes={routes}"
+    )
+    return revision_doc
+
+
+def _interpret_local(user_content: str) -> dict:
+    import ollama
+
+    response = ollama.chat(
+        model=settings.feedback_model,
+        messages=[
+            {"role": "system", "content": INTERPRETER_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        format=FEEDBACK_REVISION_SCHEMA,
+        options={"num_ctx": 16384, "num_predict": 4096},
+    )
+    return json.loads(response["message"]["content"])
+
+
+def _interpret_remote(user_content: str) -> dict:
+    from saga.llm import chat
+
+    schema_note = (
+        "Respond with one JSON object matching this schema exactly:\n"
+        + json.dumps(FEEDBACK_REVISION_SCHEMA, indent=2)
+    )
+    raw = chat(
+        [
+            {"role": "system", "content": INTERPRETER_SYSTEM_PROMPT + "\n\n" + schema_note},
+            {"role": "user", "content": user_content},
+        ],
+        model=settings.feedback_model,
+        json_mode=True,
+        max_tokens=8000,
+        timeout=120,
+    )
+    return json.loads(raw)
+
+
+def _interpret_claude(user_content: str) -> dict:
+    import anthropic
+
+    client = anthropic.Anthropic()
     response = client.messages.create(
-        model=MODEL,
+        model=settings.feedback_model,
         max_tokens=4096,
         system=INTERPRETER_SYSTEM_PROMPT,
         thinking={"type": "adaptive"},
@@ -151,8 +226,45 @@ def interpret_feedback(answers: dict[str, str], design_doc: DesignDoc, main_gd: 
     )
 
     text = next(block.text for block in response.content if block.type == "text")
-    revision_doc = json.loads(text)
+    return json.loads(text)
 
-    routes = [r["route"] for r in revision_doc["revisions"]]
-    print(f"[Feedback Interpreter] verdict={revision_doc['verdict']!r}, routes={routes}")
-    return revision_doc
+
+def _validate_revision_doc(doc: dict, level_count: int) -> list[str]:
+    problems = []
+    if doc.get("verdict") not in {"ship", "revise"}:
+        problems.append("verdict must be 'ship' or 'revise'")
+    revisions = doc.get("revisions")
+    if not isinstance(revisions, list):
+        return problems + ["revisions must be a list"]
+    if doc.get("verdict") == "ship" and revisions:
+        problems.append("a ship verdict must have no revisions")
+
+    for index, revision in enumerate(revisions):
+        if not isinstance(revision, dict):
+            problems.append(f"revisions[{index}] must be an object")
+            continue
+        route = revision.get("route")
+        if route not in REVISION_ROUTES:
+            problems.append(f"revisions[{index}].route must be one of {REVISION_ROUTES}")
+        for field in ("evidence", "diagnosis", "delta", "target_field"):
+            if not isinstance(revision.get(field), str):
+                problems.append(f"revisions[{index}].{field} must be a string")
+        target_level = revision.get("target_level")
+        if not isinstance(target_level, int) or not 0 <= target_level <= level_count:
+            problems.append(
+                f"revisions[{index}].target_level must be an integer from 0 to {level_count}"
+            )
+        if route != "tune" and target_level != 0:
+            problems.append(f"revisions[{index}].target_level must be 0 for route {route!r}")
+        target_field = revision.get("target_field")
+        if route == "reasset" and target_field not in REASSET_FIELDS:
+            problems.append(
+                f"revisions[{index}].target_field must be one of {REASSET_FIELDS} for reasset"
+            )
+        if route == "redesign" and target_field not in REDESIGN_FIELDS:
+            problems.append(
+                f"revisions[{index}].target_field must be one of {REDESIGN_FIELDS} for redesign"
+            )
+        if route in {"tune", "out_of_scope"} and target_field != "":
+            problems.append(f"revisions[{index}].target_field must be empty for route {route!r}")
+    return problems

@@ -2,8 +2,7 @@
 
 SAGA generates exactly the data it would need to fine-tune its own Coder -
 a design brief in, a working game script out - and until now threw all of it
-away, since `output/` is gitignored and every run overwrites the previous
-project. This module keeps it.
+    away, since generated run workspaces are gitignored. This module keeps it.
 
 Only levels that actually passed QA are recorded, so the corpus is
 verified-good by construction rather than needing manual filtering later:

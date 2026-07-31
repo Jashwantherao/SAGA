@@ -3,6 +3,12 @@
 Studio Director -> Game Designer -> (Asset Maker, Audio Agent)
     -> Coder <-> QA Agent (per level, advancing through the design doc's
        levels via advance_level) -> END
+
+Failures do not loop straight back to the Coder: they return to the Studio
+Director, which triages each one - fix the script, regenerate it fresh, or
+regenerate a wrong art asset first (reasset routes through the Asset Maker,
+whose existing edge into the Coder completes the path). The graph keeps the
+hard budget (MAX_RETRIES); the Director decides direction within it.
 """
 
 from langgraph.graph import END, START, StateGraph
@@ -13,12 +19,15 @@ from saga.agents.coder import coder
 from saga.agents.game_designer import game_designer
 from saga.agents.qa_agent import qa_agent
 from saga.agents.studio_director import studio_director
+from saga.config import settings
 from saga.state import GraphState
 
 MAX_RETRIES = 6
 
 
 def _route_after_qa(state: GraphState) -> str:
+    if state.get("ship_blocked"):
+        return "done"
     if state.get("qa_passed"):
         design_doc = state.get("design_doc") or {}
         total_levels = len(design_doc.get("levels") or [None])
@@ -27,7 +36,19 @@ def _route_after_qa(state: GraphState) -> str:
         return "done"
     if (state.get("retry_count") or 0) >= MAX_RETRIES:
         return "done"
-    return "retry"
+    return "triage"
+
+
+def _route_after_director(state: GraphState) -> str:
+    """Intake hands off to the Game Designer; triage decisions route to the
+    agent that can act on them. reasset goes through the Asset Maker, whose
+    existing edge into the Coder completes the rebuild."""
+    action = state.get("director_action")
+    if action == "reasset":
+        return "reasset"
+    if action in ("fix", "regenerate"):
+        return "revise"
+    return "design"
 
 
 def _route_after_gate(state: GraphState) -> str:
@@ -40,7 +61,12 @@ def advance_level(state: GraphState) -> GraphState:
     retry budget."""
     next_level = (state.get("current_level") or 0) + 1
     print(f"[Graph] Level {next_level + 1} up next")
-    return {"current_level": next_level, "qa_errors": None, "retry_count": 0}
+    return {
+        "current_level": next_level,
+        "qa_errors": None,
+        "retry_count": 0,
+        "ship_blocked": False,
+    }
 
 
 def build_graph(human_gate: bool = False):
@@ -54,12 +80,27 @@ def build_graph(human_gate: bool = False):
     graph.add_node("game_designer", game_designer)
     graph.add_node("asset_maker", asset_maker)
     graph.add_node("audio_agent", audio_agent)
-    graph.add_node("coder", coder)
+    # The agentic Coder wraps the one-shot one: it produces the draft, then
+    # the agent runs it, looks at the rendered frame and revises. Opt-in,
+    # because it costs many more calls per level than a single completion.
+    if settings.coder_agentic:
+        from saga.agents.coder_agent import coder_agent
+
+        graph.add_node("coder", coder_agent)
+    else:
+        graph.add_node("coder", coder)
     graph.add_node("qa_agent", qa_agent)
     graph.add_node("advance_level", advance_level)
 
     graph.add_edge(START, "studio_director")
-    graph.add_edge("studio_director", "game_designer")
+    # The Director is entered twice: once at START (intake) and again on
+    # every QA failure (triage), so its outgoing edge has to be conditional
+    # on which duty it just performed.
+    graph.add_conditional_edges(
+        "studio_director",
+        _route_after_director,
+        {"design": "game_designer", "revise": "coder", "reasset": "asset_maker"},
+    )
     graph.add_edge("game_designer", "asset_maker")
     graph.add_edge("game_designer", "audio_agent")
     graph.add_edge("asset_maker", "coder")
@@ -73,7 +114,7 @@ def build_graph(human_gate: bool = False):
     graph.add_conditional_edges(
         "qa_agent",
         _route_after_qa,
-        {"retry": "coder", "next_level": next_level_target, "done": END},
+        {"triage": "studio_director", "next_level": next_level_target, "done": END},
     )
     if human_gate:
         from saga.gate import level_gate

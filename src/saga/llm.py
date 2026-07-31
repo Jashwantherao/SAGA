@@ -15,8 +15,11 @@ quality rather than cost.
 
 import os
 
-DEFAULT_BASE_URL = os.environ.get("SAGA_OPENAI_BASE_URL", "https://api.deepseek.com")
-DEFAULT_KEY_ENV = os.environ.get("SAGA_OPENAI_KEY_ENV", "DEEPSEEK_API_KEY")
+from saga.config import settings
+
+
+DEFAULT_BASE_URL = settings.openai_base_url
+DEFAULT_KEY_ENV = settings.openai_key_env
 
 # Keyed by (base_url, key_env): agents can legitimately want different
 # providers at once - the Coder on one, the vision reviewer on another - and a
@@ -76,3 +79,27 @@ def chat(
         kwargs["timeout"] = timeout
     response = _get_client(base_url, key_env).chat.completions.create(**kwargs)
     return response.choices[0].message.content or ""
+
+
+def chat_raw(
+    messages: list[dict],
+    *,
+    model: str,
+    tools: list[dict] | None = None,
+    max_tokens: int = 8192,
+    base_url: str | None = None,
+    key_env: str | None = None,
+    timeout: float | None = None,
+):
+    """One completion, returning the whole message rather than just its text.
+
+    An agent loop needs the tool_calls the model wants to make, and has to
+    append the assistant message back into the conversation verbatim, so
+    flattening it to a string here would throw away exactly what it needs.
+    """
+    kwargs = {"model": model, "messages": messages, "max_tokens": max_tokens}
+    if tools:
+        kwargs["tools"] = tools
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return _get_client(base_url, key_env).chat.completions.create(**kwargs).choices[0].message

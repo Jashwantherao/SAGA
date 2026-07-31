@@ -7,7 +7,7 @@ class KeyItem(TypedDict):
 
 
 class ExtraSprite(TypedDict):
-    # Lowercase slug; becomes the filename prefix (extra_<name>_NNNNN_.png) and
+    # Lowercase slug; becomes the stable filename (extra_<name>.png) and
     # is how the Coder refers to the sprite, so it should say what the thing is.
     name: str
     description: str  # concrete visual description - drives the 128x128 generation
@@ -46,8 +46,13 @@ class DesignDoc(TypedDict):
     extra_sprites: list[ExtraSprite]
 
 
-class GraphState(TypedDict):
+class GraphState(TypedDict, total=False):
     user_prompt: str
+    # Optional CLI override for quick prototypes; normal authored runs remain
+    # 3-5 levels when this is absent.
+    requested_levels: int
+    # Unique output/runs/<id> workspace allocated during Studio Director intake.
+    run_dir: str
     design_doc: Optional[DesignDoc]
     sprite_paths: Optional[list[str]]
     bgm_path: Optional[str]
@@ -69,7 +74,25 @@ class GraphState(TypedDict):
     # toothless, or a fight that drags. These are tuning notes, not defects, so
     # they feed the playtest loop rather than failing a build; see saga.balance.
     balance_notes: Optional[list[str]]
+    # Structured evidence from a mechanic-specific objective solver. For
+    # dot_maze this includes collected/total/remaining counts and frame cost.
+    objective_result: Optional[dict]
     # Set by the Coder so QA can record a verified (brief -> script) training
     # pair once the level passes; see saga.corpus.
     coder_prompt: Optional[str]
     coder_model: Optional[str]
+    # Studio Director triage: the supervisor's routing decision for the
+    # current QA failure (fix | regenerate | reasset; None outside triage),
+    # and a per-run history of what was already tried so the Director can
+    # recognize a repair that did not take instead of repeating it.
+    director_action: Optional[str]
+    director_history: Optional[list[dict]]
+    # Durable, per-level QA history. Unlike qa_errors/vision_notes above,
+    # which describe only the current graph step, this ledger is never reset
+    # when the graph advances. Each entry contains every attempt plus the
+    # level's final status and artifacts, and is written verbatim to run.json.
+    level_results: list[dict]
+    # A broken QA harness is different from generated code that needs repair.
+    # When a required probe cannot produce a verdict, stop the graph and
+    # report "blocked" instead of spending Coder retries or claiming a pass.
+    ship_blocked: bool

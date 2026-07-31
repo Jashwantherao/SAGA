@@ -1,5 +1,6 @@
 # Python-generated files
 __pycache__/
+.pytest_cache/
 *.py[oc]
 build/
 dist/
@@ -20,3 +21,6 @@ output/
 
 # Run logs
 *.log
+
+# Agentic Coder keeps the pre-polish draft beside each level for comparison
+output/**/*.draft.gd
