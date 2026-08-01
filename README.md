@@ -10,6 +10,64 @@ Studio Director -> Game Designer -> (Asset Maker, Audio Agent)
     -> [--gate: human plays this level] -> [--playtest] -> done
 ```
 
+## SAGA Studio desktop UI
+
+The `ui/` directory contains a Tauri 2 + React control room backed by a
+loopback-only FastAPI service. The desktop UI keeps API keys and privileged
+operations in Python while providing:
+
+- live preflight and local-service health, plus a GPU/CPU/RAM monitor
+  (VRAM, utilization, and temperature via `nvidia-smi`) in the sidebar;
+- a one-sentence game creation form with level count, preflight controls,
+  an idea randomizer, and Ctrl+Enter submission;
+- generation job state, cancellation, WebSocket log streaming with a
+  follow/copy log console, and a session history of past generations;
+- a generated-game library with screenshots, search, and status filters;
+- a full run detail view: gameplay video player, per-level QA ledger with
+  objective metrics and Video-QA evidence, an asset gallery with lightbox,
+  background-music playback, the design document, and run deletion;
+- allow-listed start/stop/restart controls and a log viewer for Ollama,
+  ComfyUI, and MusicGen (Ollama is launched with its D: models root); and
+- per-agent model routing for local Ollama, DeepSeek, NVIDIA, Anthropic, and
+  OpenAI-compatible APIs without exposing saved keys to the frontend.
+
+For frontend/API development, install dependencies and launch the browser
+version from PowerShell:
+
+```powershell
+cd D:\SAGA
+D:\SAGA\.venv\Scripts\python.exe -m pip install -e .
+cd D:\SAGA\ui
+npm.cmd install
+npm.cmd run dev:stack
+```
+
+Open `http://127.0.0.1:5173`. The API listens only on
+`http://127.0.0.1:8765`. To run the native desktop shell, install the standard
+Tauri Windows prerequisites (Rust, Microsoft C++ Build Tools, and the Windows
+SDK), then run `npm.cmd run desktop` from `D:\SAGA\ui`.
+
+This workspace also supports the portable D:-local toolchain used during UI
+development. Once `.tooling` has been provisioned, launch it without writing
+build caches to C: with:
+
+```powershell
+D:\SAGA\scripts\saga_ui.ps1 -Mode desktop
+```
+
+Use **Services** in the sidebar to start, stop, or restart one service or the
+complete local stack, and to tail each service's log. SAGA verifies the process
+owning a service port before terminating it, refuses stops and restarts during
+generation, and writes service logs under `D:\SAGA\output\service_logs`. If a service uses a custom location, set the
+corresponding `SAGA_OLLAMA_EXE`, `SAGA_COMFYUI_*`, or `SAGA_MUSICGEN_*` value in
+`.env`; all documented defaults are on D:.
+
+Use **Models & APIs** to select a backend and model independently for Designer,
+Director, Coder, Vision QA, and Feedback. The same screen configures Dot Maze and
+gameplay-video QA models. Saved API keys stay backend-only: the UI receives only
+whether each key is configured. Configuration changes apply to the next game and
+are intentionally locked while a generation is active.
+
 | Agent | Runs on | Does |
 |---|---|---|
 | Studio Director | local (shares the Coder's model) or cloud | Intake, then supervision: every QA failure comes back to it and it routes the failure to the cheapest plausible fix - hand the errors to the Coder (with a one-line diagnosis when the evidence supports one), discard the script and regenerate fresh (when its own history shows a repair that didn't take), or re-describe one art asset and rebuild on top of it. Any failure of the triage call falls back to the deterministic fix-then-regenerate policy it replaced; the graph still owns the retry budget |

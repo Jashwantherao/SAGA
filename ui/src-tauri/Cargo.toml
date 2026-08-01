@@ -1,0 +1,27 @@
+[package]
+name = "saga-studio"
+version = "0.1.0"
+description = "Desktop control room for the SAGA autonomous game studio"
+authors = ["Jashwanth"]
+license = "MIT"
+repository = "https://github.com/Jashwantherao/SAGA"
+edition = "2024"
+rust-version = "1.85"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "saga_studio_lib"
+# SAGA Studio currently targets Windows desktop only. Keeping this as an rlib
+# avoids exporting the entire Tauri dependency graph through a GNU DLL.
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.3", features = [] }
+tauri-plugin-log = "2"

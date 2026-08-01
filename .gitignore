@@ -8,7 +8,13 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv
+.venv*/
+
+# Project-local frontend and Rust toolchains/caches
+.tooling/
+ui/node_modules/
+ui/dist/
+ui/src-tauri/target/
 
 # Secrets
 .env
