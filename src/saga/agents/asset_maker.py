@@ -6,6 +6,7 @@ role - pickup, hazard, switch, creature, or zone marker - is decided by the
 design doc, not here), plus one background per level.
 """
 
+import shutil
 import time
 from pathlib import Path
 
@@ -154,10 +155,89 @@ def _generate_image(
     raise TimeoutError(f"ComfyUI generation for {filename_prefix!r} did not complete within {timeout}s")
 
 
+def _asset_requests(design_doc: dict) -> list[tuple]:
+    """Build the stable asset plan used by both initial and repair runs.
+
+    Every request carries an explicit seed. Filtering this plan for a targeted
+    repair therefore cannot accidentally change a seed just because earlier
+    batch entries were omitted.
+    """
+    art_style = design_doc["art_style"]
+    hero_common = (
+        f"{design_doc['hero_description']}, full body, whole character visible from "
+        f"head to feet, side view, {HERO_NATIVE_FACING}, game sprite, centered, "
+        f"{art_style}, plain solid background"
+    )
+    requests = [
+        (
+            f"{design_doc['hero_description']}, at rest, sitting or standing still, "
+            f"relaxed, still facing screen-left, {hero_common}",
+            "hero_sprite", ICON_GEN_SIZE, ICON_GEN_SIZE, True, HERO_SEED,
+        ),
+        (
+            f"{design_doc['hero_description']}, walking toward screen-left, legs apart "
+            f"mid-stride, leaning left into the movement, {hero_common}",
+            "hero_walk", ICON_GEN_SIZE, ICON_GEN_SIZE, True, HERO_SEED,
+        ),
+        (
+            f"{design_doc['key_item']['description']}, whole object fully visible, small game "
+            f"icon, centered, {art_style}, plain solid background",
+            "key_item", ICON_GEN_SIZE, ICON_GEN_SIZE, True, 2,
+        ),
+    ]
+    for index, extra in enumerate(design_doc.get("extra_sprites") or [], start=3):
+        requests.append(
+            (
+                f"{extra['description']}, whole object fully visible, game sprite, "
+                f"centered, {art_style}, plain solid background",
+                f"extra_{extra['name']}", ICON_GEN_SIZE, ICON_GEN_SIZE, True, index,
+            )
+        )
+    background_seed = 3 + len(design_doc.get("extra_sprites") or [])
+    for index, level in enumerate(design_doc["levels"]):
+        requests.append(
+            (
+                f"{level['description']}, {art_style}, game background, strict top-down "
+                f"orthographic view, camera facing straight down at 90 degrees, flat floor "
+                f"plan, no perspective, no horizon, no vanishing point, no camera tilt, "
+                f"no isometric angle, walls and objects shown from directly above only",
+                f"level_{index}_bg", VIEWPORT_WIDTH, VIEWPORT_HEIGHT, False,
+                background_seed + index,
+            )
+        )
+    return requests
+
+
+def _target_names(request: dict) -> set[str]:
+    field = request["field"]
+    if field == "hero_description":
+        return {"hero_sprite", "hero_walk"}
+    if field == "key_item.description":
+        return {"key_item"}
+    if field == "level_background":
+        return {f"level_{request['level_index']}_bg"}
+    if field.startswith("extra:"):
+        return {f"extra_{field[6:]}"}
+    raise ValueError(f"Unsupported targeted asset field: {field!r}")
+
+
+def _record_replacement_in_ledger(ledger: list[dict], event: dict) -> list[dict]:
+    """Attach repair provenance immediately, before the rebuilt QA attempt."""
+    updated = [dict(item) for item in ledger]
+    level_index = event["level_index"]
+    for index, entry in enumerate(updated):
+        if entry.get("level_index") != level_index:
+            continue
+        replacements = list(entry.get("asset_replacements") or [])
+        replacements.append(event)
+        updated[index] = {**entry, "asset_replacements": replacements}
+        break
+    return updated
+
+
 def asset_maker(state: GraphState) -> GraphState:
     _check_comfyui_reachable()
     design_doc = state["design_doc"]
-    art_style = design_doc["art_style"]
     output_dir = assets_dir(state)
 
     # Icons get the rembg pass (strip_bg); level backgrounds keep every pixel.
@@ -173,77 +253,29 @@ def asset_maker(state: GraphState) -> GraphState:
     # detail drift a little. It is not enough control for a multi-frame walk
     # cycle, which is why there is only one walking pose; the bob and lean in
     # the Anim autoload supply the stepping motion.
-    hero_common = (
-        f"{design_doc['hero_description']}, full body, whole character visible from "
-        f"head to feet, side view, {HERO_NATIVE_FACING}, game sprite, centered, "
-        f"{art_style}, plain solid background"
-    )
-    requests = [
-        (
-            f"{design_doc['hero_description']}, at rest, sitting or standing still, "
-            f"relaxed, still facing screen-left, {hero_common}",
-            "hero_sprite",
-            ICON_GEN_SIZE,
-            ICON_GEN_SIZE,
-            True,
-            HERO_SEED,
-        ),
-        (
-            f"{design_doc['hero_description']}, walking toward screen-left, legs apart "
-            f"mid-stride, leaning left into the movement, {hero_common}",
-            "hero_walk",
-            ICON_GEN_SIZE,
-            ICON_GEN_SIZE,
-            True,
-            HERO_SEED,
-        ),
-        (
-            f"{design_doc['key_item']['description']}, whole object fully visible, small game "
-            f"icon, centered, {art_style}, plain solid background",
-            "key_item",
-            ICON_GEN_SIZE,
-            ICON_GEN_SIZE,
-            True,
-        ),
-    ]
-    # Whatever else this particular game needs drawn. Without these the Coder
-    # has a hero, one icon and a background, and everything else - platforms,
-    # enemies, walls - becomes an untextured ColorRect, which is exactly what
-    # missing art looks like on screen. Same icon treatment as key_item: a
-    # plain solid background for rembg to cut along, then alpha-cropped to 128.
-    for extra in design_doc.get("extra_sprites") or []:
-        requests.append(
-            (
-                f"{extra['description']}, whole object fully visible, game sprite, "
-                f"centered, {art_style}, plain solid background",
-                f"extra_{extra['name']}",
-                ICON_GEN_SIZE,
-                ICON_GEN_SIZE,
-                True,
-            )
-        )
+    requests = _asset_requests(design_doc)
+    reasset_request = state.get("reasset_request")
+    target_names = _target_names(reasset_request) if reasset_request else None
+    if target_names:
+        requests = [request for request in requests if request[1] in target_names]
+        if {request[1] for request in requests} != target_names:
+            raise RuntimeError(f"Targeted asset plan is incomplete for {sorted(target_names)}")
+        print(f"[Asset Maker] Targeted repair: {', '.join(sorted(target_names))}")
 
-    for i, level in enumerate(design_doc["levels"]):
-        requests.append(
-            (
-                f"{level['description']}, {art_style}, game background, strict top-down "
-                f"orthographic view, camera facing straight down at 90 degrees, flat floor "
-                f"plan, no perspective, no horizon, no vanishing point, no camera tilt, "
-                f"no isometric angle, walls and objects shown from directly above only",
-                f"level_{i}_bg",
-                VIEWPORT_WIDTH,
-                VIEWPORT_HEIGHT,
-                False,
+    sprite_paths = list(state.get("sprite_paths") or []) if reasset_request else []
+    replaced_files = []
+    for request in requests:
+        prompt, name, width, height, strip_bg, seed = request
+        active_path = output_dir / f"{name}.png"
+        previous_path = None
+        if reasset_request and active_path.exists():
+            revision_dir = output_dir / "revisions"
+            revision_dir.mkdir(parents=True, exist_ok=True)
+            previous_path = revision_dir / (
+                f"level_{reasset_request['level_index']}_retry_"
+                f"{reasset_request['retry']}_{name}.png"
             )
-        )
-
-    sprite_paths = []
-    for index, request in enumerate(requests):
-        prompt, name, width, height, strip_bg = request[:5]
-        # Most assets just take their position as the seed - any value does, as
-        # long as they differ. The hero poses pin an explicit shared seed so
-        # they render the same character.
-        seed = request[5] if len(request) > 5 else index
+            shutil.copy2(active_path, previous_path)
         path = _generate_image(
             prompt,
             name,
@@ -253,7 +285,17 @@ def asset_maker(state: GraphState) -> GraphState:
             strip_bg=strip_bg,
             output_dir=output_dir,
         )
-        sprite_paths.append(str(path))
+        path_string = str(path)
+        if path_string not in sprite_paths:
+            sprite_paths.append(path_string)
+        if reasset_request:
+            replaced_files.append(
+                {
+                    "name": name,
+                    "active_path": path_string,
+                    "previous_path": str(previous_path) if previous_path else None,
+                }
+            )
         print(f"[Asset Maker] Generated {name} -> {path}")
 
     # Release ComfyUI's VRAM now that the art batch is done: the Coder's
@@ -276,4 +318,21 @@ def asset_maker(state: GraphState) -> GraphState:
     except Exception as e:
         print(f"[Asset Maker] ComfyUI VRAM release skipped ({type(e).__name__}: {e})")
 
-    return {"sprite_paths": sprite_paths}
+    update: GraphState = {"sprite_paths": sprite_paths}
+    if reasset_request:
+        event = {
+            **reasset_request,
+            "files": replaced_files,
+            "status": "replaced",
+        }
+        replacements = list(state.get("asset_replacements") or []) + [event]
+        update.update(
+            {
+                "reasset_request": None,
+                "asset_replacements": replacements,
+                "level_results": _record_replacement_in_ledger(
+                    state.get("level_results") or [], event
+                ),
+            }
+        )
+    return update

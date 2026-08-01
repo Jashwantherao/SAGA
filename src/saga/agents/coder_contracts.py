@@ -2,6 +2,105 @@
 
 
 TEMPLATE_CONTRACTS = {
+    "capture_zones": [
+        ("the stable player handle required by objective QA", r"var\s+player(?:\s*:\s*Area2D)?\b"),
+        ("the stable zone array required by objective QA", r"var\s+zones(?:\s*:\s*Array(?:\[Area2D\])?)?\b"),
+        ("the stable patroller handle required by objective QA", r"var\s+patroller(?:\s*:\s*Area2D)?\b"),
+        ("the per-zone capture progress required by objective QA", r"var\s+zone_progress\b"),
+        ("the per-zone ownership state required by objective QA", r"var\s+zone_owner\b"),
+        ("the player overlap state required by objective QA", r"var\s+player_in_zones\b"),
+        ("the patroller overlap state required by objective QA", r"var\s+enemy_in_zones\b"),
+        ("the capture threshold required by objective QA", r"var\s+capture_required\b"),
+        ("the public capture radius required by objective QA", r"var\s+capture_radius\b"),
+        ("the player capture rate required by objective QA", r"var\s+capture_rate\b"),
+        ("the patroller decay rate required by objective QA", r"var\s+decay_rate\b"),
+        ("the public patroller speed required by objective QA", r"var\s+patroller_speed\b"),
+        ("the title/playing/won state required by objective QA", r"var\s+state\b"),
+    ],
+    "survive_and_deplete": [
+        ("the stable player handle required by objective QA", r"var\s+player(?:\s*:\s*Area2D)?\b"),
+        ("the stable refill-zone array required by objective QA", r"var\s+zones(?:\s*:\s*Array(?:\[Area2D\])?)?\b"),
+        ("the stable hazard array required by objective QA", r"var\s+hazards(?:\s*:\s*Array(?:\[Area2D\])?)?\b"),
+        ("the current zone-fuel array required by objective QA", r"var\s+zone_fuel\b"),
+        ("the refill-overlap array required by objective QA", r"var\s+inside_zones\b"),
+        ("the resource maximum required by objective QA", r"var\s+resource_max\b"),
+        ("the current resource required by objective QA", r"var\s+resource\b"),
+        ("the drain rate and ramp required by objective QA", r"var\s+drain_ramp\b"),
+        ("the refill and fuel-burn rates required by objective QA", r"var\s+fuel_burn\b"),
+        ("the hazard hit cost required by objective QA", r"var\s+hazard_hit_cost\b"),
+        ("the hit cooldown required by objective QA", r"var\s+hit_cooldown\b"),
+        ("the survival timer required by objective QA", r"var\s+time_left\b"),
+        ("the title/playing/won/over state required by objective QA", r"var\s+state\b"),
+    ],
+    "depletion": [
+        (
+            "the stable player handle required by objective QA (`var player: Area2D`)",
+            r"var\s+player(?:\s*:\s*Area2D)?\b",
+        ),
+        (
+            "the stable refill-zone array required by objective QA (`var refill_zones`)",
+            r"var\s+refill_zones(?:\s*:\s*Array(?:\[Area2D\])?)?\b",
+        ),
+        ("the resource maximum required by objective QA", r"var\s+resource_max\b"),
+        ("the current resource required by objective QA", r"var\s+resource\b"),
+        ("the drain rate required by objective QA", r"var\s+drain_rate\b"),
+        ("the refill rate required by objective QA", r"var\s+refill_rate\b"),
+        ("the refill overlap counter required by objective QA", r"var\s+zones_inside\b"),
+        ("the survival duration required by objective QA", r"var\s+survival_time\b"),
+        ("the current survival timer required by objective QA", r"var\s+time_left\b"),
+        (
+            "the title/playing/won/over state required by objective QA",
+            r"var\s+state\b",
+        ),
+    ],
+    "survive_hazards": [
+        (
+            "the stable player handle required by objective QA (`var player: Area2D`)",
+            r"var\s+player(?:\s*:\s*Area2D)?\b",
+        ),
+        (
+            "the stable hazard array required by objective QA (`var hazards`)",
+            r"var\s+hazards(?:\s*:\s*Array(?:\[Area2D\])?)?\b",
+        ),
+        ("the starting life count required by objective QA", r"var\s+starting_lives\b"),
+        ("the current lives counter required by objective QA", r"var\s+lives\b"),
+        ("the survival duration required by objective QA", r"var\s+survival_time\b"),
+        ("the current survival timer required by objective QA", r"var\s+time_left\b"),
+        (
+            "the public hit cooldown required by objective QA (`var hit_cooldown`)",
+            r"var\s+hit_cooldown\b",
+        ),
+        (
+            "the title/playing/won/over state required by objective QA",
+            r"var\s+state\b",
+        ),
+    ],
+    "ordered_switches": [
+        (
+            "the stable player handle required by objective QA (`var player: Area2D`)",
+            r"var\s+player(?:\s*:\s*Area2D)?\b",
+        ),
+        (
+            "the stable switch array required by objective QA (`var switches`)",
+            r"var\s+switches(?:\s*:\s*Array(?:\[Area2D\])?)?\b",
+        ),
+        (
+            "the ordered switch-index array required by objective QA (`var switch_order`)",
+            r"var\s+switch_order(?:\s*:\s*Array(?:\[int\])?)?\b",
+        ),
+        (
+            "the public progress counter required by objective QA (`var progress`)",
+            r"var\s+progress(?:\s*:\s*int)?\b",
+        ),
+        (
+            "the wrong-order reset counter required by objective QA (`var reset_count`)",
+            r"var\s+reset_count(?:\s*:\s*int)?\b",
+        ),
+        (
+            "the title/playing/won/over state required by objective QA",
+            r"var\s+state\b",
+        ),
+    ],
     "dot_maze": [
         ("the Rect2 wall array and axis-separated wall collision", r"Rect2\("),
         (
@@ -57,14 +156,15 @@ TEMPLATE_CONTRACTS = {
         ),
     ],
     "herd_to_goal": [
-        (
-            "the panic radius that keeps creatures still until the player is close",
-            r"panic_radius",
-        ),
-        (
-            "the settled flag that stops a creature fleeing once it reaches the goal",
-            r"settled",
-        ),
+        ("the stable player handle required by objective QA", r"var\s+player(?:\s*:\s*Area2D)?\b"),
+        ("the stable creature array required by objective QA", r"var\s+creatures(?:\s*:\s*Array(?:\[Area2D\])?)?\b"),
+        ("the permanent settled-state array required by objective QA", r"var\s+creature_settled\b"),
+        ("the stable goal-zone handle required by objective QA", r"var\s+goal(?:\s*:\s*Area2D)?\b"),
+        ("the panic radius that keeps distant creatures still", r"var\s+panic_radius\b"),
+        ("the public goal radius required by objective QA", r"var\s+goal_radius\b"),
+        ("the player speed required for herding balance", r"var\s+speed\b"),
+        ("the creature flee speed required for objective QA", r"var\s+flee_speed\b"),
+        ("the title/playing/won state required by objective QA", r"var\s+state\b"),
     ],
 }
 

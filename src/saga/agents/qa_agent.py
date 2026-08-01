@@ -44,6 +44,16 @@ VISION_KEY_ENV = settings.vision_key_env
 # Free tiers have been measured hanging for minutes on models they list.
 VISION_TIMEOUT = settings.vision_timeout
 
+VIDEO_QA_ENABLED = settings.video_qa_enabled
+VIDEO_MODEL = settings.video_model
+VIDEO_BASE_URL = settings.video_base_url
+VIDEO_KEY_ENV = settings.video_key_env
+VIDEO_TIMEOUT = settings.video_timeout
+FFMPEG_EXE = settings.ffmpeg_exe
+VIDEO_CAPTURE_FPS = 30
+VIDEO_CAPTURE_MAX_FRAMES = 260
+VIDEO_REVIEW_FPS = 10
+
 ERROR_PATTERNS = re.compile(
     r"SCRIPT ERROR|Parse Error|Invalid call|Nonexistent function|ERROR:",
     re.IGNORECASE,
@@ -57,6 +67,49 @@ OBJECTIVE_DETAIL = re.compile(
     r"\[OBJECTIVE_DETAIL\] node=\S+ position=\(([-\d.]+),([-\d.]+)\) "
     r"(?:ghost|ignored)=false"
 )
+OBJECTIVE_METRICS = re.compile(
+    r"\[OBJECTIVE_METRICS\] completion_seconds=([\d.]+) progress_events=(\d+) "
+    r"max_stall_frames=(\d+) stuck=(true|false) "
+    r"restart=(passed|failed|not_applicable|not_tested) deaths=(\d+)"
+)
+SWITCH_METRICS = re.compile(
+    r"\[SWITCH_METRICS\] sequence_length=(\d+) activations=(\d+) "
+    r"wrong_order_reset=(true|false) clean_reload=(true|false) correct_progress=(\d+)"
+)
+SURVIVAL_METRICS = re.compile(
+    r"\[SURVIVAL_METRICS\] starting_lives=(\d+) damage_events=(\d+) "
+    r"single_hit_exact=(true|false) lose_verified=(true|false) "
+    r"clean_restart=(true|false) timer_win=(true|false)"
+)
+DEPLETION_METRICS = re.compile(
+    r"\[DEPLETION_METRICS\] resource_max=([\d.]+) drained_amount=([\d.]+) "
+    r"refilled_amount=([\d.]+) drain_verified=(true|false) "
+    r"refill_verified=(true|false) lose_verified=(true|false) "
+    r"clean_restart=(true|false) timer_win=(true|false)"
+)
+HYBRID_METRICS = re.compile(
+    r"\[HYBRID_METRICS\] drain_first=([\d.]+) drain_second=([\d.]+) "
+    r"refill=([\d.]+) fuel_used=([\d.]+) hazard_damage=([\d.]+) "
+    r"ramp=(true|false) refill_ok=(true|false) fuel_ok=(true|false) "
+    r"hazard_ok=(true|false) lose=(true|false) restart_ok=(true|false) timer_win=(true|false)"
+)
+CAPTURE_METRICS = re.compile(
+    r"\[CAPTURE_METRICS\] capture_gain=([\d.]+) decay=([\d.]+) "
+    r"owned=(\d+) zones=(\d+) capture=(true|false) contest=(true|false) "
+    r"ownership=(true|false) win=(true|false)"
+)
+HERD_METRICS = re.compile(
+    r"\[HERD_METRICS\] still_drift=([\d.]+) flee_distance=([\d.]+) "
+    r"goal_gain=([\d.]+) settled=(\d+) creatures=(\d+) still=(true|false) "
+    r"flee=(true|false) settle=(true|false) persistent=(true|false) win=(true|false)"
+)
+MAX_COLLECT_SOLVER_SECONDS = 60.0
+MAX_SWITCH_SOLVER_SECONDS = 60.0
+MAX_SURVIVAL_SOLVER_SECONDS = 30.0
+MAX_DEPLETION_SOLVER_SECONDS = 30.0
+MAX_HYBRID_SOLVER_SECONDS = 30.0
+MAX_CAPTURE_SOLVER_SECONDS = 30.0
+MAX_HERD_SOLVER_SECONDS = 60.0
 
 # Godot's forced `--quit-after` shutdown doesn't wait for the AudioServer to
 # release an autoplaying stream, so any project with BGM prints these on exit
@@ -69,7 +122,7 @@ BENIGN_EXIT_NOISE = re.compile(
 )
 
 HARNESS_SCRIPT_ERROR = re.compile(
-    r"res://(?:autoplay|objective_probe|screenshot|sfx|music|ambience|anim|game|"
+    r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|capture_probe|herd_probe|screenshot|sfx|music|ambience|anim|game|"
     r"interlude|victory)\.gd",
     re.IGNORECASE,
 )
@@ -128,12 +181,12 @@ def _find_errors(output: str) -> list[str]:
     return found
 
 
-def _run_maze_objective_probe(
+def _run_objective_probe(
     project_dir: str,
     scene: str,
     template: str,
 ) -> tuple[dict | None, list[str], bool]:
-    """Run and parse the harness-owned collectible-maze completion solver.
+    """Run and parse the harness-owned deterministic completion solver.
 
     Returns ``(result, errors, blocked)``. ``blocked`` is reserved for a
     missing/broken required probe; an ordinary failed completion verdict is a
@@ -157,7 +210,7 @@ def _run_maze_objective_probe(
     process_errors = _find_errors(output)
     if probe.returncode != 0 or process_errors:
         errors = process_errors or [f"Objective probe exited with code {probe.returncode}"]
-        blocked = any("objective_probe.gd" in error for error in errors)
+        blocked = _has_harness_error(errors)
         return None, errors, blocked
 
     verdict = OBJECTIVE_VERDICT.search(output)
@@ -187,6 +240,143 @@ def _run_maze_objective_probe(
             ],
             True,
         )
+    metrics = OBJECTIVE_METRICS.search(output)
+    if not metrics:
+        return (
+            result,
+            [f"QA infrastructure: {template} objective probe produced no metrics verdict."],
+            True,
+        )
+    completion_seconds, progress_events, max_stall_frames, stuck, restart, deaths = (
+        metrics.groups()
+    )
+    result.update(
+        {
+            "completion_seconds": float(completion_seconds),
+            "progress_events": int(progress_events),
+            "max_stall_frames": int(max_stall_frames),
+            "stuck": stuck == "true",
+            "restart_status": restart,
+            "deaths": int(deaths),
+        }
+    )
+    progress_ratio = int(collected) / max(int(total), 1)
+    result["completion_score"] = (
+        100 if status == "passed" else min(60, round(progress_ratio * 60))
+    )
+    if template == "ordered_switches":
+        switch_metrics = SWITCH_METRICS.search(output)
+        if not switch_metrics:
+            return (
+                result,
+                ["QA infrastructure: ordered-switch probe produced no sequence metrics."],
+                True,
+            )
+        sequence_length, activations, wrong_reset, clean_reload, correct_progress = (
+            switch_metrics.groups()
+        )
+        result.update(
+            {
+                "sequence_length": int(sequence_length),
+                "activations": int(activations),
+                "wrong_order_reset": wrong_reset == "true",
+                "clean_reload": clean_reload == "true",
+                "correct_progress": int(correct_progress),
+            }
+        )
+    if template == "survive_hazards":
+        survival_metrics = SURVIVAL_METRICS.search(output)
+        if not survival_metrics:
+            return (
+                result,
+                ["QA infrastructure: survival probe produced no survival metrics."],
+                True,
+            )
+        starting_lives, damage_events, single_hit, lose, clean_restart, timer_win = (
+            survival_metrics.groups()
+        )
+        result.update(
+            {
+                "starting_lives": int(starting_lives),
+                "damage_events": int(damage_events),
+                "single_hit_exact": single_hit == "true",
+                "lose_verified": lose == "true",
+                "clean_restart": clean_restart == "true",
+                "timer_win_verified": timer_win == "true",
+            }
+        )
+    if template == "depletion":
+        depletion_metrics = DEPLETION_METRICS.search(output)
+        if not depletion_metrics:
+            return (
+                result,
+                ["QA infrastructure: depletion probe produced no resource metrics."],
+                True,
+            )
+        resource_max, drained, refilled, drain, refill, lose, clean_restart, timer_win = (
+            depletion_metrics.groups()
+        )
+        result.update(
+            {
+                "resource_max": float(resource_max),
+                "drained_amount": float(drained),
+                "refilled_amount": float(refilled),
+                "drain_verified": drain == "true",
+                "refill_verified": refill == "true",
+                "lose_verified": lose == "true",
+                "clean_restart": clean_restart == "true",
+                "timer_win_verified": timer_win == "true",
+            }
+        )
+    if template == "survive_and_deplete":
+        hybrid = HYBRID_METRICS.search(output)
+        if not hybrid:
+            return result, ["QA infrastructure: hybrid probe produced no hybrid metrics."], True
+        values = hybrid.groups()
+        result.update({
+            "drain_first": float(values[0]), "drain_second": float(values[1]),
+            "refilled_amount": float(values[2]), "fuel_used": float(values[3]),
+            "hazard_damage": float(values[4]), "ramp_verified": values[5] == "true",
+            "refill_verified": values[6] == "true", "fuel_verified": values[7] == "true",
+            "hazard_verified": values[8] == "true", "lose_verified": values[9] == "true",
+            "clean_restart": values[10] == "true", "timer_win_verified": values[11] == "true",
+        })
+    if template == "capture_zones":
+        capture = CAPTURE_METRICS.search(output)
+        if not capture:
+            return result, ["QA infrastructure: capture probe produced no capture metrics."], True
+        gain, decay, owned, zones, captured, contested, ownership, won = capture.groups()
+        result.update(
+            {
+                "capture_gain": float(gain),
+                "decay_amount": float(decay),
+                "owned_zones": int(owned),
+                "total_zones": int(zones),
+                "capture_verified": captured == "true",
+                "contest_verified": contested == "true",
+                "ownership_verified": ownership == "true",
+                "zone_win_verified": won == "true",
+            }
+        )
+    if template == "herd_to_goal":
+        herd = HERD_METRICS.search(output)
+        if not herd:
+            return result, ["QA infrastructure: herd probe produced no herd metrics."], True
+        drift, flee_distance, goal_gain, settled, creatures, still, flee, settle, persistent, won = herd.groups()
+        result.update(
+            {
+                "still_drift": float(drift),
+                "flee_distance": float(flee_distance),
+                "goal_gain": float(goal_gain),
+                "settled_creatures": int(settled),
+                "total_creatures": int(creatures),
+                "still_verified": still == "true",
+                "flee_verified": flee == "true",
+                "settle_verified": settle == "true",
+                "persistent_settle_verified": persistent == "true",
+                "herd_win_verified": won == "true",
+            }
+        )
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -196,27 +386,268 @@ def _run_maze_objective_probe(
         position_note = ""
         if blocked_positions:
             formatted = ", ".join(f"({x:g}, {y:g})" for x, y in blocked_positions)
-            position_note = f" Suspect unreachable Area2D positions: {formatted}."
+            position_note = (
+                f" Hazard under test: {formatted}."
+                if template == "survive_hazards"
+                else (
+                    f" Refill zone under test: {formatted}."
+                    if template == "depletion"
+                    else f" Suspect unreachable Area2D positions: {formatted}."
+                )
+            )
+        objective_requirement = (
+            "Every switch must react, a wrong order must reset progress, and the full "
+            "correct order must set state to 'won'."
+            if template == "ordered_switches"
+            else (
+                "Collision damage must reach the lose state, restart must restore clean "
+                "state, and timer expiry must reach the win state."
+                if template == "survive_hazards"
+                else (
+                    "Resource must drain outside zones, refill inside one, empty-resource "
+                    "loss must restart cleanly, and timer expiry must win."
+                    if template == "depletion"
+                    else (
+                        "Drain must accelerate, refill must consume finite fuel, hazards must "
+                        "damage resource, loss must restart cleanly, and timer expiry must win."
+                        if template == "survive_and_deplete"
+                        else (
+                            "Player presence must capture zones, patroller contest must decay "
+                            "them and reset ownership, and owning every zone must win."
+                            if template == "capture_zones"
+                            else (
+                                "Creatures must stay calm outside panic range, flee toward the "
+                                "goal when approached, settle permanently, and all settled must win."
+                                if template == "herd_to_goal"
+                                else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                            )
+                        )
+                    )
+                )
+            )
+        )
         return (
             result,
             [
                 f"Objective completion: {template} solver failed "
                 f"({reason}); collected {collected}/{total} with {remaining} remaining. "
-                "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                f"{objective_requirement}"
                 f"{position_note}"
             ],
             False,
         )
+    if result["stuck"]:
+        return (
+            result,
+            ["Objective completion: probe reported a pass while also reporting a stuck run."],
+            True,
+        )
     if int(remaining) != 0 or int(collected) < int(total):
+        item = (
+            "milestones"
+            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal"}
+            else "objective items"
+        )
         return (
             result,
             [
-                "Objective completion: probe reported a pass without collecting every pickup "
+                f"Objective completion: probe reported a pass without completing every {item} "
                 f"({collected}/{total}, {remaining} remaining)."
             ],
             True,
         )
+    if template == "collect":
+        if result["restart_status"] != "not_applicable":
+            return (
+                result,
+                [
+                    "QA infrastructure: collect objective reported restart status "
+                    f"{result['restart_status']!r}; expected 'not_applicable'."
+                ],
+                True,
+            )
+        if result["completion_seconds"] > MAX_COLLECT_SOLVER_SECONDS:
+            return (
+                result,
+                [
+                    "Objective completion: collect solver reached the win state but took "
+                    f"{result['completion_seconds']:.1f}s, above the "
+                    f"{MAX_COLLECT_SOLVER_SECONDS:.0f}s quality ceiling. Reduce empty travel "
+                    "or the number of pickups."
+                ],
+                False,
+            )
+    if template == "ordered_switches":
+        if not result["wrong_order_reset"]:
+            return (
+                result,
+                ["Objective completion: a wrong switch did not reset sequence progress."],
+                False,
+            )
+        if not result["clean_reload"] or result["restart_status"] != "passed":
+            return (
+                result,
+                ["Objective completion: switch puzzle did not reload into a clean state."],
+                False,
+            )
+        if (
+            result["correct_progress"] != result["sequence_length"]
+            or result["sequence_length"] != int(total)
+        ):
+            return (
+                result,
+                [
+                    "Objective completion: ordered-switch pass has inconsistent sequence "
+                    f"progress ({result['correct_progress']}/{result['sequence_length']})."
+                ],
+                True,
+            )
+        if result["completion_seconds"] > MAX_SWITCH_SOLVER_SECONDS:
+            return (
+                result,
+                [
+                    "Objective completion: ordered-switch solver passed but took "
+                    f"{result['completion_seconds']:.1f}s, above the "
+                    f"{MAX_SWITCH_SOLVER_SECONDS:.0f}s quality ceiling. Reduce empty travel "
+                    "or sequence length."
+                ],
+                False,
+            )
+    if template == "survive_hazards":
+        required = {
+            "single_hit_exact": result["single_hit_exact"],
+            "lose_verified": result["lose_verified"],
+            "clean_restart": result["clean_restart"],
+            "timer_win_verified": result["timer_win_verified"],
+        }
+        missing = [name for name, passed in required.items() if not passed]
+        if missing:
+            return (
+                result,
+                [
+                    "Objective completion: survival pass omitted required phase(s): "
+                    + ", ".join(missing)
+                    + "."
+                ],
+                True,
+            )
+        if result["restart_status"] != "passed":
+            return (
+                result,
+                ["Objective completion: survival restart did not produce a clean state."],
+                False,
+            )
+        if (
+            result["damage_events"] != result["starting_lives"]
+            or result["deaths"] != 1
+        ):
+            return (
+                result,
+                [
+                    "Objective completion: survival damage accounting is inconsistent "
+                    f"({result['damage_events']} hits for {result['starting_lives']} lives, "
+                    f"{result['deaths']} terminal losses)."
+                ],
+                True,
+            )
+        if result["completion_seconds"] > MAX_SURVIVAL_SOLVER_SECONDS:
+            return (
+                result,
+                [
+                    "Objective completion: survival solver passed but took "
+                    f"{result['completion_seconds']:.1f}s, above the "
+                    f"{MAX_SURVIVAL_SOLVER_SECONDS:.0f}s QA ceiling."
+                ],
+                False,
+            )
+    if template == "depletion":
+        required = {
+            "drain_verified": result["drain_verified"],
+            "refill_verified": result["refill_verified"],
+            "lose_verified": result["lose_verified"],
+            "clean_restart": result["clean_restart"],
+            "timer_win_verified": result["timer_win_verified"],
+        }
+        missing = [name for name, passed in required.items() if not passed]
+        if missing:
+            return (
+                result,
+                [
+                    "Objective completion: depletion pass omitted required phase(s): "
+                    + ", ".join(missing)
+                    + "."
+                ],
+                True,
+            )
+        if result["drained_amount"] <= 0.0 or result["refilled_amount"] <= 0.0:
+            return (
+                result,
+                ["Objective completion: depletion pass reported no resource change."],
+                True,
+            )
+        if result["restart_status"] != "passed" or result["deaths"] != 1:
+            return (
+                result,
+                ["Objective completion: depletion lose/restart accounting is inconsistent."],
+                True,
+            )
+        if result["completion_seconds"] > MAX_DEPLETION_SOLVER_SECONDS:
+            return (
+                result,
+                [
+                    "Objective completion: depletion solver passed but took "
+                    f"{result['completion_seconds']:.1f}s, above the "
+                    f"{MAX_DEPLETION_SOLVER_SECONDS:.0f}s QA ceiling."
+                ],
+                False,
+            )
+    if template == "survive_and_deplete":
+        flags = ["ramp_verified", "refill_verified", "fuel_verified", "hazard_verified", "lose_verified", "clean_restart", "timer_win_verified"]
+        missing = [name for name in flags if not result[name]]
+        if missing:
+            return result, ["Objective completion: hybrid pass omitted: " + ", ".join(missing) + "."], True
+        if not (result["drain_second"] > result["drain_first"] > 0 and result["refilled_amount"] > 0 and result["fuel_used"] > 0 and result["hazard_damage"] > 0):
+            return result, ["Objective completion: hybrid measurements are inconsistent."], True
+        if result["restart_status"] != "passed" or result["deaths"] != 1:
+            return result, ["Objective completion: hybrid lose/restart accounting is inconsistent."], True
+        if result["completion_seconds"] > MAX_HYBRID_SOLVER_SECONDS:
+            return result, [f"Objective completion: hybrid solver exceeded {MAX_HYBRID_SOLVER_SECONDS:.0f}s QA ceiling."], False
+    if template == "capture_zones":
+        flags = ["capture_verified", "contest_verified", "ownership_verified", "zone_win_verified"]
+        missing = [name for name in flags if not result[name]]
+        if missing:
+            return result, ["Objective completion: capture pass omitted: " + ", ".join(missing) + "."], True
+        if result["capture_gain"] <= 0 or result["decay_amount"] <= 0:
+            return result, ["Objective completion: capture progress/decay measurements are inconsistent."], True
+        if result["total_zones"] < 2 or result["owned_zones"] != result["total_zones"]:
+            return result, ["Objective completion: capture ownership accounting is inconsistent."], True
+        if result["restart_status"] != "not_applicable" or result["deaths"] != 0:
+            return result, ["Objective completion: capture terminal accounting is inconsistent."], True
+        if result["completion_seconds"] > MAX_CAPTURE_SOLVER_SECONDS:
+            return result, [f"Objective completion: capture solver exceeded {MAX_CAPTURE_SOLVER_SECONDS:.0f}s QA ceiling."], False
+    if template == "herd_to_goal":
+        flags = ["still_verified", "flee_verified", "settle_verified", "persistent_settle_verified", "herd_win_verified"]
+        missing = [name for name in flags if not result[name]]
+        if missing:
+            return result, ["Objective completion: herd pass omitted: " + ", ".join(missing) + "."], True
+        if result["still_drift"] > 0.5 or result["flee_distance"] <= 0 or result["goal_gain"] <= 0:
+            return result, ["Objective completion: herd movement measurements are inconsistent."], True
+        if result["total_creatures"] < 1 or result["settled_creatures"] != result["total_creatures"]:
+            return result, ["Objective completion: herd settlement accounting is inconsistent."], True
+        if result["restart_status"] != "not_applicable" or result["deaths"] != 0:
+            return result, ["Objective completion: herd terminal accounting is inconsistent."], True
+        if result["completion_seconds"] > MAX_HERD_SOLVER_SECONDS:
+            return result, [f"Objective completion: herd solver exceeded {MAX_HERD_SOLVER_SECONDS:.0f}s QA ceiling."], False
     return result, [], False
+
+
+def _run_maze_objective_probe(
+    project_dir: str,
+    scene: str,
+    template: str,
+) -> tuple[dict | None, list[str], bool]:
+    """Compatibility wrapper for the original maze-only probe API."""
+    return _run_objective_probe(project_dir, scene, template)
 
 
 def _run_dot_maze_objective_probe(
@@ -224,7 +655,7 @@ def _run_dot_maze_objective_probe(
     scene: str,
 ) -> tuple[dict | None, list[str], bool]:
     """Compatibility wrapper for existing callers and developer tooling."""
-    return _run_maze_objective_probe(project_dir, scene, "dot_maze")
+    return _run_objective_probe(project_dir, scene, "dot_maze")
 
 
 def _vision_prompt(design_doc) -> str:
@@ -324,6 +755,221 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
     return gating, advisory
 
 
+def _capture_gameplay_video(
+    project_dir: str,
+    scene: str,
+    level_index: int,
+) -> tuple[str | None, list[str], bool]:
+    """Record deterministic autoplay and convert Godot's AVI to compact MP4.
+
+    Returns ``(path, errors, blocked)``. Capture/transcode infrastructure
+    failures block a requested video gate; generated runtime failures remain
+    ordinary Coder-repairable QA failures.
+    """
+    project = Path(project_dir)
+    stem = f"gameplay_Level{level_index}"
+    avi_path = project / f"{stem}.avi"
+    mp4_path = project / f"{stem}.mp4"
+    avi_path.unlink(missing_ok=True)
+    mp4_path.unlink(missing_ok=True)
+
+    capture = _run(
+        [
+            "--path",
+            project_dir,
+            scene,
+            "--write-movie",
+            f"res://{stem}.avi",
+            "--fixed-fps",
+            str(VIDEO_CAPTURE_FPS),
+            "--disable-vsync",
+            "--quit-after",
+            str(VIDEO_CAPTURE_MAX_FRAMES),
+            "--",
+            "--autoplay",
+        ],
+        timeout=120,
+    )
+    output = capture.stdout + capture.stderr
+    capture_errors = _find_errors(output)
+    if capture.returncode != 0 or capture_errors:
+        errors = capture_errors or [
+            f"Gameplay video capture exited with code {capture.returncode}"
+        ]
+        return None, errors, _has_harness_error(errors)
+    if not avi_path.exists() or avi_path.stat().st_size == 0:
+        return (
+            None,
+            ["QA infrastructure: Godot gameplay capture produced no AVI file."],
+            True,
+        )
+
+    try:
+        converted = subprocess.run(
+            [
+                FFMPEG_EXE,
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(avi_path),
+                "-vf",
+                f"fps={VIDEO_REVIEW_FPS},scale=640:-2:flags=lanczos",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "24",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(mp4_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return (
+            None,
+            [f"QA infrastructure: FFmpeg video conversion failed: {type(exc).__name__}: {exc}"],
+            True,
+        )
+    if converted.returncode != 0 or not mp4_path.exists() or mp4_path.stat().st_size == 0:
+        detail = (converted.stderr or converted.stdout or "no MP4 produced").strip()[-500:]
+        return (
+            None,
+            [f"QA infrastructure: FFmpeg video conversion failed: {detail}"],
+            True,
+        )
+    avi_path.unlink(missing_ok=True)
+    return str(mp4_path), [], False
+
+
+def _video_prompt(design_doc) -> str:
+    title = (design_doc or {}).get("title", "the game")
+    hero = (design_doc or {}).get("hero_description", "the player character")
+    return (
+        f"Review this deterministic 8-second gameplay clip from {title!r}. "
+        f"The player character is: {hero}. After a short idle period, the harness "
+        "holds RIGHT, DOWN, LEFT, then UP. Judge only visible evidence across the "
+        "whole clip. Do not infer mechanics or defects that cannot be seen. "
+        "For movement_facing, inspect the horizontal RIGHT and LEFT segments; use "
+        "'reversed' only when the character clearly looks opposite its travel, and "
+        "'indeterminate' for frontal or symmetric art. For animation, use 'sliding' "
+        "only when the player visibly translates as a rigid still image. Return ONLY "
+        "JSON matching exactly: "
+        '{"player_visible": bool, "player_motion": "moves|stationary|indeterminate", '
+        '"movement_facing": "correct|reversed|indeterminate", '
+        '"animation": "animated|sliding|indeterminate", "hud_readable": bool, '
+        '"scene_stable": bool, "code_defects": [string], '
+        '"art_advisories": [string], "evidence": string}. '
+        "code_defects is only for obvious temporal failures fixable in gameplay code, "
+        "such as severe jitter, disappearing required objects, frozen gameplay, or "
+        "broken layering. Put art-quality concerns in art_advisories instead."
+    )
+
+
+def _video_raw(video_path: str, design_doc) -> dict:
+    import base64
+
+    from saga.llm import chat
+
+    encoded = base64.b64encode(Path(video_path).read_bytes()).decode("ascii")
+    text = chat(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "video_url",
+                        "video_url": {"url": f"data:video/mp4;base64,{encoded}"},
+                    },
+                    {"type": "text", "text": _video_prompt(design_doc)},
+                ],
+            }
+        ],
+        model=VIDEO_MODEL,
+        json_mode=True,
+        max_tokens=2000,
+        base_url=VIDEO_BASE_URL,
+        key_env=VIDEO_KEY_ENV,
+        timeout=VIDEO_TIMEOUT,
+        temperature=0.2,
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    return json.loads(match.group(0) if match else text)
+
+
+def _validate_video_verdict(data: dict) -> list[str]:
+    problems = []
+    for field in ("player_visible", "hud_readable", "scene_stable"):
+        if not isinstance(data.get(field), bool):
+            problems.append(f"{field} must be boolean")
+    allowed = {
+        "player_motion": {"moves", "stationary", "indeterminate"},
+        "movement_facing": {"correct", "reversed", "indeterminate"},
+        "animation": {"animated", "sliding", "indeterminate"},
+    }
+    for field, values in allowed.items():
+        if data.get(field) not in values:
+            problems.append(f"{field} must be one of {sorted(values)}")
+    for field in ("code_defects", "art_advisories"):
+        value = data.get(field)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            problems.append(f"{field} must be a list of strings")
+    if not isinstance(data.get("evidence"), str):
+        problems.append("evidence must be a string")
+    return problems
+
+
+def _video_review(
+    video_path: str,
+    design_doc,
+) -> tuple[dict | None, list[str], list[str], str | None]:
+    """Return structured result, gating defects, advisories, infrastructure error."""
+    try:
+        data = _video_raw(video_path, design_doc)
+    except Exception as exc:
+        return None, [], [], f"{type(exc).__name__}: {exc}"
+    problems = _validate_video_verdict(data)
+    if problems:
+        return None, [], [], "; ".join(problems)
+
+    gating = []
+    if data["player_visible"] is False:
+        gating.append("Video defect: the player is not visible during gameplay.")
+    if data["player_motion"] == "stationary":
+        gating.append("Video defect: the player remains stationary while movement input is held.")
+    if data["movement_facing"] == "reversed":
+        gating.append(
+            "Video defect: the player sprite faces opposite its horizontal movement. "
+            "Use Anim.walk(sprite, is_moving, direction.x) and preserve the harness's "
+            "native-left sprite convention."
+        )
+    if data["animation"] == "sliding":
+        gating.append(
+            "Video defect: the player slides as a rigid still image. Register the idle/walk "
+            "textures with Anim.set_poses and call Anim.walk every frame."
+        )
+    if data["hud_readable"] is False:
+        gating.append("Video defect: the HUD becomes unreadable during gameplay.")
+    if data["scene_stable"] is False:
+        gating.append("Video defect: the gameplay scene visibly jitters, tears, or destabilizes.")
+    gating.extend(f"Video defect: {defect}" for defect in data["code_defects"])
+    advisory = [f"Video (advisory): {note}" for note in data["art_advisories"]]
+    result = {
+        "status": "failed" if gating else "passed",
+        "model": VIDEO_MODEL,
+        **data,
+    }
+    return result, gating, advisory, None
+
+
 def _record_attempt(
     state: GraphState,
     *,
@@ -334,6 +980,9 @@ def _record_attempt(
     vision_notes: list[str] | None = None,
     balance_notes: list[str] | None = None,
     objective_result: dict | None = None,
+    gameplay_video_path: str | None = None,
+    video_qa_result: dict | None = None,
+    video_notes: list[str] | None = None,
     blocked: bool = False,
 ) -> list[dict]:
     """Return a new durable QA ledger with this attempt appended.
@@ -354,6 +1003,7 @@ def _record_attempt(
     errors = list(errors or [])
     vision_notes = list(vision_notes or [])
     balance_notes = list(balance_notes or [])
+    video_notes = list(video_notes or [])
 
     ledger = [dict(item) for item in (state.get("level_results") or [])]
     entry_index = next(
@@ -361,6 +1011,7 @@ def _record_attempt(
         None,
     )
     previous = ledger[entry_index] if entry_index is not None else {}
+    asset_replacements = list(previous.get("asset_replacements") or [])
     attempts = [dict(item) for item in previous.get("attempts", [])]
     attempts.append(
         {
@@ -372,6 +1023,9 @@ def _record_attempt(
             "vision_notes": vision_notes,
             "balance_notes": balance_notes,
             "objective_result": objective_result,
+            "gameplay_video_path": gameplay_video_path,
+            "video_qa_result": video_qa_result,
+            "video_notes": video_notes,
             "coder_model": state.get("coder_model"),
         }
     )
@@ -387,7 +1041,11 @@ def _record_attempt(
         "vision_notes": vision_notes,
         "balance_notes": balance_notes,
         "objective_result": objective_result,
+        "gameplay_video_path": gameplay_video_path,
+        "video_qa_result": video_qa_result,
+        "video_notes": video_notes,
         "coder_model": state.get("coder_model"),
+        "asset_replacements": asset_replacements,
     }
     if entry_index is None:
         ledger.append(entry)
@@ -405,6 +1063,9 @@ def _failed_attempt(
     vision_notes: list[str] | None = None,
     balance_notes: list[str] | None = None,
     objective_result: dict | None = None,
+    gameplay_video_path: str | None = None,
+    video_qa_result: dict | None = None,
+    video_notes: list[str] | None = None,
     blocked: bool = False,
 ) -> GraphState:
     retry_count = state.get("retry_count") or 0
@@ -416,6 +1077,9 @@ def _failed_attempt(
         "vision_notes": vision_notes or [],
         "balance_notes": balance_notes or [],
         "objective_result": objective_result,
+        "gameplay_video_path": gameplay_video_path,
+        "video_qa_result": video_qa_result,
+        "video_notes": video_notes or [],
         "level_results": _record_attempt(
             state,
             passed=False,
@@ -425,6 +1089,9 @@ def _failed_attempt(
             vision_notes=vision_notes,
             balance_notes=balance_notes,
             objective_result=objective_result,
+            gameplay_video_path=gameplay_video_path,
+            video_qa_result=video_qa_result,
+            video_notes=video_notes,
             blocked=blocked,
         ),
         "ship_blocked": blocked,
@@ -560,8 +1227,18 @@ def qa_agent(state: GraphState) -> GraphState:
     # objective to be reachable and its real win state to fire.
     template = (state.get("design_doc") or {}).get("mechanic_template", "")
     objective_result = None
-    if template in {"dot_maze", "maze_chase"}:
-        objective_result, objective_errors, objective_blocked = _run_maze_objective_probe(
+    if template in {
+        "collect",
+        "ordered_switches",
+        "survive_hazards",
+        "depletion",
+        "survive_and_deplete",
+        "capture_zones",
+        "herd_to_goal",
+        "dot_maze",
+        "maze_chase",
+    }:
+        objective_result, objective_errors, objective_blocked = _run_objective_probe(
             project_dir,
             scene,
             template,
@@ -576,10 +1253,20 @@ def qa_agent(state: GraphState) -> GraphState:
                 objective_result=objective_result,
                 blocked=objective_blocked,
             )
+        noun = {
+            "ordered_switches": "switches",
+            "survive_hazards": "survival milestones",
+            "depletion": "resource milestones",
+            "survive_and_deplete": "hybrid milestones",
+            "capture_zones": "capture milestones",
+            "herd_to_goal": "herding milestones",
+        }.get(template, "pickups")
         print(
-            f"[QA Agent] Objective: collected {objective_result['collected']}/"
-            f"{objective_result['total']} pickups and reached won in "
-            f"{objective_result['frames']} frames"
+            f"[QA Agent] Objective: completed {objective_result['collected']}/"
+            f"{objective_result['total']} {noun} and reached won in "
+            f"{objective_result['completion_seconds']:.1f}s "
+            f"(score={objective_result['completion_score']}, "
+            f"max_stall={objective_result['max_stall_frames']} frames)"
         )
 
     # 4. Balance check. The script runs, but that says nothing about whether
@@ -642,6 +1329,71 @@ def qa_agent(state: GraphState) -> GraphState:
                 objective_result=objective_result,
             )
 
+    # 7. Required gameplay video review when explicitly enabled. Unlike the
+    # screenshot, this observes temporal defects: reversed facing, rigid
+    # sliding, frozen motion, jitter, and objects disappearing mid-play.
+    gameplay_video_path = None
+    video_qa_result = None
+    video_notes = []
+    if VIDEO_QA_ENABLED:
+        gameplay_video_path, video_errors, video_blocked = _capture_gameplay_video(
+            project_dir,
+            scene,
+            current_level,
+        )
+        if video_errors:
+            label = "BLOCKED" if video_blocked else "FAILED"
+            print(f"[QA Agent] {label} gameplay video capture: {video_errors}")
+            return _failed_attempt(
+                state,
+                stage="video_capture_probe" if video_blocked else "video_capture",
+                errors=video_errors,
+                screenshot_path=screenshot_path,
+                vision_notes=vision_notes,
+                balance_notes=balance_notes,
+                objective_result=objective_result,
+                blocked=video_blocked,
+            )
+        print(f"[QA Agent] Gameplay video captured -> {gameplay_video_path}")
+        video_qa_result, video_gating, video_notes, video_error = _video_review(
+            gameplay_video_path,
+            state.get("design_doc"),
+        )
+        if video_error:
+            error = f"QA infrastructure: NVIDIA video QA produced no valid verdict ({video_error})."
+            print(f"[QA Agent] BLOCKED: {error}")
+            return _failed_attempt(
+                state,
+                stage="video_qa_probe",
+                errors=[error],
+                screenshot_path=screenshot_path,
+                vision_notes=vision_notes,
+                balance_notes=balance_notes,
+                objective_result=objective_result,
+                gameplay_video_path=gameplay_video_path,
+                blocked=True,
+            )
+        for note in video_gating + video_notes:
+            print(f"[QA Agent] {note}")
+        if video_gating:
+            print(f"[QA Agent] FAILED on {len(video_gating)} gameplay video defect(s)")
+            return _failed_attempt(
+                state,
+                stage="video_qa",
+                errors=video_gating,
+                screenshot_path=screenshot_path,
+                vision_notes=vision_notes,
+                balance_notes=balance_notes,
+                objective_result=objective_result,
+                gameplay_video_path=gameplay_video_path,
+                video_qa_result=video_qa_result,
+                video_notes=video_notes,
+            )
+        print(
+            f"[QA Agent] NVIDIA video QA passed: "
+            f"{video_qa_result['evidence']}"
+        )
+
     # This is the only point in the pipeline where a script is known-good
     # (compiled, ran, satisfied its template contract) - so it's where the
     # training corpus gets its verified pairs.
@@ -653,7 +1405,7 @@ def qa_agent(state: GraphState) -> GraphState:
         level_index=current_level,
         retry_count=retry_count,
         design_doc=state.get("design_doc"),
-        vision_notes=vision_notes,
+        vision_notes=vision_notes + video_notes,
     )
 
     print("[QA Agent] PASSED - scene ran headlessly with no errors")
@@ -664,6 +1416,9 @@ def qa_agent(state: GraphState) -> GraphState:
         "vision_notes": vision_notes,
         "balance_notes": balance_notes,
         "objective_result": objective_result,
+        "gameplay_video_path": gameplay_video_path,
+        "video_qa_result": video_qa_result,
+        "video_notes": video_notes,
         "level_results": _record_attempt(
             state,
             passed=True,
@@ -672,6 +1427,9 @@ def qa_agent(state: GraphState) -> GraphState:
             vision_notes=vision_notes,
             balance_notes=balance_notes,
             objective_result=objective_result,
+            gameplay_video_path=gameplay_video_path,
+            video_qa_result=video_qa_result,
+            video_notes=video_notes,
         ),
         "ship_blocked": False,
     }

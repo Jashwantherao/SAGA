@@ -73,6 +73,13 @@ class Settings:
     vision_key_env: str
     vision_timeout: float
 
+    video_qa_enabled: bool
+    video_model: str
+    video_base_url: str
+    video_key_env: str
+    video_timeout: float
+    ffmpeg_exe: str
+
     ollama_url: str
     comfyui_url: str
     musicgen_url: str
@@ -126,6 +133,18 @@ class Settings:
             ).rstrip("/"),
             vision_key_env=_env("SAGA_VISION_KEY_ENV", "NVIDIA_API_KEY"),
             vision_timeout=_float_env("SAGA_VISION_TIMEOUT", 90.0),
+            video_qa_enabled=_bool_env("SAGA_VIDEO_QA"),
+            video_model=_env(
+                "SAGA_VIDEO_MODEL",
+                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+            ),
+            video_base_url=_env(
+                "SAGA_VIDEO_BASE_URL",
+                "https://integrate.api.nvidia.com/v1",
+            ).rstrip("/"),
+            video_key_env=_env("SAGA_VIDEO_KEY_ENV", "NVIDIA_API_KEY"),
+            video_timeout=_float_env("SAGA_VIDEO_TIMEOUT", 120.0),
+            ffmpeg_exe=_env("SAGA_FFMPEG_EXE", "ffmpeg"),
             ollama_url=_env("SAGA_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/"),
             comfyui_url=_env("SAGA_COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/"),
             musicgen_url=_env("SAGA_MUSICGEN_URL", "http://127.0.0.1:8189").rstrip("/"),

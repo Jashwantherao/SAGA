@@ -58,6 +58,8 @@ def chat(
     base_url: str | None = None,
     key_env: str | None = None,
     timeout: float | None = None,
+    temperature: float | None = None,
+    extra_body: dict | None = None,
 ) -> str:
     """One completion. Returns the raw assistant text.
 
@@ -77,6 +79,10 @@ def chat(
         kwargs["response_format"] = {"type": "json_object"}
     if timeout is not None:
         kwargs["timeout"] = timeout
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if extra_body:
+        kwargs["extra_body"] = extra_body
     response = _get_client(base_url, key_env).chat.completions.create(**kwargs)
     return response.choices[0].message.content or ""
 

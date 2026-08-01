@@ -105,7 +105,11 @@ def level_gate(state: GraphState) -> GraphState:
 
     print(f"\n{'=' * 62}")
     print(f"  Level {level_index + 1} of {total} passed QA. Play it before the rest is built.")
-    for note in (state.get("vision_notes") or []) + (state.get("balance_notes") or []):
+    for note in (
+        (state.get("vision_notes") or [])
+        + (state.get("balance_notes") or [])
+        + (state.get("video_notes") or [])
+    ):
         print(f"  note: {note}")
     print(f"{'=' * 62}")
     proc = _launch(project_dir, level_index) if project_dir else None
