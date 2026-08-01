@@ -76,8 +76,14 @@ SWITCH_METRICS = re.compile(
     r"\[SWITCH_METRICS\] sequence_length=(\d+) activations=(\d+) "
     r"wrong_order_reset=(true|false) clean_reload=(true|false) correct_progress=(\d+)"
 )
+SURVIVAL_METRICS = re.compile(
+    r"\[SURVIVAL_METRICS\] starting_lives=(\d+) damage_events=(\d+) "
+    r"single_hit_exact=(true|false) lose_verified=(true|false) "
+    r"clean_restart=(true|false) timer_win=(true|false)"
+)
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
+MAX_SURVIVAL_SOLVER_SECONDS = 30.0
 
 # Godot's forced `--quit-after` shutdown doesn't wait for the AudioServer to
 # release an autoplaying stream, so any project with BGM prints these on exit
@@ -90,7 +96,7 @@ BENIGN_EXIT_NOISE = re.compile(
 )
 
 HARNESS_SCRIPT_ERROR = re.compile(
-    r"res://(?:autoplay|objective_probe|switch_probe|screenshot|sfx|music|ambience|anim|game|"
+    r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|screenshot|sfx|music|ambience|anim|game|"
     r"interlude|victory)\.gd",
     re.IGNORECASE,
 )
@@ -178,7 +184,7 @@ def _run_objective_probe(
     process_errors = _find_errors(output)
     if probe.returncode != 0 or process_errors:
         errors = process_errors or [f"Objective probe exited with code {probe.returncode}"]
-        blocked = any("objective_probe.gd" in error for error in errors)
+        blocked = _has_harness_error(errors)
         return None, errors, blocked
 
     verdict = OBJECTIVE_VERDICT.search(output)
@@ -252,6 +258,27 @@ def _run_objective_probe(
                 "correct_progress": int(correct_progress),
             }
         )
+    if template == "survive_hazards":
+        survival_metrics = SURVIVAL_METRICS.search(output)
+        if not survival_metrics:
+            return (
+                result,
+                ["QA infrastructure: survival probe produced no survival metrics."],
+                True,
+            )
+        starting_lives, damage_events, single_hit, lose, clean_restart, timer_win = (
+            survival_metrics.groups()
+        )
+        result.update(
+            {
+                "starting_lives": int(starting_lives),
+                "damage_events": int(damage_events),
+                "single_hit_exact": single_hit == "true",
+                "lose_verified": lose == "true",
+                "clean_restart": clean_restart == "true",
+                "timer_win_verified": timer_win == "true",
+            }
+        )
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -261,12 +288,21 @@ def _run_objective_probe(
         position_note = ""
         if blocked_positions:
             formatted = ", ".join(f"({x:g}, {y:g})" for x, y in blocked_positions)
-            position_note = f" Suspect unreachable Area2D positions: {formatted}."
+            position_note = (
+                f" Hazard under test: {formatted}."
+                if template == "survive_hazards"
+                else f" Suspect unreachable Area2D positions: {formatted}."
+            )
         objective_requirement = (
             "Every switch must react, a wrong order must reset progress, and the full "
             "correct order must set state to 'won'."
             if template == "ordered_switches"
-            else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+            else (
+                "Collision damage must reach the lose state, restart must restore clean "
+                "state, and timer expiry must reach the win state."
+                if template == "survive_hazards"
+                else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+            )
         )
         return (
             result,
@@ -285,10 +321,11 @@ def _run_objective_probe(
             True,
         )
     if int(remaining) != 0 or int(collected) < int(total):
+        item = "milestones" if template == "survive_hazards" else "objective items"
         return (
             result,
             [
-                "Objective completion: probe reported a pass without collecting every pickup "
+                f"Objective completion: probe reported a pass without completing every {item} "
                 f"({collected}/{total}, {remaining} remaining)."
             ],
             True,
@@ -347,6 +384,53 @@ def _run_objective_probe(
                     f"{result['completion_seconds']:.1f}s, above the "
                     f"{MAX_SWITCH_SOLVER_SECONDS:.0f}s quality ceiling. Reduce empty travel "
                     "or sequence length."
+                ],
+                False,
+            )
+    if template == "survive_hazards":
+        required = {
+            "single_hit_exact": result["single_hit_exact"],
+            "lose_verified": result["lose_verified"],
+            "clean_restart": result["clean_restart"],
+            "timer_win_verified": result["timer_win_verified"],
+        }
+        missing = [name for name, passed in required.items() if not passed]
+        if missing:
+            return (
+                result,
+                [
+                    "Objective completion: survival pass omitted required phase(s): "
+                    + ", ".join(missing)
+                    + "."
+                ],
+                True,
+            )
+        if result["restart_status"] != "passed":
+            return (
+                result,
+                ["Objective completion: survival restart did not produce a clean state."],
+                False,
+            )
+        if (
+            result["damage_events"] != result["starting_lives"]
+            or result["deaths"] != 1
+        ):
+            return (
+                result,
+                [
+                    "Objective completion: survival damage accounting is inconsistent "
+                    f"({result['damage_events']} hits for {result['starting_lives']} lives, "
+                    f"{result['deaths']} terminal losses)."
+                ],
+                True,
+            )
+        if result["completion_seconds"] > MAX_SURVIVAL_SOLVER_SECONDS:
+            return (
+                result,
+                [
+                    "Objective completion: survival solver passed but took "
+                    f"{result['completion_seconds']:.1f}s, above the "
+                    f"{MAX_SURVIVAL_SOLVER_SECONDS:.0f}s QA ceiling."
                 ],
                 False,
             )
@@ -939,7 +1023,13 @@ def qa_agent(state: GraphState) -> GraphState:
     # objective to be reachable and its real win state to fire.
     template = (state.get("design_doc") or {}).get("mechanic_template", "")
     objective_result = None
-    if template in {"collect", "ordered_switches", "dot_maze", "maze_chase"}:
+    if template in {
+        "collect",
+        "ordered_switches",
+        "survive_hazards",
+        "dot_maze",
+        "maze_chase",
+    }:
         objective_result, objective_errors, objective_blocked = _run_objective_probe(
             project_dir,
             scene,
@@ -955,7 +1045,10 @@ def qa_agent(state: GraphState) -> GraphState:
                 objective_result=objective_result,
                 blocked=objective_blocked,
             )
-        noun = "switches" if template == "ordered_switches" else "pickups"
+        noun = {
+            "ordered_switches": "switches",
+            "survive_hazards": "survival milestones",
+        }.get(template, "pickups")
         print(
             f"[QA Agent] Objective: completed {objective_result['collected']}/"
             f"{objective_result['total']} {noun} and reached won in "

@@ -2,6 +2,28 @@
 
 
 TEMPLATE_CONTRACTS = {
+    "survive_hazards": [
+        (
+            "the stable player handle required by objective QA (`var player: Area2D`)",
+            r"var\s+player(?:\s*:\s*Area2D)?\b",
+        ),
+        (
+            "the stable hazard array required by objective QA (`var hazards`)",
+            r"var\s+hazards(?:\s*:\s*Array(?:\[Area2D\])?)?\b",
+        ),
+        ("the starting life count required by objective QA", r"var\s+starting_lives\b"),
+        ("the current lives counter required by objective QA", r"var\s+lives\b"),
+        ("the survival duration required by objective QA", r"var\s+survival_time\b"),
+        ("the current survival timer required by objective QA", r"var\s+time_left\b"),
+        (
+            "the public hit cooldown required by objective QA (`var hit_cooldown`)",
+            r"var\s+hit_cooldown\b",
+        ),
+        (
+            "the title/playing/won/over state required by objective QA",
+            r"var\s+state\b",
+        ),
+    ],
     "ordered_switches": [
         (
             "the stable player handle required by objective QA (`var player: Area2D`)",

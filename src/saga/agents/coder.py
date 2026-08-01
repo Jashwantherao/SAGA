@@ -55,6 +55,7 @@ Anim="*res://anim.gd"
 Autoplay="*res://autoplay.gd"
 ObjectiveProbe="*res://objective_probe.gd"
 SwitchProbe="*res://switch_probe.gd"
+SurvivalProbe="*res://survival_probe.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -535,7 +536,7 @@ func _ready() -> void:
 	for argument in arguments:
 		if argument.begins_with("--objective-template="):
 			_template = argument.trim_prefix("--objective-template=")
-	_active = _active and _template != "ordered_switches"
+	_active = _active and _template not in ["ordered_switches", "survive_hazards"]
 	if _active:
 		process_priority = 600
 
@@ -1128,6 +1129,270 @@ func _fail(reason: String) -> void:
 	get_tree().quit()
 """
 
+# Survival QA proves both terminal paths instead of merely waiting for a
+# label. It deals real Area2D collision damage until the generated lose state,
+# presses the actual restart input, validates fresh state, then shortens only
+# the public timer and requires the generated win transition.
+SURVIVAL_PROBE_GD = """extends Node
+
+const MAX_FRAMES := 1800
+const INTERACTION_TIMEOUT := 120
+const MOVE_STEP := 18.0
+
+var _active := false
+var _frame := 0
+var _root: Node
+var _player: Area2D
+var _hazards: Array[Area2D] = []
+var _target: Area2D
+var _phase := "first_hit"
+var _phase_start_frame := 0
+var _arrival_frame := -1
+var _lives_before_hit := 0
+var _starting_lives := 0
+var _damage_events := 0
+var _milestones := 0
+var _progress_events := 0
+var _max_stall_frames := 0
+var _last_progress_frame := 0
+var _single_hit_exact := false
+var _lose_verified := false
+var _restart_verified := false
+var _timer_win_verified := false
+var _old_root_id := 0
+var _restart_frame := -1
+var _retreat_position := Vector2.ZERO
+var _retreat_clear_frames := 0
+var _stuck := false
+
+func _ready() -> void:
+	var template := ""
+	var arguments := OS.get_cmdline_user_args()
+	for argument in arguments:
+		if argument.begins_with("--objective-template="):
+			template = argument.trim_prefix("--objective-template=")
+	_active = "--objective-probe" in arguments and template == "survive_hazards"
+	if _active:
+		process_priority = 620
+
+func _has_property(object: Object, property_name: String) -> bool:
+	for property in object.get_property_list():
+		if str(property.get("name", "")) == property_name:
+			return true
+	return false
+
+func _read_property(object: Object, property_name: String, fallback = null):
+	if _has_property(object, property_name):
+		return object.get(property_name)
+	return fallback
+
+func _state() -> String:
+	return str(_read_property(_root, "state", "unknown")) if _root != null else "unknown"
+
+func _lives() -> int:
+	return int(_read_property(_root, "lives", -1)) if _root != null else -1
+
+func _initialize_root(after_restart: bool = false) -> bool:
+	_root = get_tree().current_scene
+	if _root == null:
+		return false
+	var player_candidate = _read_property(_root, "player", null)
+	var raw_hazards = _read_property(_root, "hazards", null)
+	if not (player_candidate is Area2D):
+		_fail("missing_player_interface")
+		return false
+	if typeof(raw_hazards) != TYPE_ARRAY:
+		_fail("missing_hazard_interface")
+		return false
+	_player = player_candidate
+	_hazards = []
+	for candidate in raw_hazards:
+		if not (candidate is Area2D):
+			_fail("invalid_hazard_interface")
+			return false
+		_hazards.append(candidate)
+	if _hazards.is_empty():
+		_fail("no_hazards")
+		return false
+	var reported_starting := int(_read_property(_root, "starting_lives", -1))
+	var survival_time := float(_read_property(_root, "survival_time", -1.0))
+	if reported_starting < 2 or survival_time <= 0.0:
+		_fail("invalid_survival_settings")
+		return false
+	if not _has_property(_root, "hit_cooldown") or not _has_property(_root, "time_left"):
+		_fail("missing_survival_interface")
+		return false
+	if not after_restart:
+		_starting_lives = reported_starting
+	elif reported_starting != _starting_lives:
+		_fail("restart_changed_lives")
+		return false
+	if _lives() != _starting_lives or _state() != "playing":
+		_fail("dirty_survival_state")
+		return false
+	_root.set("time_left", maxf(survival_time, 60.0))
+	_target = _hazards[0]
+	return true
+
+func _mark_milestone() -> void:
+	_milestones += 1
+	_progress_events += 1
+	_max_stall_frames = maxi(_max_stall_frames, _frame - _last_progress_frame)
+	_last_progress_frame = _frame
+
+func _begin_hit() -> void:
+	_lives_before_hit = _lives()
+	_root.set("hit_cooldown", 0.0)
+	_arrival_frame = -1
+	_phase_start_frame = _frame
+
+func _force_hit() -> void:
+	if _target == null or not is_instance_valid(_target):
+		_fail("hazard_disappeared")
+		return
+	_player.global_position = _player.global_position.move_toward(
+		_target.global_position, MOVE_STEP
+	)
+	if _player.global_position.distance_to(_target.global_position) < 1.0 and _arrival_frame < 0:
+		_arrival_frame = _frame
+
+func _begin_retreat() -> void:
+	var hazard_position := _target.global_position
+	_retreat_position = Vector2(
+		900.0 if hazard_position.x < 512.0 else 100.0,
+		500.0 if hazard_position.y < 288.0 else 76.0
+	)
+	_retreat_clear_frames = 0
+	_phase = "retreat"
+	_phase_start_frame = _frame
+
+func _process_hit(first_hit: bool) -> void:
+	_force_hit()
+	var current_lives := _lives()
+	if current_lives < _lives_before_hit - 1:
+		_fail("excessive_collision_damage")
+		return
+	if current_lives == _lives_before_hit - 1:
+		_damage_events += 1
+		if first_hit:
+			_single_hit_exact = true
+			_mark_milestone()
+		if current_lives <= 0:
+			if _state() != "over":
+				_fail("lose_state_not_reached")
+				return
+			_lose_verified = true
+			_mark_milestone()
+			_old_root_id = _root.get_instance_id()
+			_phase = "await_restart"
+			_restart_frame = _frame
+			Input.action_press("ui_accept")
+		else:
+			_begin_retreat()
+	elif _arrival_frame >= 0 and _frame - _arrival_frame > INTERACTION_TIMEOUT:
+		_fail("collision_did_not_damage")
+
+func _disable_hazards() -> void:
+	for hazard in _hazards:
+		hazard.collision_layer = 0
+		hazard.collision_mask = 0
+		hazard.monitoring = false
+		hazard.monitorable = false
+
+func _physics_process(_delta: float) -> void:
+	if not _active:
+		return
+	_frame += 1
+	_max_stall_frames = maxi(_max_stall_frames, _frame - _last_progress_frame)
+	if _frame >= MAX_FRAMES:
+		_fail("timeout")
+		return
+
+	if _phase == "await_restart":
+		if _frame > _restart_frame:
+			Input.action_release("ui_accept")
+		var scene := get_tree().current_scene
+		if scene != null and scene.get_instance_id() != _old_root_id:
+			if not _initialize_root(true):
+				return
+			_restart_verified = true
+			_mark_milestone()
+			_disable_hazards()
+			_root.set("time_left", 0.05)
+			_phase = "timer_win"
+			_phase_start_frame = _frame
+		elif _frame - _restart_frame > INTERACTION_TIMEOUT:
+			_fail("restart_failed")
+		return
+
+	if _root == null:
+		if not _initialize_root():
+			return
+		_last_progress_frame = _frame
+		_begin_hit()
+
+	if get_tree().current_scene != _root:
+		if _phase == "timer_win":
+			_timer_win_verified = true
+			_mark_milestone()
+			_pass()
+		else:
+			_fail("unexpected_scene_change")
+		return
+
+	if _phase == "first_hit":
+		_process_hit(true)
+	elif _phase == "retreat":
+		_player.global_position = _player.global_position.move_toward(
+			_retreat_position, MOVE_STEP
+		)
+		if _player.global_position.distance_to(_target.global_position) > 90.0:
+			_retreat_clear_frames += 1
+		else:
+			_retreat_clear_frames = 0
+		if _retreat_clear_frames >= 3:
+			_phase = "lose_hit"
+			_begin_hit()
+		elif _frame - _phase_start_frame > INTERACTION_TIMEOUT:
+			_fail("could_not_leave_hazard")
+	elif _phase == "lose_hit":
+		_process_hit(false)
+	elif _phase == "timer_win":
+		if _state() == "won":
+			_timer_win_verified = true
+			_mark_milestone()
+			_pass()
+		elif _state() == "over":
+			_fail("lose_after_clean_restart")
+		elif _frame - _phase_start_frame > INTERACTION_TIMEOUT:
+			_fail("timer_win_not_reached")
+
+func _print_metrics() -> void:
+	print("[OBJECTIVE_METRICS] completion_seconds=%.3f progress_events=%d max_stall_frames=%d stuck=%s restart=%s deaths=%d" % [float(_frame) / 60.0, _progress_events, _max_stall_frames, str(_stuck), "passed" if _restart_verified else "failed", 1 if _lose_verified else 0])
+	print("[SURVIVAL_METRICS] starting_lives=%d damage_events=%d single_hit_exact=%s lose_verified=%s clean_restart=%s timer_win=%s" % [_starting_lives, _damage_events, str(_single_hit_exact), str(_lose_verified), str(_restart_verified), str(_timer_win_verified)])
+
+func _pass() -> void:
+	if not _active:
+		return
+	_active = false
+	Input.action_release("ui_accept")
+	_print_metrics()
+	print("[OBJECTIVE] status=passed template=survive_hazards reason=none collected=%d total=4 remaining=%d frames=%d" % [_milestones, maxi(0, 4 - _milestones), _frame])
+	get_tree().quit()
+
+func _fail(reason: String) -> void:
+	if not _active:
+		return
+	_active = false
+	Input.action_release("ui_accept")
+	_stuck = reason in ["timeout", "collision_did_not_damage", "could_not_leave_hazard", "restart_failed", "timer_win_not_reached"]
+	if _target != null and is_instance_valid(_target):
+		print("[OBJECTIVE_DETAIL] node=%s position=(%.1f,%.1f) ignored=false" % [_target.name, _target.global_position.x, _target.global_position.y])
+	_print_metrics()
+	print("[OBJECTIVE] status=failed template=survive_hazards reason=%s collected=%d total=4 remaining=%d frames=%d" % [reason, _milestones, maxi(0, 4 - _milestones), _frame])
+	get_tree().quit()
+"""
+
 AMBIENCE_GD = """extends Node
 
 func _ready():
@@ -1351,6 +1616,9 @@ TEMPLATE_REQUIREMENTS = {
     ),
     "survive_hazards": (
         "Structure for this game: place several hazard Area2Ds that move "
+        "and expose them in `var hazards: Array[Area2D]`; expose public "
+        "`starting_lives`, `lives`, `survival_time`, `time_left`, and "
+        "`hit_cooldown` variables for deterministic gameplay QA. "
         "every frame along deterministic paths (straight lines that bounce "
         "off the viewport edges by flipping the direction component); the "
         "player starts with a few lives and loses one on each hazard touch; "
@@ -1468,7 +1736,7 @@ COLLECT_EXAMPLE_USER = (
     "Lose condition: none\n"
     "Key item: a gleaming gold coin (role: pickup)\n"
     "This is level 1 of 1: Rooftop Dash: a sunlit row of rooftops with scattered coins\n"
-    "Available image assets: hero_sprite.png, key_item.png, level_0_bg.png\n"
+    "Available image assets: hero_sprite.png, hero_walk.png, key_item.png, level_0_bg.png\n"
 )
 
 COLLECT_EXAMPLE_RESPONSE = """```gdscript
@@ -1716,7 +1984,7 @@ SURVIVE_EXAMPLE_USER = (
     "Lose condition: lose all 3 lives\n"
     "Key item: a blazing meteor fragment (role: hazard)\n"
     "This is level 1 of 1: Night Ridge: a dark ridgeline under a meteor shower\n"
-    "Available image assets: hero_sprite.png, key_item.png, level_0_bg.png\n"
+    "Available image assets: hero_sprite.png, hero_walk.png, key_item.png, level_0_bg.png\n"
 )
 
 SURVIVE_EXAMPLE_RESPONSE = """```gdscript
@@ -1728,10 +1996,12 @@ var starting_lives = 3
 var survival_time = 30.0
 var lives = starting_lives
 var time_left = survival_time
+var hit_cooldown = 0.0
 var state = "title"
 var player: Area2D
+var player_sprite: Sprite2D
 var status_label: Label
-var hazards = []
+var hazards: Array[Area2D] = []
 var hazard_dirs = []
 
 func _ready():
@@ -1744,7 +2014,7 @@ func _ready():
 
     player = Area2D.new()
     player.position = Vector2(512, 288)
-    var player_sprite = Sprite2D.new()
+    player_sprite = Sprite2D.new()
     player_sprite.texture = load("res://assets/hero_sprite.png")
     player.add_child(player_sprite)
     var player_shape = CollisionShape2D.new()
@@ -1754,6 +2024,11 @@ func _ready():
     player.add_child(player_shape)
     player.area_entered.connect(_on_player_hit)
     add_child(player)
+    Anim.set_poses(
+        player_sprite,
+        load("res://assets/hero_sprite.png"),
+        load("res://assets/hero_walk.png"),
+    )
 
     var starts = [Vector2(150, 100), Vector2(850, 200), Vector2(500, 480)]
     var dirs = [Vector2(1, 0.5), Vector2(-1, 0.3), Vector2(0.7, -1)]
@@ -1785,9 +2060,10 @@ func _spawn_hazard(pos: Vector2, dir: Vector2):
     hazard_dirs.append(dir.normalized())
 
 func _on_player_hit(area: Area2D):
-    if state != "playing":
+    if state != "playing" or hit_cooldown > 0.0:
         return
     lives -= 1
+    hit_cooldown = 0.35
     Sfx.play("hit")
     if lives <= 0:
         state = "over"
@@ -1806,6 +2082,8 @@ func _process(delta):
         if Input.is_action_just_pressed("ui_accept"):
             get_tree().reload_current_scene()
         return
+
+    hit_cooldown = maxf(0.0, hit_cooldown - delta)
 
     time_left -= delta
     if time_left <= 0.0:
@@ -1834,8 +2112,10 @@ func _process(delta):
         velocity.y += 1.0
     if Input.is_action_pressed("ui_up"):
         velocity.y -= 1.0
-    player.position += velocity.normalized() * speed * delta
+    var direction = velocity.normalized()
+    player.position += direction * speed * delta
     player.position = player.position.clamp(Vector2.ZERO, Vector2(1024, 576))
+    Anim.walk(player_sprite, direction.length() > 0.0, direction.x)
 
     status_label.text = "Survive: %ds   Lives: %d" % [int(ceil(time_left)), lives]
 ```"""
@@ -2955,6 +3235,7 @@ def coder(state: GraphState) -> GraphState:
     (project_dir / "autoplay.gd").write_text(AUTOPLAY_GD, encoding="utf-8")
     (project_dir / "objective_probe.gd").write_text(OBJECTIVE_PROBE_GD, encoding="utf-8")
     (project_dir / "switch_probe.gd").write_text(SWITCH_PROBE_GD, encoding="utf-8")
+    (project_dir / "survival_probe.gd").write_text(SURVIVAL_PROBE_GD, encoding="utf-8")
     beats = [lvl.get("outro_beat", "") for lvl in levels]
     (project_dir / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
     (project_dir / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")

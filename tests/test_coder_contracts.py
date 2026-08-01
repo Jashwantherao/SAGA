@@ -3,6 +3,8 @@ import re
 from saga.agents.coder import (
     ORDERED_SWITCHES_EXAMPLE_RESPONSE,
     PROJECT_GODOT_TEMPLATE,
+    SURVIVAL_PROBE_GD,
+    SURVIVE_EXAMPLE_RESPONSE,
     SWITCH_PROBE_GD,
 )
 from saga.agents.coder_backend import extract_gdscript
@@ -46,3 +48,18 @@ def test_ordered_switch_example_satisfies_qa_contract_and_installs_probe():
     assert 'SwitchProbe="*res://switch_probe.gd"' in PROJECT_GODOT_TEMPLATE
     assert "wrong_order_did_not_reset" in SWITCH_PROBE_GD
     assert "reload_current_scene" in SWITCH_PROBE_GD
+
+
+def test_survival_example_satisfies_qa_contract_and_installs_probe():
+    script = extract_gdscript(SURVIVE_EXAMPLE_RESPONSE)
+    missing = [
+        description
+        for description, pattern in TEMPLATE_CONTRACTS["survive_hazards"]
+        if not re.search(pattern, script)
+    ]
+
+    assert missing == []
+    assert 'SurvivalProbe="*res://survival_probe.gd"' in PROJECT_GODOT_TEMPLATE
+    assert "collision_did_not_damage" in SURVIVAL_PROBE_GD
+    assert 'Input.action_press("ui_accept")' in SURVIVAL_PROBE_GD
+    assert 'set("time_left", 0.05)' in SURVIVAL_PROBE_GD

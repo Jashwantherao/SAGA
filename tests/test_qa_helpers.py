@@ -31,6 +31,16 @@ def _switch_metrics(
     )
 
 
+def _survival_metrics(
+    *, lives=3, damage=3, single="true", lose="true", restart="true", win="true"
+):
+    return (
+        f"[SURVIVAL_METRICS] starting_lives={lives} damage_events={damage} "
+        f"single_hit_exact={single} lose_verified={lose} "
+        f"clean_restart={restart} timer_win={win}\n"
+    )
+
+
 def test_find_errors_deduplicates_and_keeps_location():
     output = """
 SCRIPT ERROR: Invalid call
@@ -358,6 +368,101 @@ def test_ordered_switch_missing_sequence_metrics_blocks_shipping(monkeypatch):
 
     assert blocked is True
     assert "no sequence metrics" in errors[0]
+
+
+def test_survival_probe_verifies_damage_lose_restart_and_timer_win(monkeypatch):
+    output = (
+        _objective_metrics(
+            seconds=5.2, progress=4, stall=100, restart="passed", deaths=1
+        )
+        + _survival_metrics()
+        + "[OBJECTIVE] status=passed template=survive_hazards reason=none "
+        "collected=4 total=4 remaining=0 frames=312"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    result, errors, blocked = _run_objective_probe(
+        "project", "scene", "survive_hazards"
+    )
+
+    assert errors == []
+    assert blocked is False
+    assert result["single_hit_exact"] is True
+    assert result["lose_verified"] is True
+    assert result["clean_restart"] is True
+    assert result["timer_win_verified"] is True
+    assert result["damage_events"] == result["starting_lives"] == 3
+    assert result["deaths"] == 1
+    assert result["restart_status"] == "passed"
+    assert result["completion_score"] == 100
+
+
+def test_survival_collision_failure_is_a_generated_game_defect(monkeypatch):
+    output = (
+        _objective_metrics(
+            seconds=2.0, progress=0, stall=120, stuck="true", restart="failed"
+        )
+        + _survival_metrics(damage=0, single="false", lose="false", restart="false", win="false")
+        + "[OBJECTIVE_DETAIL] node=Hazard position=(400.0,200.0) ignored=false\n"
+        + "[OBJECTIVE] status=failed template=survive_hazards "
+        "reason=collision_did_not_damage collected=0 total=4 remaining=4 frames=120"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    result, errors, blocked = _run_objective_probe(
+        "project", "scene", "survive_hazards"
+    )
+
+    assert result["reason"] == "collision_did_not_damage"
+    assert result["blocked_positions"] == [[400.0, 200.0]]
+    assert blocked is False
+    assert "Collision damage" in errors[0]
+    assert "Hazard under test" in errors[0]
+
+
+def test_survival_missing_metrics_blocks_shipping(monkeypatch):
+    output = _objective_metrics(
+        seconds=5.2, progress=4, restart="passed", deaths=1
+    ) + (
+        "[OBJECTIVE] status=passed template=survive_hazards reason=none "
+        "collected=4 total=4 remaining=0 frames=312"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    _result, errors, blocked = _run_objective_probe(
+        "project", "scene", "survive_hazards"
+    )
+
+    assert blocked is True
+    assert "no survival metrics" in errors[0]
+
+
+def test_survival_harness_error_blocks_instead_of_requesting_coder_fix(monkeypatch):
+    output = (
+        'SCRIPT ERROR: Parse Error: Unexpected identifier. '
+        '(at: GDScript::reload (res://survival_probe.gd:10))'
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    result, errors, blocked = _run_objective_probe(
+        "project", "scene", "survive_hazards"
+    )
+
+    assert result is None
+    assert blocked is True
+    assert "survival_probe.gd" in errors[0]
 
 
 def test_missing_objective_verdict_blocks_shipping(monkeypatch):
