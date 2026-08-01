@@ -72,7 +72,12 @@ OBJECTIVE_METRICS = re.compile(
     r"max_stall_frames=(\d+) stuck=(true|false) "
     r"restart=(passed|failed|not_applicable|not_tested) deaths=(\d+)"
 )
+SWITCH_METRICS = re.compile(
+    r"\[SWITCH_METRICS\] sequence_length=(\d+) activations=(\d+) "
+    r"wrong_order_reset=(true|false) clean_reload=(true|false) correct_progress=(\d+)"
+)
 MAX_COLLECT_SOLVER_SECONDS = 60.0
+MAX_SWITCH_SOLVER_SECONDS = 60.0
 
 # Godot's forced `--quit-after` shutdown doesn't wait for the AudioServer to
 # release an autoplaying stream, so any project with BGM prints these on exit
@@ -85,7 +90,7 @@ BENIGN_EXIT_NOISE = re.compile(
 )
 
 HARNESS_SCRIPT_ERROR = re.compile(
-    r"res://(?:autoplay|objective_probe|screenshot|sfx|music|ambience|anim|game|"
+    r"res://(?:autoplay|objective_probe|switch_probe|screenshot|sfx|music|ambience|anim|game|"
     r"interlude|victory)\.gd",
     re.IGNORECASE,
 )
@@ -227,6 +232,26 @@ def _run_objective_probe(
     result["completion_score"] = (
         100 if status == "passed" else min(60, round(progress_ratio * 60))
     )
+    if template == "ordered_switches":
+        switch_metrics = SWITCH_METRICS.search(output)
+        if not switch_metrics:
+            return (
+                result,
+                ["QA infrastructure: ordered-switch probe produced no sequence metrics."],
+                True,
+            )
+        sequence_length, activations, wrong_reset, clean_reload, correct_progress = (
+            switch_metrics.groups()
+        )
+        result.update(
+            {
+                "sequence_length": int(sequence_length),
+                "activations": int(activations),
+                "wrong_order_reset": wrong_reset == "true",
+                "clean_reload": clean_reload == "true",
+                "correct_progress": int(correct_progress),
+            }
+        )
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -237,12 +262,18 @@ def _run_objective_probe(
         if blocked_positions:
             formatted = ", ".join(f"({x:g}, {y:g})" for x, y in blocked_positions)
             position_note = f" Suspect unreachable Area2D positions: {formatted}."
+        objective_requirement = (
+            "Every switch must react, a wrong order must reset progress, and the full "
+            "correct order must set state to 'won'."
+            if template == "ordered_switches"
+            else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+        )
         return (
             result,
             [
                 f"Objective completion: {template} solver failed "
                 f"({reason}); collected {collected}/{total} with {remaining} remaining. "
-                "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                f"{objective_requirement}"
                 f"{position_note}"
             ],
             False,
@@ -280,6 +311,42 @@ def _run_objective_probe(
                     f"{result['completion_seconds']:.1f}s, above the "
                     f"{MAX_COLLECT_SOLVER_SECONDS:.0f}s quality ceiling. Reduce empty travel "
                     "or the number of pickups."
+                ],
+                False,
+            )
+    if template == "ordered_switches":
+        if not result["wrong_order_reset"]:
+            return (
+                result,
+                ["Objective completion: a wrong switch did not reset sequence progress."],
+                False,
+            )
+        if not result["clean_reload"] or result["restart_status"] != "passed":
+            return (
+                result,
+                ["Objective completion: switch puzzle did not reload into a clean state."],
+                False,
+            )
+        if (
+            result["correct_progress"] != result["sequence_length"]
+            or result["sequence_length"] != int(total)
+        ):
+            return (
+                result,
+                [
+                    "Objective completion: ordered-switch pass has inconsistent sequence "
+                    f"progress ({result['correct_progress']}/{result['sequence_length']})."
+                ],
+                True,
+            )
+        if result["completion_seconds"] > MAX_SWITCH_SOLVER_SECONDS:
+            return (
+                result,
+                [
+                    "Objective completion: ordered-switch solver passed but took "
+                    f"{result['completion_seconds']:.1f}s, above the "
+                    f"{MAX_SWITCH_SOLVER_SECONDS:.0f}s quality ceiling. Reduce empty travel "
+                    "or sequence length."
                 ],
                 False,
             )
@@ -872,7 +939,7 @@ def qa_agent(state: GraphState) -> GraphState:
     # objective to be reachable and its real win state to fire.
     template = (state.get("design_doc") or {}).get("mechanic_template", "")
     objective_result = None
-    if template in {"collect", "dot_maze", "maze_chase"}:
+    if template in {"collect", "ordered_switches", "dot_maze", "maze_chase"}:
         objective_result, objective_errors, objective_blocked = _run_objective_probe(
             project_dir,
             scene,
@@ -888,9 +955,10 @@ def qa_agent(state: GraphState) -> GraphState:
                 objective_result=objective_result,
                 blocked=objective_blocked,
             )
+        noun = "switches" if template == "ordered_switches" else "pickups"
         print(
-            f"[QA Agent] Objective: collected {objective_result['collected']}/"
-            f"{objective_result['total']} pickups and reached won in "
+            f"[QA Agent] Objective: completed {objective_result['collected']}/"
+            f"{objective_result['total']} {noun} and reached won in "
             f"{objective_result['completion_seconds']:.1f}s "
             f"(score={objective_result['completion_score']}, "
             f"max_stall={objective_result['max_stall_frames']} frames)"

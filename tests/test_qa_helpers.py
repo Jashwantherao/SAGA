@@ -22,6 +22,15 @@ def _objective_metrics(
     )
 
 
+def _switch_metrics(
+    *, length=4, activations=6, wrong="true", reload="true", progress=4
+):
+    return (
+        f"[SWITCH_METRICS] sequence_length={length} activations={activations} "
+        f"wrong_order_reset={wrong} clean_reload={reload} correct_progress={progress}\n"
+    )
+
+
 def test_find_errors_deduplicates_and_keeps_location():
     output = """
 SCRIPT ERROR: Invalid call
@@ -281,6 +290,74 @@ def test_missing_objective_metrics_blocks_shipping(monkeypatch):
     assert result["status"] == "passed"
     assert blocked is True
     assert "no metrics verdict" in errors[0]
+
+
+def test_ordered_switch_probe_verifies_wrong_order_reload_and_win(monkeypatch):
+    output = (
+        _objective_metrics(
+            seconds=8.5, progress=6, stall=110, restart="passed"
+        )
+        + _switch_metrics()
+        + "[OBJECTIVE] status=passed template=ordered_switches reason=none "
+        "collected=4 total=4 remaining=0 frames=510"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    result, errors, blocked = _run_objective_probe(
+        "project", "scene", "ordered_switches"
+    )
+
+    assert errors == []
+    assert blocked is False
+    assert result["wrong_order_reset"] is True
+    assert result["clean_reload"] is True
+    assert result["correct_progress"] == 4
+    assert result["sequence_length"] == 4
+    assert result["activations"] == 6
+    assert result["restart_status"] == "passed"
+    assert result["completion_score"] == 100
+
+
+def test_ordered_switch_missing_wrong_reset_is_generated_failure(monkeypatch):
+    output = (
+        _objective_metrics(seconds=8.5, progress=5, restart="passed")
+        + _switch_metrics(activations=5, wrong="false")
+        + "[OBJECTIVE] status=passed template=ordered_switches reason=none "
+        "collected=4 total=4 remaining=0 frames=510"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    result, errors, blocked = _run_objective_probe(
+        "project", "scene", "ordered_switches"
+    )
+
+    assert result["wrong_order_reset"] is False
+    assert blocked is False
+    assert "did not reset" in errors[0]
+
+
+def test_ordered_switch_missing_sequence_metrics_blocks_shipping(monkeypatch):
+    output = _objective_metrics(seconds=8.5, progress=6, restart="passed") + (
+        "[OBJECTIVE] status=passed template=ordered_switches reason=none "
+        "collected=4 total=4 remaining=0 frames=510"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    _result, errors, blocked = _run_objective_probe(
+        "project", "scene", "ordered_switches"
+    )
+
+    assert blocked is True
+    assert "no sequence metrics" in errors[0]
 
 
 def test_missing_objective_verdict_blocks_shipping(monkeypatch):

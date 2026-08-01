@@ -2,6 +2,32 @@
 
 
 TEMPLATE_CONTRACTS = {
+    "ordered_switches": [
+        (
+            "the stable player handle required by objective QA (`var player: Area2D`)",
+            r"var\s+player(?:\s*:\s*Area2D)?\b",
+        ),
+        (
+            "the stable switch array required by objective QA (`var switches`)",
+            r"var\s+switches(?:\s*:\s*Array(?:\[Area2D\])?)?\b",
+        ),
+        (
+            "the ordered switch-index array required by objective QA (`var switch_order`)",
+            r"var\s+switch_order(?:\s*:\s*Array(?:\[int\])?)?\b",
+        ),
+        (
+            "the public progress counter required by objective QA (`var progress`)",
+            r"var\s+progress(?:\s*:\s*int)?\b",
+        ),
+        (
+            "the wrong-order reset counter required by objective QA (`var reset_count`)",
+            r"var\s+reset_count(?:\s*:\s*int)?\b",
+        ),
+        (
+            "the title/playing/won/over state required by objective QA",
+            r"var\s+state\b",
+        ),
+    ],
     "dot_maze": [
         ("the Rect2 wall array and axis-separated wall collision", r"Rect2\("),
         (

@@ -54,6 +54,7 @@ Ambience="*res://ambience.gd"
 Anim="*res://anim.gd"
 Autoplay="*res://autoplay.gd"
 ObjectiveProbe="*res://objective_probe.gd"
+SwitchProbe="*res://switch_probe.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -534,6 +535,7 @@ func _ready() -> void:
 	for argument in arguments:
 		if argument.begins_with("--objective-template="):
 			_template = argument.trim_prefix("--objective-template=")
+	_active = _active and _template != "ordered_switches"
 	if _active:
 		process_priority = 600
 
@@ -888,6 +890,244 @@ func _print_metrics() -> void:
 	print("[OBJECTIVE_METRICS] completion_seconds=%.3f progress_events=%d max_stall_frames=%d stuck=%s restart=%s deaths=%d" % [float(_frame) / 60.0, _progress_events, _max_stall_frames, str(_stuck), restart_status, _deaths])
 """
 
+# Ordered-switch QA runs two real interaction passes. It first activates one
+# correct switch and then an intentionally wrong one, requiring the generated
+# reset counter and progress to reset. It reloads the scene and completes the
+# authored order from a clean state, requiring the actual `won` transition.
+SWITCH_PROBE_GD = """extends Node
+
+const MAX_FRAMES := 3600
+const INTERACTION_TIMEOUT := 90
+const MOVE_STEP := 14.0
+const RETREAT_POSITION := Vector2(512, 288)
+
+var _active := false
+var _frame := 0
+var _root: Node
+var _player: Area2D
+var _switches: Array[Area2D] = []
+var _order: Array[int] = []
+var _phase := "wrong_first"
+var _target: Area2D
+var _target_index := -1
+var _arrival_frame := -1
+var _phase_start_frame := 0
+var _wrong_reset_baseline := 0
+var _wrong_order_verified := false
+var _reload_verified := false
+var _reload_frame := -1
+var _old_root_id := 0
+var _correct_step := 0
+var _activations := 0
+var _progress_events := 0
+var _max_stall_frames := 0
+var _last_progress_frame := 0
+var _stuck := false
+
+func _ready() -> void:
+	var template := ""
+	var arguments := OS.get_cmdline_user_args()
+	for argument in arguments:
+		if argument.begins_with("--objective-template="):
+			template = argument.trim_prefix("--objective-template=")
+	_active = "--objective-probe" in arguments and template == "ordered_switches"
+	if _active:
+		process_priority = 610
+
+func _has_property(object: Object, property_name: String) -> bool:
+	for property in object.get_property_list():
+		if str(property.get("name", "")) == property_name:
+			return true
+	return false
+
+func _read_property(object: Object, property_name: String, fallback = null):
+	if _has_property(object, property_name):
+		return object.get(property_name)
+	return fallback
+
+func _state() -> String:
+	return str(_read_property(_root, "state", "unknown")) if _root != null else "unknown"
+
+func _progress() -> int:
+	return int(_read_property(_root, "progress", -1)) if _root != null else -1
+
+func _reset_count() -> int:
+	return int(_read_property(_root, "reset_count", -1)) if _root != null else -1
+
+func _initialize_root() -> bool:
+	_root = get_tree().current_scene
+	if _root == null:
+		return false
+	var player_candidate = _read_property(_root, "player", null)
+	if not (player_candidate is Area2D):
+		_fail("missing_player_interface")
+		return false
+	_player = player_candidate
+	var raw_switches = _read_property(_root, "switches", null)
+	var raw_order = _read_property(_root, "switch_order", null)
+	if typeof(raw_switches) != TYPE_ARRAY or typeof(raw_order) != TYPE_ARRAY:
+		_fail("missing_switch_interface")
+		return false
+	_switches = []
+	for candidate in raw_switches:
+		if not (candidate is Area2D):
+			_fail("invalid_switch_interface")
+			return false
+		_switches.append(candidate)
+	_order = []
+	for value in raw_order:
+		_order.append(int(value))
+	if _switches.size() < 2 or _order.size() != _switches.size():
+		_fail("invalid_switch_order")
+		return false
+	var seen := {}
+	for index in _order:
+		if index < 0 or index >= _switches.size() or seen.has(index):
+			_fail("invalid_switch_order")
+			return false
+		seen[index] = true
+	if _progress() != 0 or _reset_count() < 0:
+		_fail("dirty_switch_state")
+		return false
+	return true
+
+func _set_target(index: int) -> void:
+	_target_index = index
+	_target = _switches[index]
+	_arrival_frame = -1
+	_phase_start_frame = _frame
+
+func _move_to_target() -> void:
+	if _target == null or not is_instance_valid(_target):
+		_fail("switch_disappeared")
+		return
+	_player.global_position = _player.global_position.move_toward(
+		_target.global_position, MOVE_STEP
+	)
+	if _player.global_position.distance_to(_target.global_position) < 1.0 and _arrival_frame < 0:
+		_arrival_frame = _frame
+
+func _mark_progress() -> void:
+	_progress_events += 1
+	_activations += 1
+	_max_stall_frames = maxi(_max_stall_frames, _frame - _last_progress_frame)
+	_last_progress_frame = _frame
+
+func _wrong_index() -> int:
+	# Re-touching the first switch is guaranteed to be wrong at step two and
+	# works even for the minimum two-switch sequence.
+	return _order[0]
+
+func _physics_process(_delta: float) -> void:
+	if not _active:
+		return
+	_frame += 1
+	_max_stall_frames = maxi(_max_stall_frames, _frame - _last_progress_frame)
+	if _frame >= MAX_FRAMES:
+		_fail("timeout")
+		return
+
+	if _phase == "await_reload":
+		var scene := get_tree().current_scene
+		if scene != null and scene.get_instance_id() != _old_root_id:
+			_reload_verified = true
+			if not _initialize_root():
+				return
+			_phase = "correct"
+			_correct_step = 0
+			_set_target(_order[0])
+		elif _frame - _reload_frame > 180:
+			_fail("reload_failed")
+		return
+
+	if _root == null:
+		if not _initialize_root():
+			return
+		_last_progress_frame = _frame
+		_set_target(_order[0])
+
+	if get_tree().current_scene != _root:
+		if _phase == "correct" and _correct_step >= _order.size() - 1:
+			_correct_step = _order.size()
+			_pass()
+		else:
+			_fail("unexpected_scene_change")
+		return
+	if _state() == "over":
+		_fail("lose_state")
+		return
+
+	if _phase == "wrong_first":
+		_move_to_target()
+		if _progress() == 1:
+			_mark_progress()
+			_wrong_reset_baseline = _reset_count()
+			_phase = "retreat"
+			_target = null
+			_phase_start_frame = _frame
+		elif _arrival_frame >= 0 and _frame - _arrival_frame > INTERACTION_TIMEOUT:
+			_fail("switch_did_not_advance")
+	elif _phase == "retreat":
+		_player.global_position = _player.global_position.move_toward(
+			RETREAT_POSITION, MOVE_STEP
+		)
+		if _player.global_position.distance_to(RETREAT_POSITION) < 1.0:
+			_phase = "wrong_reset"
+			_set_target(_wrong_index())
+	elif _phase == "wrong_reset":
+		_move_to_target()
+		if _reset_count() > _wrong_reset_baseline and _progress() == 0:
+			_wrong_order_verified = true
+			_mark_progress()
+			_old_root_id = _root.get_instance_id()
+			_phase = "await_reload"
+			_reload_frame = _frame
+			var reload_error := get_tree().reload_current_scene()
+			if reload_error != OK:
+				_fail("reload_failed")
+		elif _state() == "won" or _progress() > 1:
+			_fail("wrong_order_accepted")
+		elif _arrival_frame >= 0 and _frame - _arrival_frame > INTERACTION_TIMEOUT:
+			_fail("wrong_order_did_not_reset")
+	elif _phase == "correct":
+		_move_to_target()
+		if _progress() > _correct_step:
+			_correct_step = _progress()
+			_mark_progress()
+			if _correct_step < _order.size():
+				_set_target(_order[_correct_step])
+			elif _state() == "won":
+				_pass()
+		elif _arrival_frame >= 0 and _frame - _arrival_frame > INTERACTION_TIMEOUT:
+			if _correct_step >= _order.size() and _state() != "won":
+				_fail("win_state_not_reached")
+			else:
+				_fail("switch_did_not_advance")
+
+func _print_metrics() -> void:
+	print("[OBJECTIVE_METRICS] completion_seconds=%.3f progress_events=%d max_stall_frames=%d stuck=%s restart=%s deaths=0" % [float(_frame) / 60.0, _progress_events, _max_stall_frames, str(_stuck), "passed" if _reload_verified else "failed"])
+	print("[SWITCH_METRICS] sequence_length=%d activations=%d wrong_order_reset=%s clean_reload=%s correct_progress=%d" % [_order.size(), _activations, str(_wrong_order_verified), str(_reload_verified), _correct_step])
+
+func _pass() -> void:
+	if not _active:
+		return
+	_active = false
+	_print_metrics()
+	print("[OBJECTIVE] status=passed template=ordered_switches reason=none collected=%d total=%d remaining=%d frames=%d" % [_correct_step, _order.size(), maxi(0, _order.size() - _correct_step), _frame])
+	get_tree().quit()
+
+func _fail(reason: String) -> void:
+	if not _active:
+		return
+	_active = false
+	_stuck = reason in ["timeout", "switch_did_not_advance", "wrong_order_did_not_reset", "switch_disappeared"]
+	if _target != null and is_instance_valid(_target):
+		print("[OBJECTIVE_DETAIL] node=%s position=(%.1f,%.1f) ignored=false" % [_target.name, _target.global_position.x, _target.global_position.y])
+	_print_metrics()
+	print("[OBJECTIVE] status=failed template=ordered_switches reason=%s collected=%d total=%d remaining=%d frames=%d" % [reason, _correct_step, _order.size(), maxi(0, _order.size() - _correct_step), _frame])
+	get_tree().quit()
+"""
+
 AMBIENCE_GD = """extends Node
 
 func _ready():
@@ -1099,7 +1339,11 @@ TEMPLATE_REQUIREMENTS = {
     ),
     "ordered_switches": (
         "Structure for this game: place several switch Area2Ds at hardcoded "
-        "positions; touching them in the correct order advances progress "
+        "positions and expose them in `var switches: Array[Area2D]`; expose "
+        "their required zero-based indices in `var switch_order: Array[int]`, "
+        "the current step in `var progress: int`, and increment public "
+        "`var reset_count: int` every time a wrong switch resets the puzzle. "
+        "Touching them in the correct order advances progress "
         "(tint activated switches via modulate and play the pickup sound), "
         "touching one out of order resets progress and the tints (play the "
         "hit sound); show progress in the label; win when the full sequence "
@@ -1204,7 +1448,7 @@ TEMPLATE_REQUIREMENTS = {
 }
 
 # --- Few-shot worked examples ------------------------------------------------
-# Five authored examples; every template maps to the structurally nearest one.
+# Seven authored examples; every template maps to the structurally nearest one.
 # Each demonstrates the invariants: nodes created in code (bare scene), held
 # built-in input actions only, Area2D-to-Area2D detection, background filling
 # the viewport, a status Label on a CanvasLayer, named tuning variables, the
@@ -1323,6 +1567,143 @@ func _process(delta):
         velocity.y -= 1.0
     player.position += velocity.normalized() * speed * delta
     player.position = player.position.clamp(Vector2.ZERO, Vector2(1024, 576))
+```"""
+
+ORDERED_SWITCHES_EXAMPLE_USER = (
+    "Title: Signal Path\n"
+    "Genre: sequence puzzle\n"
+    "Mechanic template: ordered_switches\n"
+    "Core mechanics: move around, activate beacons in order\n"
+    "Story premise: A scout restores a silent relay network.\n"
+    "Win condition: activate every beacon in the shown order\n"
+    "Lose condition: none\n"
+    "Key item: a glowing numbered relay beacon (role: switch)\n"
+    "This is level 1 of 1: Relay Court: four beacons surround an old transmitter\n"
+    "Available image assets: hero_sprite.png, hero_walk.png, key_item.png, level_0_bg.png\n"
+)
+
+ORDERED_SWITCHES_EXAMPLE_RESPONSE = """```gdscript
+extends Node2D
+
+@export var speed = 220.0
+var state = "title"
+var player: Area2D
+var player_sprite: Sprite2D
+var switches: Array[Area2D] = []
+var switch_order: Array[int] = [2, 0, 3, 1]
+var progress: int = 0
+var reset_count: int = 0
+var status_label: Label
+
+func _ready():
+    var background = Sprite2D.new()
+    background.texture = load("res://assets/level_0_bg.png")
+    background.centered = false
+    background.position = Vector2.ZERO
+    background.z_index = -1
+    add_child(background)
+
+    player = Area2D.new()
+    player.position = Vector2(512, 288)
+    player_sprite = Sprite2D.new()
+    player_sprite.texture = load("res://assets/hero_sprite.png")
+    player.add_child(player_sprite)
+    var player_shape = CollisionShape2D.new()
+    var player_circle = CircleShape2D.new()
+    player_circle.radius = 20.0
+    player_shape.shape = player_circle
+    player.add_child(player_shape)
+    add_child(player)
+    Anim.set_poses(
+        player_sprite,
+        load("res://assets/hero_sprite.png"),
+        load("res://assets/hero_walk.png"),
+    )
+
+    var positions = [
+        Vector2(180, 150), Vector2(844, 150),
+        Vector2(180, 430), Vector2(844, 430),
+    ]
+    for index in positions.size():
+        _spawn_switch(positions[index], index)
+
+    var canvas = CanvasLayer.new()
+    add_child(canvas)
+    status_label = Label.new()
+    status_label.position = Vector2(20, 20)
+    canvas.add_child(status_label)
+
+    if DisplayServer.get_name() == "headless" or Game.level > 0:
+        state = "playing"
+        _update_label()
+
+func _spawn_switch(pos: Vector2, index: int):
+    var switch = Area2D.new()
+    switch.name = "Switch%d" % index
+    switch.position = pos
+    var sprite = Sprite2D.new()
+    sprite.texture = load("res://assets/key_item.png")
+    switch.add_child(sprite)
+    var shape = CollisionShape2D.new()
+    var circle = CircleShape2D.new()
+    circle.radius = 22.0
+    shape.shape = circle
+    switch.add_child(shape)
+    switch.area_entered.connect(_on_switch_area_entered.bind(index))
+    add_child(switch)
+    switches.append(switch)
+
+func _on_switch_area_entered(area: Area2D, index: int):
+    if state != "playing" or area != player:
+        return
+    if index == switch_order[progress]:
+        switches[index].modulate = Color(0.35, 1.0, 0.45)
+        progress += 1
+        Sfx.play("pickup")
+        if progress >= switch_order.size():
+            state = "won"
+            status_label.text = "Relay restored - level complete!"
+            Sfx.play("win")
+            Game.level_complete()
+            return
+    else:
+        progress = 0
+        reset_count += 1
+        for switch in switches:
+            switch.modulate = Color.WHITE
+        Sfx.play("hit")
+    _update_label()
+
+func _update_label():
+    status_label.text = "Sequence: %d / %d" % [progress, switch_order.size()]
+
+func _process(delta):
+    if state == "title":
+        status_label.text = "SIGNAL PATH - Press Enter to start"
+        if Input.is_action_just_pressed("ui_accept"):
+            state = "playing"
+            _update_label()
+        return
+    if state == "won":
+        return
+    if state == "over":
+        if Input.is_action_just_pressed("ui_accept"):
+            get_tree().reload_current_scene()
+        return
+
+    var velocity = Vector2.ZERO
+    if Input.is_action_pressed("ui_right"):
+        velocity.x += 1.0
+    if Input.is_action_pressed("ui_left"):
+        velocity.x -= 1.0
+    if Input.is_action_pressed("ui_down"):
+        velocity.y += 1.0
+    if Input.is_action_pressed("ui_up"):
+        velocity.y -= 1.0
+    var direction = velocity.normalized()
+    player.position += direction * speed * delta
+    player.position = player.position.clamp(Vector2(30, 30), Vector2(994, 546))
+    Anim.walk(player_sprite, direction.length() > 0.0, direction.x)
 ```"""
 
 SURVIVE_EXAMPLE_USER = (
@@ -2247,6 +2628,10 @@ func _process(delta):
 
 FEW_SHOTS = {
     "collect": (COLLECT_EXAMPLE_USER, COLLECT_EXAMPLE_RESPONSE),
+    "ordered_switches": (
+        ORDERED_SWITCHES_EXAMPLE_USER,
+        ORDERED_SWITCHES_EXAMPLE_RESPONSE,
+    ),
     "survive_hazards": (SURVIVE_EXAMPLE_USER, SURVIVE_EXAMPLE_RESPONSE),
     "depletion": (DEPLETION_EXAMPLE_USER, DEPLETION_EXAMPLE_RESPONSE),
     "survive_and_deplete": (HYBRID_EXAMPLE_USER, HYBRID_EXAMPLE_RESPONSE),
@@ -2281,13 +2666,13 @@ INTENSITY_LEVERS = {
     ),
 }
 
-# Structurally nearest authored example per template: ordered_switches shares
-# collect's touch-static-objects-and-track-progress shape, herd_to_goal shares
-# survive_hazards' per-frame moving-Area2D vector math, capture_zones shares
-# depletion's continuous state changes plus a mover.
+# Structurally nearest authored example per template. Ordered switches has a
+# dedicated example because autonomous QA requires stable sequence/reset
+# adapters; herd_to_goal shares survive_hazards' per-frame moving-Area2D
+# vector math, and capture_zones shares depletion's continuous state changes.
 TEMPLATE_TO_FEW_SHOT = {
     "collect": "collect",
-    "ordered_switches": "collect",
+    "ordered_switches": "ordered_switches",
     "survive_hazards": "survive_hazards",
     "herd_to_goal": "survive_hazards",
     "depletion": "depletion",
@@ -2569,6 +2954,7 @@ def coder(state: GraphState) -> GraphState:
     (project_dir / "anim.gd").write_text(ANIM_GD, encoding="utf-8")
     (project_dir / "autoplay.gd").write_text(AUTOPLAY_GD, encoding="utf-8")
     (project_dir / "objective_probe.gd").write_text(OBJECTIVE_PROBE_GD, encoding="utf-8")
+    (project_dir / "switch_probe.gd").write_text(SWITCH_PROBE_GD, encoding="utf-8")
     beats = [lvl.get("outro_beat", "") for lvl in levels]
     (project_dir / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
     (project_dir / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")
