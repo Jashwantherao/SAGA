@@ -235,6 +235,26 @@ To play the result:
 
 With `--playtest`, after QA passes you'll be asked three questions (ship or fix / anything look or sound wrong / how did it feel), then a Feedback Interpreter routes your answer to a `tune` (numeric edit), `reasset` (art/audio regeneration), or `redesign` (full rebuild) pass automatically, for up to `MAX_PLAYTEST_CYCLES` rounds.
 
+## Validation snapshot (2026-08-01)
+
+The current deterministic QA stack was measured with DeepSeek V4 Pro on nine
+fresh one-level generations—one for every mechanic template. All **9/9 passed
+on their first generated script** through Godot import, scene execution,
+movement responsiveness, the template-specific objective solver, and the
+balance gate. Every objective completion score was 100; the full matrix took
+624 seconds. This test reused one known-good art set so it measured Coder and
+gameplay-QA reliability without image-generation variance.
+
+A separate full-pipeline run generated **Clockwork Vespers**, a one-level
+`herd_to_goal` game, from a one-line prompt. ComfyUI produced six fresh images,
+MusicGen produced a 14.9-second soundtrack, and DeepSeek produced the level.
+Godot completed all 5/5 herding milestones with all five creatures permanently
+settled, a completion score of 100, and zero QA retries. Screenshot review found
+no gating defect; NVIDIA Nemotron video QA verified visible animated movement,
+correct facing, a readable HUD, and a stable scene. The v11 run manifest ended
+with `status=passed` and `ship_ready=true`. The repository suite currently has
+**85 passing tests** plus a clean `compileall` run.
+
 ## Known limitations
 
 - Generic autoplay still finds only the movement floor, but every one of SAGA's nine mechanic templates now also has a deterministic objective solver. Resource, territory, sequence, survival, maze, collection, and herding QA measure live behavior rather than trusting advertised rates or labels. The original motivating failure—a herding game whose creatures could never actually be pushed into the goal—is now explicitly gated through real flee displacement, goal progress, permanent settlement, and win verification.
