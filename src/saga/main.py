@@ -174,7 +174,7 @@ def main() -> None:
     ship_status, ship_ready = assess_ship_status(result)
     level_results = result.get("level_results") or []
     manifest = {
-        "manifest_version": 3,
+        "manifest_version": 4,
         "run_dir": result["run_dir"],
         "idea": args.idea,
         "title": (result.get("design_doc") or {}).get("title"),
@@ -185,6 +185,7 @@ def main() -> None:
         "level_results": level_results,
         "godot_project_path": result.get("godot_project_path"),
         "sprite_paths": result.get("sprite_paths") or [],
+        "asset_replacements": result.get("asset_replacements") or [],
         "bgm_path": result.get("bgm_path"),
         "screenshot_path": result.get("screenshot_path"),
         "gameplay_video_path": result.get("gameplay_video_path"),

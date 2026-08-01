@@ -590,6 +590,7 @@ def _record_attempt(
         None,
     )
     previous = ledger[entry_index] if entry_index is not None else {}
+    asset_replacements = list(previous.get("asset_replacements") or [])
     attempts = [dict(item) for item in previous.get("attempts", [])]
     attempts.append(
         {
@@ -623,6 +624,7 @@ def _record_attempt(
         "video_qa_result": video_qa_result,
         "video_notes": video_notes,
         "coder_model": state.get("coder_model"),
+        "asset_replacements": asset_replacements,
     }
     if entry_index is None:
         ledger.append(entry)

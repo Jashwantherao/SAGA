@@ -30,6 +30,7 @@ own supervisor. The retry budget stays in graph.py: the model decides
 direction, the harness enforces limits.
 """
 
+import copy
 import json
 
 from saga.config import settings
@@ -40,7 +41,7 @@ REMOTE_MODEL = settings.director_remote_model
 CLAUDE_MODEL = "claude-sonnet-5"
 
 ROUTES = ["fix", "regenerate", "reasset"]
-REASSET_FIELDS = ["hero_description", "art_style", "key_item.description"]
+REASSET_FIELDS = ["hero_description", "key_item.description", "level_background"]
 
 DECISION_SCHEMA = {
     "type": "object",
@@ -50,8 +51,8 @@ DECISION_SCHEMA = {
         # fix only: a one-sentence diagnosis appended to the Coder's error
         # list, or "" - a wrong guess is worse than none.
         "note_to_coder": {"type": "string"},
-        # reasset only: hero_description | art_style | key_item.description
-        # | extra:<name>; "" otherwise.
+        # reasset only: hero_description | key_item.description |
+        # level_background | extra:<name>; "" otherwise.
         "reasset_field": {"type": "string"},
         "reasset_value": {"type": "string"},
     },
@@ -81,8 +82,9 @@ SYSTEM_PROMPT = (
     "says the picture itself is wrong - a sprite that is not what it "
     "should be, art invisible against its background - never for compile "
     "errors, runtime errors, or anything a code change could plausibly "
-    "cure. Set reasset_field to one of hero_description, art_style, "
-    "key_item.description, or extra:<name> for an extra sprite, and "
+    "cure. Set reasset_field to one of hero_description, "
+    "key_item.description, level_background for the current level's "
+    "background, or extra:<name> for an extra sprite, and "
     "reasset_value to the complete new visual description.\n\n"
     "For fix and regenerate, leave reasset_field and reasset_value empty. "
     "Keep reasoning to one or two sentences. Output only JSON matching "
@@ -172,7 +174,7 @@ def _evidence_text(state: GraphState, max_retries: int) -> str:
     art = [
         f"hero_description: {design_doc.get('hero_description', '')!r}",
         f"key_item.description: {(design_doc.get('key_item') or {}).get('description', '')!r}",
-        f"art_style: {design_doc.get('art_style', '')!r}",
+        f"level_background: {level.get('description', '')!r}",
     ]
     art += [f"extra:{s['name']}: {s['description']!r}" for s in design_doc.get("extra_sprites") or []]
     lines += ["", "Generated art (the reasset candidates):"] + [f"- {a}" for a in art]
@@ -304,11 +306,14 @@ def _apply(state: GraphState, decision: dict) -> GraphState:
         # No qa_errors is what sends the Coder down its fresh-generation path.
         update["qa_errors"] = None
     elif action == "reasset":
-        design_doc = state["design_doc"]
+        design_doc = copy.deepcopy(state["design_doc"])
         field = decision["reasset_field"].strip()
         value = decision["reasset_value"].strip()
         if field == "key_item.description":
             design_doc["key_item"]["description"] = value
+        elif field == "level_background":
+            level_index = state.get("current_level") or 0
+            design_doc["levels"][level_index]["description"] = value
         elif field.startswith("extra:"):
             name = field[6:]
             for sprite in design_doc.get("extra_sprites") or []:
@@ -319,4 +324,12 @@ def _apply(state: GraphState, decision: dict) -> GraphState:
         print(f"[Studio Director] Re-describing {field}: {value!r}")
         update["design_doc"] = design_doc
         update["qa_errors"] = None
+        update["reasset_request"] = {
+            "field": field,
+            "value": value,
+            "reasoning": decision.get("reasoning") or "",
+            "level_index": state.get("current_level") or 0,
+            "retry": state.get("retry_count") or 0,
+            "qa_errors": list(state.get("qa_errors") or []),
+        }
     return update

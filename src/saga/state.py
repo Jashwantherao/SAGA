@@ -92,6 +92,11 @@ class GraphState(TypedDict, total=False):
     # recognize a repair that did not take instead of repeating it.
     director_action: Optional[str]
     director_history: Optional[list[dict]]
+    # A sanitized, single-asset regeneration request created by the Studio
+    # Director and consumed by Asset Maker. Completed replacements are kept as
+    # durable provenance and copied into the affected level's result ledger.
+    reasset_request: Optional[dict]
+    asset_replacements: Optional[list[dict]]
     # Durable, per-level QA history. Unlike qa_errors/vision_notes above,
     # which describe only the current graph step, this ledger is never reset
     # when the graph advances. Each entry contains every attempt plus the
