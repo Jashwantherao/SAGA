@@ -2,6 +2,21 @@
 
 
 TEMPLATE_CONTRACTS = {
+    "capture_zones": [
+        ("the stable player handle required by objective QA", r"var\s+player(?:\s*:\s*Area2D)?\b"),
+        ("the stable zone array required by objective QA", r"var\s+zones(?:\s*:\s*Array(?:\[Area2D\])?)?\b"),
+        ("the stable patroller handle required by objective QA", r"var\s+patroller(?:\s*:\s*Area2D)?\b"),
+        ("the per-zone capture progress required by objective QA", r"var\s+zone_progress\b"),
+        ("the per-zone ownership state required by objective QA", r"var\s+zone_owner\b"),
+        ("the player overlap state required by objective QA", r"var\s+player_in_zones\b"),
+        ("the patroller overlap state required by objective QA", r"var\s+enemy_in_zones\b"),
+        ("the capture threshold required by objective QA", r"var\s+capture_required\b"),
+        ("the public capture radius required by objective QA", r"var\s+capture_radius\b"),
+        ("the player capture rate required by objective QA", r"var\s+capture_rate\b"),
+        ("the patroller decay rate required by objective QA", r"var\s+decay_rate\b"),
+        ("the public patroller speed required by objective QA", r"var\s+patroller_speed\b"),
+        ("the title/playing/won state required by objective QA", r"var\s+state\b"),
+    ],
     "survive_and_deplete": [
         ("the stable player handle required by objective QA", r"var\s+player(?:\s*:\s*Area2D)?\b"),
         ("the stable refill-zone array required by objective QA", r"var\s+zones(?:\s*:\s*Array(?:\[Area2D\])?)?\b"),

@@ -62,6 +62,25 @@ def _hybrid_metrics(**overrides):
             "fuel_ok={fuel_ok} hazard_ok={hazard_ok} lose={lose} restart_ok={restart_ok} timer_win={timer_win}\n").format(**values)
 
 
+def _capture_metrics(**overrides):
+    values = dict(
+        capture_gain=1.0,
+        decay=1.0,
+        owned=3,
+        zones=3,
+        capture="true",
+        contest="true",
+        ownership="true",
+        win="true",
+    )
+    values.update(overrides)
+    return (
+        "[CAPTURE_METRICS] capture_gain={capture_gain} decay={decay} "
+        "owned={owned} zones={zones} capture={capture} contest={contest} "
+        "ownership={ownership} win={win}\n"
+    ).format(**values)
+
+
 def test_find_errors_deduplicates_and_keeps_location():
     output = """
 SCRIPT ERROR: Invalid call
@@ -573,6 +592,79 @@ def test_hybrid_missing_metrics_blocks_shipping(monkeypatch):
     monkeypatch.setattr("saga.agents.qa_agent._run", lambda *a, **k: subprocess.CompletedProcess(a, 0, output, ""))
     _result, errors, blocked = _run_objective_probe("project", "scene", "survive_and_deplete")
     assert blocked is True and "no hybrid metrics" in errors[0]
+
+
+def test_capture_probe_verifies_capture_contest_ownership_and_win(monkeypatch):
+    output = (
+        _objective_metrics(
+            seconds=8, progress=4, restart="not_applicable", deaths=0
+        )
+        + _capture_metrics()
+        + "[OBJECTIVE] status=passed template=capture_zones reason=none "
+        "collected=4 total=4 remaining=0 frames=480"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    result, errors, blocked = _run_objective_probe(
+        "project", "scene", "capture_zones"
+    )
+
+    assert errors == [] and blocked is False
+    assert result["capture_gain"] > 0 and result["decay_amount"] > 0
+    assert result["owned_zones"] == result["total_zones"] == 3
+    assert result["completion_score"] == 100
+
+
+def test_capture_missing_metrics_blocks_shipping(monkeypatch):
+    output = _objective_metrics(
+        seconds=8, progress=4, restart="not_applicable", deaths=0
+    ) + (
+        "[OBJECTIVE] status=passed template=capture_zones reason=none "
+        "collected=4 total=4 remaining=0 frames=480"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    _result, errors, blocked = _run_objective_probe(
+        "project", "scene", "capture_zones"
+    )
+
+    assert blocked is True
+    assert "no capture metrics" in errors[0]
+
+
+def test_capture_behavior_failure_is_repairable_not_blocked(monkeypatch):
+    output = (
+        _objective_metrics(
+            seconds=6, progress=1, stuck="true", restart="not_applicable", deaths=0
+        )
+        + _capture_metrics(
+            decay=0.0,
+            owned=1,
+            capture="true",
+            contest="false",
+            ownership="false",
+            win="false",
+        )
+        + "[OBJECTIVE] status=failed template=capture_zones "
+        "reason=contest_did_not_decay collected=1 total=4 remaining=3 frames=360"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    _result, errors, blocked = _run_objective_probe(
+        "project", "scene", "capture_zones"
+    )
+
+    assert blocked is False
+    assert "contest_did_not_decay" in errors[0]
 
 
 def test_missing_objective_verdict_blocks_shipping(monkeypatch):

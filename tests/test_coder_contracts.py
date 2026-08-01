@@ -1,10 +1,13 @@
 import re
 
 from saga.agents.coder import (
+    CAPTURE_EXAMPLE_RESPONSE,
+    CAPTURE_PROBE_GD,
     DEPLETION_EXAMPLE_RESPONSE,
     DEPLETION_PROBE_GD,
     HYBRID_EXAMPLE_RESPONSE,
     HYBRID_PROBE_GD,
+    OBJECTIVE_PROBE_GD,
     ORDERED_SWITCHES_EXAMPLE_RESPONSE,
     PROJECT_GODOT_TEMPLATE,
     SURVIVAL_PROBE_GD,
@@ -91,3 +94,19 @@ def test_hybrid_example_satisfies_qa_contract_and_installs_probe():
     assert 'HybridProbe="*res://hybrid_probe.gd"' in PROJECT_GODOT_TEMPLATE
     assert "drain_ramp_not_observed" in HYBRID_PROBE_GD
     assert "hazard_did_not_damage" in HYBRID_PROBE_GD
+
+
+def test_capture_example_satisfies_qa_contract_and_installs_probe():
+    script = extract_gdscript(CAPTURE_EXAMPLE_RESPONSE)
+    missing = [
+        description
+        for description, pattern in TEMPLATE_CONTRACTS["capture_zones"]
+        if not re.search(pattern, script)
+    ]
+
+    assert missing == []
+    assert 'CaptureProbe="*res://capture_probe.gd"' in PROJECT_GODOT_TEMPLATE
+    assert '"capture_zones"' in OBJECTIVE_PROBE_GD
+    assert "contest_did_not_decay" in CAPTURE_PROBE_GD
+    assert "ownership_did_not_reset" in CAPTURE_PROBE_GD
+    assert "all_owned_did_not_win" in CAPTURE_PROBE_GD

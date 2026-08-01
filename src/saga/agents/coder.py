@@ -58,6 +58,7 @@ SwitchProbe="*res://switch_probe.gd"
 SurvivalProbe="*res://survival_probe.gd"
 DepletionProbe="*res://depletion_probe.gd"
 HybridProbe="*res://hybrid_probe.gd"
+CaptureProbe="*res://capture_probe.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -538,7 +539,7 @@ func _ready() -> void:
 	for argument in arguments:
 		if argument.begins_with("--objective-template="):
 			_template = argument.trim_prefix("--objective-template=")
-	_active = _active and _template not in ["ordered_switches", "survive_hazards", "depletion", "survive_and_deplete"]
+	_active = _active and _template not in ["ordered_switches", "survive_hazards", "depletion", "survive_and_deplete", "capture_zones"]
 	if _active:
 		process_priority = 600
 
@@ -1844,6 +1845,168 @@ func _fail(reason: String):
 	print("[OBJECTIVE] status=failed template=survive_and_deplete reason=%s collected=%d total=7 remaining=%d frames=%d" % [reason, _milestones, maxi(0, 7-_milestones), _frame]); get_tree().quit()
 """
 
+CAPTURE_PROBE_GD = """extends Node
+
+const MAX_FRAMES := 1800
+const PHASE_TIMEOUT := 300
+var _active := false
+var _frame := 0
+var _root: Node
+var _player: Area2D
+var _patroller: Area2D
+var _zones: Array[Area2D] = []
+var _outside := Vector2(32, 32)
+var _phase := "initialize"
+var _phase_frame := 0
+var _capture_baseline := 0.0
+var _capture_gain := 0.0
+var _contest_baseline := 0.0
+var _decay_amount := 0.0
+var _target_zone := 0
+var _capture_ok := false
+var _contest_ok := false
+var _ownership_ok := false
+var _win_ok := false
+var _milestones := 0
+var _last_progress := 0
+var _max_stall := 0
+var _stuck := false
+
+func _ready():
+	var template := ""
+	for argument in OS.get_cmdline_user_args():
+		if argument.begins_with("--objective-template="):
+			template = argument.trim_prefix("--objective-template=")
+	_active = "--objective-probe" in OS.get_cmdline_user_args() and template == "capture_zones"
+	if _active: process_priority = 650
+
+func _has(object: Object, name: String) -> bool:
+	for property in object.get_property_list():
+		if str(property.get("name", "")) == name: return true
+	return false
+
+func _root_value(name: String, fallback = null):
+	return _root.get(name) if _root != null and _has(_root, name) else fallback
+
+func _choose_outside() -> Vector2:
+	var best := Vector2(32, 32)
+	var best_distance := -1.0
+	for candidate in [Vector2(32, 32), Vector2(992, 32), Vector2(32, 544), Vector2(992, 544)]:
+		var nearest := 1000000.0
+		for zone in _zones: nearest = minf(nearest, candidate.distance_to(zone.global_position))
+		if nearest > best_distance: best = candidate; best_distance = nearest
+	return best
+
+func _initialize_root() -> bool:
+	_root = get_tree().current_scene
+	if _root == null: return false
+	for name in ["player", "zones", "patroller", "zone_progress", "zone_owner", "player_in_zones", "enemy_in_zones", "capture_required", "capture_radius", "capture_rate", "decay_rate", "patroller_speed", "state"]:
+		if not _has(_root, name): _fail("missing_capture_interface"); return false
+	var player = _root_value("player")
+	var patroller = _root_value("patroller")
+	var zones = _root_value("zones", [])
+	var progress = _root_value("zone_progress", [])
+	var owners = _root_value("zone_owner", [])
+	var player_inside = _root_value("player_in_zones", [])
+	var enemy_inside = _root_value("enemy_in_zones", [])
+	if not (player is Area2D) or not (patroller is Area2D) or typeof(zones) != TYPE_ARRAY:
+		_fail("invalid_capture_nodes"); return false
+	if zones.size() < 2 or progress.size() != zones.size() or owners.size() != zones.size() or player_inside.size() != zones.size() or enemy_inside.size() != zones.size():
+		_fail("invalid_capture_arrays"); return false
+	_player = player; _patroller = patroller; _zones = []
+	for zone in zones:
+		if not (zone is Area2D): _fail("invalid_capture_zone"); return false
+		_zones.append(zone)
+	if float(_root_value("capture_required", 0.0)) <= 0.0 or float(_root_value("capture_radius", 0.0)) <= 0.0 or float(_root_value("capture_rate", 0.0)) <= 0.0 or float(_root_value("decay_rate", 0.0)) <= 0.0:
+		_fail("invalid_capture_rates"); return false
+	if str(_root_value("state", "unknown")) != "playing": _fail("dirty_capture_state"); return false
+	for i in owners.size():
+		if int(owners[i]) != 0 or float(progress[i]) > 0.01: _fail("dirty_capture_ownership"); return false
+	_root.set("patroller_speed", 0.0)
+	_outside = _choose_outside()
+	_player.global_position = _outside; _patroller.global_position = _outside
+	_begin("settle")
+	return true
+
+func _progress(index: int) -> float:
+	var values = _root_value("zone_progress", [])
+	return float(values[index]) if index >= 0 and index < values.size() else -1.0
+
+func _owner(index: int) -> int:
+	var values = _root_value("zone_owner", [])
+	return int(values[index]) if index >= 0 and index < values.size() else -99
+
+func _mark():
+	_milestones += 1
+	_max_stall = maxi(_max_stall, _frame - _last_progress)
+	_last_progress = _frame
+
+func _begin(name: String):
+	_phase = name; _phase_frame = _frame
+
+func _physics_process(_delta):
+	if not _active: return
+	_frame += 1; _max_stall = maxi(_max_stall, _frame - _last_progress)
+	if _frame >= MAX_FRAMES: _fail("timeout"); return
+	if _root == null:
+		if not _initialize_root(): return
+	if get_tree().current_scene != _root: _fail("unexpected_scene_change"); return
+	if _phase == "settle":
+		_player.global_position = _outside; _patroller.global_position = _outside
+		if _frame - _phase_frame >= 5:
+			_capture_baseline = _progress(0); _begin("capture")
+	elif _phase == "capture":
+		_player.global_position = _zones[0].global_position; _patroller.global_position = _outside
+		_capture_gain = _progress(0) - _capture_baseline
+		if _owner(0) == 1 and _capture_gain > 0.1:
+			_capture_ok = true; _mark(); _contest_baseline = _progress(0); _begin("contest")
+		elif _frame - _phase_frame > PHASE_TIMEOUT: _fail("zone_did_not_capture")
+	elif _phase == "contest":
+		_player.global_position = _zones[0].global_position + Vector2(30, 0); _patroller.global_position = _zones[0].global_position - Vector2(30, 0)
+		_decay_amount = _contest_baseline - _progress(0)
+		if _decay_amount > 0.1:
+			_contest_ok = true; _mark(); _begin("ownership_reset")
+		elif _frame - _phase_frame > PHASE_TIMEOUT: _fail("contest_did_not_decay")
+	elif _phase == "ownership_reset":
+		_player.global_position = _outside; _patroller.global_position = _zones[0].global_position
+		_decay_amount = _contest_baseline - _progress(0)
+		if _owner(0) == 0 and _progress(0) <= 0.01:
+			_ownership_ok = true; _mark(); _patroller.global_position = _outside; _target_zone = 0; _begin("capture_all")
+		elif _frame - _phase_frame > PHASE_TIMEOUT: _fail("ownership_did_not_reset")
+	elif _phase == "capture_all":
+		_patroller.global_position = _outside
+		if _target_zone < _zones.size():
+			_player.global_position = _zones[_target_zone].global_position
+			if _owner(_target_zone) == 1:
+				_target_zone += 1; _phase_frame = _frame
+			elif _frame - _phase_frame > PHASE_TIMEOUT: _fail("zone_did_not_recapture")
+		else:
+			_player.global_position = _outside; _begin("win")
+	elif _phase == "win":
+		_patroller.global_position = _outside
+		if str(_root_value("state", "unknown")) == "won":
+			_win_ok = true; _mark(); _pass()
+		elif _frame - _phase_frame > PHASE_TIMEOUT: _fail("all_owned_did_not_win")
+
+func _metrics():
+	var owned := 0
+	for owner in _root_value("zone_owner", []):
+		if int(owner) == 1: owned += 1
+	print("[OBJECTIVE_METRICS] completion_seconds=%.3f progress_events=%d max_stall_frames=%d stuck=%s restart=not_applicable deaths=0" % [float(_frame) / 60.0, _milestones, _max_stall, str(_stuck)])
+	print("[CAPTURE_METRICS] capture_gain=%.3f decay=%.3f owned=%d zones=%d capture=%s contest=%s ownership=%s win=%s" % [_capture_gain, _decay_amount, owned, _zones.size(), str(_capture_ok), str(_contest_ok), str(_ownership_ok), str(_win_ok)])
+	print("[CAPTURE_OVERLAP] player=%s enemy=%s" % [str(_root_value("player_in_zones", [])), str(_root_value("enemy_in_zones", []))])
+
+func _pass():
+	if not _active: return
+	_active = false; _metrics()
+	print("[OBJECTIVE] status=passed template=capture_zones reason=none collected=%d total=4 remaining=%d frames=%d" % [_milestones, maxi(0, 4 - _milestones), _frame]); get_tree().quit()
+
+func _fail(reason: String):
+	if not _active: return
+	_active = false; _stuck = true; _metrics()
+	print("[OBJECTIVE] status=failed template=capture_zones reason=%s collected=%d total=4 remaining=%d frames=%d" % [reason, _milestones, maxi(0, 4 - _milestones), _frame]); get_tree().quit()
+"""
+
 AMBIENCE_GD = """extends Node
 
 func _ready():
@@ -2106,12 +2269,17 @@ TEMPLATE_REQUIREMENTS = {
         "creature that can still flee will simply wander back out."
     ),
     "capture_zones": (
-        "Structure for this game: place several zone-marker Area2Ds; "
-        "touching one claims it (tint it via modulate and set a flag); one "
-        "patroller Area2D moves between fixed waypoints every frame and "
-        "un-claims any zone it touches (reset tint and flag); show the "
-        "claimed count in the label; win when all zones are claimed at the "
-        "same time."
+        "Structure for this game: expose public `player`, `zones`, `patroller`, "
+        "`zone_progress`, `zone_owner`, `player_in_zones`, `enemy_in_zones`, "
+        "`capture_required`, `capture_radius`, `capture_rate`, `decay_rate`, and `patroller_speed` "
+        "adapters for deterministic gameplay QA. Place at least two zone-marker "
+        "Area2Ds. Update both overlap arrays every frame from the real Area2D "
+        "positions and capture_radius. While only the player overlaps a zone, increase its progress; "
+        "when progress reaches capture_required, set zone_owner[index] to 1. "
+        "While the patroller overlaps, or both actors contest the zone, decrease "
+        "progress; when it reaches zero, reset ownership to 0. Tint every zone "
+        "from its actual owner/progress, show the owned count in the label, and "
+        "win only when every zone_owner entry is 1 at the same time."
     ),
     "survive_and_deplete": (
         "Structure for this game: combine depletion with roaming hazards. "
@@ -2715,6 +2883,196 @@ func _process(delta):
     Anim.walk(player_sprite, direction.length() > 0.0, direction.x)
 
     status_label.text = "Light: %d%%   Time: %ds" % [int(resource), int(ceil(time_left))]
+```"""
+
+CAPTURE_EXAMPLE_USER = (
+    "Title: Signal Dominion\n"
+    "Genre: territory arcade\n"
+    "Mechanic template: capture_zones\n"
+    "Core mechanics: hold signal zones while a patrol drone erases control\n"
+    "Story premise: A courier must retune every relay before the security drone undoes the work.\n"
+    "Win condition: own every relay at the same time\n"
+    "Lose condition: none\n"
+    "Key item: a luminous signal relay (role: zone_marker)\n"
+    "This is level 1 of 1: Relay Floor: a broad control room with three exposed relays\n"
+    "Available image assets: hero_sprite.png, hero_walk.png, key_item.png, level_0_bg.png\n"
+)
+
+CAPTURE_EXAMPLE_RESPONSE = """```gdscript
+extends Node2D
+
+@export var speed = 240.0
+var capture_required = 1.0
+var capture_radius = 70.0
+var capture_rate = 1.2
+var decay_rate = 0.8
+var patroller_speed = 115.0
+var state = "title"
+var player: Area2D
+var player_sprite: Sprite2D
+var zones: Array[Area2D] = []
+var zone_sprites: Array[Sprite2D] = []
+var zone_progress: Array[float] = []
+var zone_owner: Array[int] = []
+var player_in_zones: Array[bool] = []
+var enemy_in_zones: Array[bool] = []
+var patroller: Area2D
+var patroller_sprite: Sprite2D
+var waypoints = [Vector2(120, 100), Vector2(900, 100), Vector2(900, 500), Vector2(120, 500)]
+var waypoint_index = 1
+var status_label: Label
+
+func _ready():
+    var background = Sprite2D.new()
+    background.texture = load("res://assets/level_0_bg.png")
+    background.centered = false
+    background.position = Vector2.ZERO
+    background.z_index = -1
+    add_child(background)
+
+    player = Area2D.new()
+    player.position = Vector2(512, 300)
+    player_sprite = Sprite2D.new()
+    player_sprite.texture = load("res://assets/hero_sprite.png")
+    player.add_child(player_sprite)
+    var player_shape = CollisionShape2D.new()
+    var player_circle = CircleShape2D.new()
+    player_circle.radius = 20.0
+    player_shape.shape = player_circle
+    player.add_child(player_shape)
+    player.area_entered.connect(_on_player_entered)
+    player.area_exited.connect(_on_player_exited)
+    add_child(player)
+    Anim.set_poses(player_sprite, load("res://assets/hero_sprite.png"), load("res://assets/hero_walk.png"))
+
+    for pos in [Vector2(210, 180), Vector2(512, 420), Vector2(820, 190)]:
+        _spawn_zone(pos)
+
+    patroller = Area2D.new()
+    patroller.position = waypoints[0]
+    patroller_sprite = Sprite2D.new()
+    patroller_sprite.texture = load("res://assets/key_item.png")
+    patroller_sprite.modulate = Color(1.0, 0.3, 0.3)
+    patroller_sprite.scale = Vector2(0.55, 0.55)
+    patroller.add_child(patroller_sprite)
+    var patrol_shape = CollisionShape2D.new()
+    var patrol_circle = CircleShape2D.new()
+    patrol_circle.radius = 24.0
+    patrol_shape.shape = patrol_circle
+    patroller.add_child(patrol_shape)
+    patroller.area_entered.connect(_on_patroller_entered)
+    patroller.area_exited.connect(_on_patroller_exited)
+    add_child(patroller)
+
+    var canvas = CanvasLayer.new()
+    add_child(canvas)
+    status_label = Label.new()
+    status_label.position = Vector2(20, 20)
+    canvas.add_child(status_label)
+
+    if DisplayServer.get_name() == "headless" or Game.level > 0:
+        state = "playing"
+
+func _spawn_zone(pos: Vector2):
+    var zone = Area2D.new()
+    zone.position = pos
+    var sprite = Sprite2D.new()
+    sprite.texture = load("res://assets/key_item.png")
+    sprite.modulate = Color(0.45, 0.5, 0.65)
+    zone.add_child(sprite)
+    var shape = CollisionShape2D.new()
+    var circle = CircleShape2D.new()
+    circle.radius = 55.0
+    shape.shape = circle
+    zone.add_child(shape)
+    add_child(zone)
+    zones.append(zone)
+    zone_sprites.append(sprite)
+    zone_progress.append(0.0)
+    zone_owner.append(0)
+    player_in_zones.append(false)
+    enemy_in_zones.append(false)
+
+func _zone_index(area: Area2D) -> int:
+    return zones.find(area)
+
+func _on_player_entered(area: Area2D):
+    var index = _zone_index(area)
+    if index >= 0:
+        player_in_zones[index] = true
+
+func _on_player_exited(area: Area2D):
+    var index = _zone_index(area)
+    if index >= 0:
+        player_in_zones[index] = false
+
+func _on_patroller_entered(area: Area2D):
+    var index = _zone_index(area)
+    if index >= 0:
+        enemy_in_zones[index] = true
+
+func _on_patroller_exited(area: Area2D):
+    var index = _zone_index(area)
+    if index >= 0:
+        enemy_in_zones[index] = false
+
+func _update_zone(index: int, delta: float):
+    if player_in_zones[index] and not enemy_in_zones[index]:
+        zone_progress[index] += capture_rate * delta
+    elif enemy_in_zones[index]:
+        zone_progress[index] -= decay_rate * delta
+    zone_progress[index] = clamp(zone_progress[index], 0.0, capture_required)
+    if zone_progress[index] >= capture_required:
+        if zone_owner[index] != 1:
+            Sfx.play("pickup")
+        zone_owner[index] = 1
+    elif zone_progress[index] <= 0.0:
+        zone_owner[index] = 0
+    var ratio = zone_progress[index] / capture_required
+    zone_sprites[index].modulate = Color(0.35 + ratio * 0.25, 0.5 + ratio * 0.5, 0.65 - ratio * 0.35)
+
+func _process(delta):
+    if state == "title":
+        status_label.text = "SIGNAL DOMINION - Press Enter to start"
+        if Input.is_action_just_pressed("ui_accept"):
+            state = "playing"
+        return
+    if state == "won":
+        return
+
+    var target: Vector2 = waypoints[waypoint_index]
+    patroller.position = patroller.position.move_toward(target, patroller_speed * delta)
+    if patroller.position.distance_to(target) < 5.0:
+        waypoint_index = (waypoint_index + 1) % waypoints.size()
+    Anim.hover(patroller_sprite)
+
+    for i in zones.size():
+        player_in_zones[i] = player.global_position.distance_to(zones[i].global_position) <= capture_radius
+        enemy_in_zones[i] = patroller.global_position.distance_to(zones[i].global_position) <= capture_radius
+        _update_zone(i, delta)
+
+    var owned = zone_owner.count(1)
+    if owned == zones.size():
+        state = "won"
+        Sfx.play("win")
+        status_label.text = "All relays synchronized - level complete!"
+        Game.level_complete()
+        return
+
+    var velocity = Vector2.ZERO
+    if Input.is_action_pressed("ui_right"):
+        velocity.x += 1.0
+    if Input.is_action_pressed("ui_left"):
+        velocity.x -= 1.0
+    if Input.is_action_pressed("ui_down"):
+        velocity.y += 1.0
+    if Input.is_action_pressed("ui_up"):
+        velocity.y -= 1.0
+    var direction = velocity.normalized()
+    player.position += direction * speed * delta
+    player.position = player.position.clamp(Vector2.ZERO, Vector2(1024, 576))
+    Anim.walk(player_sprite, direction.length() > 0.0, direction.x)
+    status_label.text = "Relays: %d/%d" % [owned, zones.size()]
 ```"""
 
 HYBRID_EXAMPLE_USER = (
@@ -3388,6 +3746,7 @@ FEW_SHOTS = {
     ),
     "survive_hazards": (SURVIVE_EXAMPLE_USER, SURVIVE_EXAMPLE_RESPONSE),
     "depletion": (DEPLETION_EXAMPLE_USER, DEPLETION_EXAMPLE_RESPONSE),
+    "capture_zones": (CAPTURE_EXAMPLE_USER, CAPTURE_EXAMPLE_RESPONSE),
     "survive_and_deplete": (HYBRID_EXAMPLE_USER, HYBRID_EXAMPLE_RESPONSE),
     "maze_chase": (MAZE_EXAMPLE_USER, MAZE_EXAMPLE_RESPONSE),
     "dot_maze": (DOT_MAZE_EXAMPLE_USER, DOT_MAZE_EXAMPLE_RESPONSE),
@@ -3423,14 +3782,14 @@ INTENSITY_LEVERS = {
 # Structurally nearest authored example per template. Ordered switches has a
 # dedicated example because autonomous QA requires stable sequence/reset
 # adapters; herd_to_goal shares survive_hazards' per-frame moving-Area2D
-# vector math, and capture_zones shares depletion's continuous state changes.
+# vector math. Capture zones has a dedicated example for its QA ownership adapters.
 TEMPLATE_TO_FEW_SHOT = {
     "collect": "collect",
     "ordered_switches": "ordered_switches",
     "survive_hazards": "survive_hazards",
     "herd_to_goal": "survive_hazards",
     "depletion": "depletion",
-    "capture_zones": "depletion",
+    "capture_zones": "capture_zones",
     "survive_and_deplete": "survive_and_deplete",
     "maze_chase": "maze_chase",
     "dot_maze": "dot_maze",
@@ -3712,6 +4071,7 @@ def coder(state: GraphState) -> GraphState:
     (project_dir / "survival_probe.gd").write_text(SURVIVAL_PROBE_GD, encoding="utf-8")
     (project_dir / "depletion_probe.gd").write_text(DEPLETION_PROBE_GD, encoding="utf-8")
     (project_dir / "hybrid_probe.gd").write_text(HYBRID_PROBE_GD, encoding="utf-8")
+    (project_dir / "capture_probe.gd").write_text(CAPTURE_PROBE_GD, encoding="utf-8")
     beats = [lvl.get("outro_beat", "") for lvl in levels]
     (project_dir / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
     (project_dir / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")

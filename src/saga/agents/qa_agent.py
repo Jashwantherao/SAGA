@@ -93,11 +93,17 @@ HYBRID_METRICS = re.compile(
     r"ramp=(true|false) refill_ok=(true|false) fuel_ok=(true|false) "
     r"hazard_ok=(true|false) lose=(true|false) restart_ok=(true|false) timer_win=(true|false)"
 )
+CAPTURE_METRICS = re.compile(
+    r"\[CAPTURE_METRICS\] capture_gain=([\d.]+) decay=([\d.]+) "
+    r"owned=(\d+) zones=(\d+) capture=(true|false) contest=(true|false) "
+    r"ownership=(true|false) win=(true|false)"
+)
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
 MAX_SURVIVAL_SOLVER_SECONDS = 30.0
 MAX_DEPLETION_SOLVER_SECONDS = 30.0
 MAX_HYBRID_SOLVER_SECONDS = 30.0
+MAX_CAPTURE_SOLVER_SECONDS = 30.0
 
 # Godot's forced `--quit-after` shutdown doesn't wait for the AudioServer to
 # release an autoplaying stream, so any project with BGM prints these on exit
@@ -110,7 +116,7 @@ BENIGN_EXIT_NOISE = re.compile(
 )
 
 HARNESS_SCRIPT_ERROR = re.compile(
-    r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|screenshot|sfx|music|ambience|anim|game|"
+    r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|capture_probe|screenshot|sfx|music|ambience|anim|game|"
     r"interlude|victory)\.gd",
     re.IGNORECASE,
 )
@@ -329,6 +335,23 @@ def _run_objective_probe(
             "hazard_verified": values[8] == "true", "lose_verified": values[9] == "true",
             "clean_restart": values[10] == "true", "timer_win_verified": values[11] == "true",
         })
+    if template == "capture_zones":
+        capture = CAPTURE_METRICS.search(output)
+        if not capture:
+            return result, ["QA infrastructure: capture probe produced no capture metrics."], True
+        gain, decay, owned, zones, captured, contested, ownership, won = capture.groups()
+        result.update(
+            {
+                "capture_gain": float(gain),
+                "decay_amount": float(decay),
+                "owned_zones": int(owned),
+                "total_zones": int(zones),
+                "capture_verified": captured == "true",
+                "contest_verified": contested == "true",
+                "ownership_verified": ownership == "true",
+                "zone_win_verified": won == "true",
+            }
+        )
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -363,7 +386,12 @@ def _run_objective_probe(
                         "Drain must accelerate, refill must consume finite fuel, hazards must "
                         "damage resource, loss must restart cleanly, and timer expiry must win."
                         if template == "survive_and_deplete"
-                        else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                        else (
+                            "Player presence must capture zones, patroller contest must decay "
+                            "them and reset ownership, and owning every zone must win."
+                            if template == "capture_zones"
+                            else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                        )
                     )
                 )
             )
@@ -387,7 +415,7 @@ def _run_objective_probe(
     if int(remaining) != 0 or int(collected) < int(total):
         item = (
             "milestones"
-            if template in {"survive_hazards", "depletion", "survive_and_deplete"}
+            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones"}
             else "objective items"
         )
         return (
@@ -554,6 +582,19 @@ def _run_objective_probe(
             return result, ["Objective completion: hybrid lose/restart accounting is inconsistent."], True
         if result["completion_seconds"] > MAX_HYBRID_SOLVER_SECONDS:
             return result, [f"Objective completion: hybrid solver exceeded {MAX_HYBRID_SOLVER_SECONDS:.0f}s QA ceiling."], False
+    if template == "capture_zones":
+        flags = ["capture_verified", "contest_verified", "ownership_verified", "zone_win_verified"]
+        missing = [name for name in flags if not result[name]]
+        if missing:
+            return result, ["Objective completion: capture pass omitted: " + ", ".join(missing) + "."], True
+        if result["capture_gain"] <= 0 or result["decay_amount"] <= 0:
+            return result, ["Objective completion: capture progress/decay measurements are inconsistent."], True
+        if result["total_zones"] < 2 or result["owned_zones"] != result["total_zones"]:
+            return result, ["Objective completion: capture ownership accounting is inconsistent."], True
+        if result["restart_status"] != "not_applicable" or result["deaths"] != 0:
+            return result, ["Objective completion: capture terminal accounting is inconsistent."], True
+        if result["completion_seconds"] > MAX_CAPTURE_SOLVER_SECONDS:
+            return result, [f"Objective completion: capture solver exceeded {MAX_CAPTURE_SOLVER_SECONDS:.0f}s QA ceiling."], False
     return result, [], False
 
 
@@ -1149,6 +1190,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "survive_hazards",
         "depletion",
         "survive_and_deplete",
+        "capture_zones",
         "dot_maze",
         "maze_chase",
     }:
@@ -1172,6 +1214,7 @@ def qa_agent(state: GraphState) -> GraphState:
             "survive_hazards": "survival milestones",
             "depletion": "resource milestones",
             "survive_and_deplete": "hybrid milestones",
+            "capture_zones": "capture milestones",
         }.get(template, "pickups")
         print(
             f"[QA Agent] Objective: completed {objective_result['collected']}/"
