@@ -492,10 +492,11 @@ func _report() -> void:
 	get_tree().quit()
 """
 
-# Harness-owned objective solver for the first mechanic with a deterministic
-# win condition. Generic autoplay proves that input moves the game; this probe
-# separately proves that every spawned dot is spatially reachable and that
-# collecting them drives the generated script into its real `won` state.
+# Harness-owned objective solver for deterministic collectible mechanics.
+# Generic autoplay proves that input moves the game; this probe separately
+# proves that every spawned pickup is spatially reachable and that collecting
+# all of them drives the generated script into its real `won` state. It covers
+# ordinary collect levels as well as maze_chase and dot_maze.
 # Ghost collisions are disabled so this is a logic/reachability test rather
 # than a skill or difficulty benchmark (the balance pass covers enemy speed).
 OBJECTIVE_PROBE_GD = """extends Node
@@ -520,6 +521,12 @@ var _phase := "pickups"
 var _arrival_frame := -1
 var _initial_total := 0
 var _detail_areas: Array = []
+var _last_remaining := -1
+var _last_progress_frame := 0
+var _progress_events := 0
+var _max_stall_frames := 0
+var _stuck := false
+var _deaths := 0
 
 func _ready() -> void:
 	var arguments := OS.get_cmdline_user_args()
@@ -760,6 +767,8 @@ func _initialize() -> bool:
 	if _initial_total <= 0 or pickups.is_empty():
 		_fail("no_pickups")
 		return false
+	_last_remaining = pickups.size()
+	_last_progress_frame = _frame
 	if not _placement_preflight():
 		return false
 	return _plan_path()
@@ -776,6 +785,7 @@ func _physics_process(_delta: float) -> void:
 	if _root == null:
 		if not _initialize():
 			return
+	_track_progress()
 
 	if get_tree().current_scene != _root or _state() == "won":
 		_pass()
@@ -814,6 +824,30 @@ func _physics_process(_delta: float) -> void:
 			_arrival_frame = _frame
 		elif _frame - _arrival_frame >= 30:
 			_fail("exit_did_not_win")
+	else:
+		# Reaching a pickup is not enough: its real Area2D signal must remove it
+		# and advance progress. Fail early instead of laundering a dead pickup
+		# interaction into a generic 200-second timeout.
+		if _arrival_frame < 0:
+			_arrival_frame = _frame
+		elif _frame - _arrival_frame >= 60:
+			_detail_areas = [_target]
+			_fail("pickup_did_not_collect")
+
+func _track_progress() -> void:
+	if _root == null:
+		return
+	var remaining := _remaining_pickups().size()
+	if _last_remaining < 0:
+		_last_remaining = remaining
+		_last_progress_frame = _frame
+		return
+	if remaining < _last_remaining:
+		_progress_events += _last_remaining - remaining
+		_max_stall_frames = maxi(_max_stall_frames, _frame - _last_progress_frame)
+		_last_progress_frame = _frame
+	_last_remaining = remaining
+	_max_stall_frames = maxi(_max_stall_frames, _frame - _last_progress_frame)
 
 func _counts() -> Dictionary:
 	var remaining := _remaining_pickups().size() if _root != null else 0
@@ -827,7 +861,9 @@ func _pass() -> void:
 	if not _active:
 		return
 	_active = false
+	_track_progress()
 	var counts := _counts()
+	_print_metrics()
 	print("[OBJECTIVE] status=passed template=%s reason=none collected=%d total=%d remaining=%d frames=%d" % [_template, counts.collected, counts.total, counts.remaining, _frame])
 	get_tree().quit()
 
@@ -835,14 +871,21 @@ func _fail(reason: String) -> void:
 	if not _active:
 		return
 	_active = false
+	_stuck = reason in ["timeout", "pickup_did_not_collect", "unreachable_pickup", "unreachable_exit"]
+	_track_progress()
 	var counts := _counts()
 	var reported_areas := _detail_areas if not _detail_areas.is_empty() else _remaining_pickups()
 	for area in reported_areas.slice(0, 12):
 		print("[OBJECTIVE_DETAIL] node=%s position=(%.1f,%.1f) ignored=%s" % [area.name, area.global_position.x, area.global_position.y, str(_ignored_ids.has(area.get_instance_id()))])
 	if reported_areas.size() > 12:
 		print("[OBJECTIVE_DETAIL] omitted=%d" % (reported_areas.size() - 12))
+	_print_metrics()
 	print("[OBJECTIVE] status=failed template=%s reason=%s collected=%d total=%d remaining=%d frames=%d" % [_template, reason, counts.collected, counts.total, counts.remaining, _frame])
 	get_tree().quit()
+
+func _print_metrics() -> void:
+	var restart_status := "not_applicable" if _template == "collect" else "not_tested"
+	print("[OBJECTIVE_METRICS] completion_seconds=%.3f progress_events=%d max_stall_frames=%d stuck=%s restart=%s deaths=%d" % [float(_frame) / 60.0, _progress_events, _max_stall_frames, str(_stuck), restart_status, _deaths])
 """
 
 AMBIENCE_GD = """extends Node

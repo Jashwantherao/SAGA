@@ -160,6 +160,14 @@ def main() -> None:
         print(f"Screenshot: {result['screenshot_path']}", file=sys.stderr)
     if result.get("gameplay_video_path"):
         print(f"Gameplay video: {result['gameplay_video_path']}", file=sys.stderr)
+    if result.get("objective_result"):
+        objective = result["objective_result"]
+        print(
+            "Gameplay completion: "
+            f"{objective.get('status')} score={objective.get('completion_score')} "
+            f"time={objective.get('completion_seconds')}s",
+            file=sys.stderr,
+        )
 
     if args.playtest and ship_ready:
         from saga.playtest import playtest_loop
@@ -174,7 +182,7 @@ def main() -> None:
     ship_status, ship_ready = assess_ship_status(result)
     level_results = result.get("level_results") or []
     manifest = {
-        "manifest_version": 4,
+        "manifest_version": 5,
         "run_dir": result["run_dir"],
         "idea": args.idea,
         "title": (result.get("design_doc") or {}).get("title"),
@@ -191,6 +199,7 @@ def main() -> None:
         "gameplay_video_path": result.get("gameplay_video_path"),
         "video_qa_result": result.get("video_qa_result"),
         "video_notes": result.get("video_notes") or [],
+        "objective_result": result.get("objective_result"),
         "qa_errors": result.get("qa_errors") or [],
         "vision_notes": result.get("vision_notes") or [],
         "balance_notes": result.get("balance_notes") or [],

@@ -67,6 +67,12 @@ OBJECTIVE_DETAIL = re.compile(
     r"\[OBJECTIVE_DETAIL\] node=\S+ position=\(([-\d.]+),([-\d.]+)\) "
     r"(?:ghost|ignored)=false"
 )
+OBJECTIVE_METRICS = re.compile(
+    r"\[OBJECTIVE_METRICS\] completion_seconds=([\d.]+) progress_events=(\d+) "
+    r"max_stall_frames=(\d+) stuck=(true|false) "
+    r"restart=(passed|failed|not_applicable|not_tested) deaths=(\d+)"
+)
+MAX_COLLECT_SOLVER_SECONDS = 60.0
 
 # Godot's forced `--quit-after` shutdown doesn't wait for the AudioServer to
 # release an autoplaying stream, so any project with BGM prints these on exit
@@ -138,12 +144,12 @@ def _find_errors(output: str) -> list[str]:
     return found
 
 
-def _run_maze_objective_probe(
+def _run_objective_probe(
     project_dir: str,
     scene: str,
     template: str,
 ) -> tuple[dict | None, list[str], bool]:
-    """Run and parse the harness-owned collectible-maze completion solver.
+    """Run and parse the harness-owned deterministic completion solver.
 
     Returns ``(result, errors, blocked)``. ``blocked`` is reserved for a
     missing/broken required probe; an ordinary failed completion verdict is a
@@ -197,6 +203,30 @@ def _run_maze_objective_probe(
             ],
             True,
         )
+    metrics = OBJECTIVE_METRICS.search(output)
+    if not metrics:
+        return (
+            result,
+            [f"QA infrastructure: {template} objective probe produced no metrics verdict."],
+            True,
+        )
+    completion_seconds, progress_events, max_stall_frames, stuck, restart, deaths = (
+        metrics.groups()
+    )
+    result.update(
+        {
+            "completion_seconds": float(completion_seconds),
+            "progress_events": int(progress_events),
+            "max_stall_frames": int(max_stall_frames),
+            "stuck": stuck == "true",
+            "restart_status": restart,
+            "deaths": int(deaths),
+        }
+    )
+    progress_ratio = int(collected) / max(int(total), 1)
+    result["completion_score"] = (
+        100 if status == "passed" else min(60, round(progress_ratio * 60))
+    )
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -217,6 +247,12 @@ def _run_maze_objective_probe(
             ],
             False,
         )
+    if result["stuck"]:
+        return (
+            result,
+            ["Objective completion: probe reported a pass while also reporting a stuck run."],
+            True,
+        )
     if int(remaining) != 0 or int(collected) < int(total):
         return (
             result,
@@ -226,7 +262,37 @@ def _run_maze_objective_probe(
             ],
             True,
         )
+    if template == "collect":
+        if result["restart_status"] != "not_applicable":
+            return (
+                result,
+                [
+                    "QA infrastructure: collect objective reported restart status "
+                    f"{result['restart_status']!r}; expected 'not_applicable'."
+                ],
+                True,
+            )
+        if result["completion_seconds"] > MAX_COLLECT_SOLVER_SECONDS:
+            return (
+                result,
+                [
+                    "Objective completion: collect solver reached the win state but took "
+                    f"{result['completion_seconds']:.1f}s, above the "
+                    f"{MAX_COLLECT_SOLVER_SECONDS:.0f}s quality ceiling. Reduce empty travel "
+                    "or the number of pickups."
+                ],
+                False,
+            )
     return result, [], False
+
+
+def _run_maze_objective_probe(
+    project_dir: str,
+    scene: str,
+    template: str,
+) -> tuple[dict | None, list[str], bool]:
+    """Compatibility wrapper for the original maze-only probe API."""
+    return _run_objective_probe(project_dir, scene, template)
 
 
 def _run_dot_maze_objective_probe(
@@ -234,7 +300,7 @@ def _run_dot_maze_objective_probe(
     scene: str,
 ) -> tuple[dict | None, list[str], bool]:
     """Compatibility wrapper for existing callers and developer tooling."""
-    return _run_maze_objective_probe(project_dir, scene, "dot_maze")
+    return _run_objective_probe(project_dir, scene, "dot_maze")
 
 
 def _vision_prompt(design_doc) -> str:
@@ -806,8 +872,8 @@ def qa_agent(state: GraphState) -> GraphState:
     # objective to be reachable and its real win state to fire.
     template = (state.get("design_doc") or {}).get("mechanic_template", "")
     objective_result = None
-    if template in {"dot_maze", "maze_chase"}:
-        objective_result, objective_errors, objective_blocked = _run_maze_objective_probe(
+    if template in {"collect", "dot_maze", "maze_chase"}:
+        objective_result, objective_errors, objective_blocked = _run_objective_probe(
             project_dir,
             scene,
             template,
@@ -825,7 +891,9 @@ def qa_agent(state: GraphState) -> GraphState:
         print(
             f"[QA Agent] Objective: collected {objective_result['collected']}/"
             f"{objective_result['total']} pickups and reached won in "
-            f"{objective_result['frames']} frames"
+            f"{objective_result['completion_seconds']:.1f}s "
+            f"(score={objective_result['completion_score']}, "
+            f"max_stall={objective_result['max_stall_frames']} frames)"
         )
 
     # 4. Balance check. The script runs, but that says nothing about whether
