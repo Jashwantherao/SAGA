@@ -1,6 +1,8 @@
 import re
 
 from saga.agents.coder import (
+    DEPLETION_EXAMPLE_RESPONSE,
+    DEPLETION_PROBE_GD,
     ORDERED_SWITCHES_EXAMPLE_RESPONSE,
     PROJECT_GODOT_TEMPLATE,
     SURVIVAL_PROBE_GD,
@@ -63,3 +65,18 @@ def test_survival_example_satisfies_qa_contract_and_installs_probe():
     assert "collision_did_not_damage" in SURVIVAL_PROBE_GD
     assert 'Input.action_press("ui_accept")' in SURVIVAL_PROBE_GD
     assert 'set("time_left", 0.05)' in SURVIVAL_PROBE_GD
+
+
+def test_depletion_example_satisfies_qa_contract_and_installs_probe():
+    script = extract_gdscript(DEPLETION_EXAMPLE_RESPONSE)
+    missing = [
+        description
+        for description, pattern in TEMPLATE_CONTRACTS["depletion"]
+        if not re.search(pattern, script)
+    ]
+
+    assert missing == []
+    assert 'DepletionProbe="*res://depletion_probe.gd"' in PROJECT_GODOT_TEMPLATE
+    assert "resource_did_not_drain" in DEPLETION_PROBE_GD
+    assert "resource_did_not_refill" in DEPLETION_PROBE_GD
+    assert 'Input.action_press("ui_accept")' in DEPLETION_PROBE_GD

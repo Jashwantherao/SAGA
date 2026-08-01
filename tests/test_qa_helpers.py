@@ -41,6 +41,17 @@ def _survival_metrics(
     )
 
 
+def _depletion_metrics(
+    *, resource_max=100.0, drained=0.5, refilled=0.5, drain="true",
+    refill="true", lose="true", restart="true", win="true"
+):
+    return (
+        f"[DEPLETION_METRICS] resource_max={resource_max} drained_amount={drained} "
+        f"refilled_amount={refilled} drain_verified={drain} refill_verified={refill} "
+        f"lose_verified={lose} clean_restart={restart} timer_win={win}\n"
+    )
+
+
 def test_find_errors_deduplicates_and_keeps_location():
     output = """
 SCRIPT ERROR: Invalid call
@@ -463,6 +474,76 @@ def test_survival_harness_error_blocks_instead_of_requesting_coder_fix(monkeypat
     assert result is None
     assert blocked is True
     assert "survival_probe.gd" in errors[0]
+
+
+def test_depletion_probe_verifies_drain_refill_lose_restart_and_win(monkeypatch):
+    output = (
+        _objective_metrics(
+            seconds=4.5, progress=5, stall=80, restart="passed", deaths=1
+        )
+        + _depletion_metrics()
+        + "[OBJECTIVE] status=passed template=depletion reason=none "
+        "collected=5 total=5 remaining=0 frames=270"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    result, errors, blocked = _run_objective_probe("project", "scene", "depletion")
+
+    assert errors == []
+    assert blocked is False
+    assert result["drain_verified"] is True
+    assert result["refill_verified"] is True
+    assert result["lose_verified"] is True
+    assert result["clean_restart"] is True
+    assert result["timer_win_verified"] is True
+    assert result["drained_amount"] > 0
+    assert result["refilled_amount"] > 0
+    assert result["deaths"] == 1
+    assert result["completion_score"] == 100
+
+
+def test_depletion_refill_failure_is_a_generated_game_defect(monkeypatch):
+    output = (
+        _objective_metrics(
+            seconds=3.0, progress=1, stall=180, stuck="true", restart="failed"
+        )
+        + _depletion_metrics(refilled=0.0, refill="false", lose="false", restart="false", win="false")
+        + "[OBJECTIVE_DETAIL] node=RefillZone position=(512.0,150.0) ignored=false\n"
+        + "[OBJECTIVE] status=failed template=depletion reason=resource_did_not_refill "
+        "collected=1 total=5 remaining=4 frames=180"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    result, errors, blocked = _run_objective_probe("project", "scene", "depletion")
+
+    assert result["reason"] == "resource_did_not_refill"
+    assert blocked is False
+    assert "Resource must drain" in errors[0]
+    assert "Refill zone under test" in errors[0]
+
+
+def test_depletion_missing_resource_metrics_blocks_shipping(monkeypatch):
+    output = _objective_metrics(
+        seconds=4.5, progress=5, restart="passed", deaths=1
+    ) + (
+        "[OBJECTIVE] status=passed template=depletion reason=none "
+        "collected=5 total=5 remaining=0 frames=270"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    _result, errors, blocked = _run_objective_probe("project", "scene", "depletion")
+
+    assert blocked is True
+    assert "no resource metrics" in errors[0]
 
 
 def test_missing_objective_verdict_blocks_shipping(monkeypatch):

@@ -81,9 +81,16 @@ SURVIVAL_METRICS = re.compile(
     r"single_hit_exact=(true|false) lose_verified=(true|false) "
     r"clean_restart=(true|false) timer_win=(true|false)"
 )
+DEPLETION_METRICS = re.compile(
+    r"\[DEPLETION_METRICS\] resource_max=([\d.]+) drained_amount=([\d.]+) "
+    r"refilled_amount=([\d.]+) drain_verified=(true|false) "
+    r"refill_verified=(true|false) lose_verified=(true|false) "
+    r"clean_restart=(true|false) timer_win=(true|false)"
+)
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
 MAX_SURVIVAL_SOLVER_SECONDS = 30.0
+MAX_DEPLETION_SOLVER_SECONDS = 30.0
 
 # Godot's forced `--quit-after` shutdown doesn't wait for the AudioServer to
 # release an autoplaying stream, so any project with BGM prints these on exit
@@ -96,7 +103,7 @@ BENIGN_EXIT_NOISE = re.compile(
 )
 
 HARNESS_SCRIPT_ERROR = re.compile(
-    r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|screenshot|sfx|music|ambience|anim|game|"
+    r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|screenshot|sfx|music|ambience|anim|game|"
     r"interlude|victory)\.gd",
     re.IGNORECASE,
 )
@@ -279,6 +286,29 @@ def _run_objective_probe(
                 "timer_win_verified": timer_win == "true",
             }
         )
+    if template == "depletion":
+        depletion_metrics = DEPLETION_METRICS.search(output)
+        if not depletion_metrics:
+            return (
+                result,
+                ["QA infrastructure: depletion probe produced no resource metrics."],
+                True,
+            )
+        resource_max, drained, refilled, drain, refill, lose, clean_restart, timer_win = (
+            depletion_metrics.groups()
+        )
+        result.update(
+            {
+                "resource_max": float(resource_max),
+                "drained_amount": float(drained),
+                "refilled_amount": float(refilled),
+                "drain_verified": drain == "true",
+                "refill_verified": refill == "true",
+                "lose_verified": lose == "true",
+                "clean_restart": clean_restart == "true",
+                "timer_win_verified": timer_win == "true",
+            }
+        )
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -291,7 +321,11 @@ def _run_objective_probe(
             position_note = (
                 f" Hazard under test: {formatted}."
                 if template == "survive_hazards"
-                else f" Suspect unreachable Area2D positions: {formatted}."
+                else (
+                    f" Refill zone under test: {formatted}."
+                    if template == "depletion"
+                    else f" Suspect unreachable Area2D positions: {formatted}."
+                )
             )
         objective_requirement = (
             "Every switch must react, a wrong order must reset progress, and the full "
@@ -301,7 +335,12 @@ def _run_objective_probe(
                 "Collision damage must reach the lose state, restart must restore clean "
                 "state, and timer expiry must reach the win state."
                 if template == "survive_hazards"
-                else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                else (
+                    "Resource must drain outside zones, refill inside one, empty-resource "
+                    "loss must restart cleanly, and timer expiry must win."
+                    if template == "depletion"
+                    else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                )
             )
         )
         return (
@@ -321,7 +360,11 @@ def _run_objective_probe(
             True,
         )
     if int(remaining) != 0 or int(collected) < int(total):
-        item = "milestones" if template == "survive_hazards" else "objective items"
+        item = (
+            "milestones"
+            if template in {"survive_hazards", "depletion"}
+            else "objective items"
+        )
         return (
             result,
             [
@@ -431,6 +474,47 @@ def _run_objective_probe(
                     "Objective completion: survival solver passed but took "
                     f"{result['completion_seconds']:.1f}s, above the "
                     f"{MAX_SURVIVAL_SOLVER_SECONDS:.0f}s QA ceiling."
+                ],
+                False,
+            )
+    if template == "depletion":
+        required = {
+            "drain_verified": result["drain_verified"],
+            "refill_verified": result["refill_verified"],
+            "lose_verified": result["lose_verified"],
+            "clean_restart": result["clean_restart"],
+            "timer_win_verified": result["timer_win_verified"],
+        }
+        missing = [name for name, passed in required.items() if not passed]
+        if missing:
+            return (
+                result,
+                [
+                    "Objective completion: depletion pass omitted required phase(s): "
+                    + ", ".join(missing)
+                    + "."
+                ],
+                True,
+            )
+        if result["drained_amount"] <= 0.0 or result["refilled_amount"] <= 0.0:
+            return (
+                result,
+                ["Objective completion: depletion pass reported no resource change."],
+                True,
+            )
+        if result["restart_status"] != "passed" or result["deaths"] != 1:
+            return (
+                result,
+                ["Objective completion: depletion lose/restart accounting is inconsistent."],
+                True,
+            )
+        if result["completion_seconds"] > MAX_DEPLETION_SOLVER_SECONDS:
+            return (
+                result,
+                [
+                    "Objective completion: depletion solver passed but took "
+                    f"{result['completion_seconds']:.1f}s, above the "
+                    f"{MAX_DEPLETION_SOLVER_SECONDS:.0f}s QA ceiling."
                 ],
                 False,
             )
@@ -1027,6 +1111,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "collect",
         "ordered_switches",
         "survive_hazards",
+        "depletion",
         "dot_maze",
         "maze_chase",
     }:
@@ -1048,6 +1133,7 @@ def qa_agent(state: GraphState) -> GraphState:
         noun = {
             "ordered_switches": "switches",
             "survive_hazards": "survival milestones",
+            "depletion": "resource milestones",
         }.get(template, "pickups")
         print(
             f"[QA Agent] Objective: completed {objective_result['collected']}/"

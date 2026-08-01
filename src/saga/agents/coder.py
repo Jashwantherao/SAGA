@@ -10,7 +10,7 @@ The design doc's mechanic_template selects both a template-specific
 requirements paragraph appended to the system prompt and the closest worked
 few-shot example. Showing a small local model a complete example of the
 structure it is asked to produce is its single biggest reliability lever, so
-each template maps to whichever of the five authored examples is
+each template maps to whichever of the seven authored examples is
 structurally nearest. Every few-shot demonstrates the shared "juice" idioms:
 a title -> playing -> over state machine (with headless auto-start so QA
 still exercises gameplay), Sfx autoload calls, and a CPUParticles2D ambient
@@ -56,6 +56,7 @@ Autoplay="*res://autoplay.gd"
 ObjectiveProbe="*res://objective_probe.gd"
 SwitchProbe="*res://switch_probe.gd"
 SurvivalProbe="*res://survival_probe.gd"
+DepletionProbe="*res://depletion_probe.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -536,7 +537,7 @@ func _ready() -> void:
 	for argument in arguments:
 		if argument.begins_with("--objective-template="):
 			_template = argument.trim_prefix("--objective-template=")
-	_active = _active and _template not in ["ordered_switches", "survive_hazards"]
+	_active = _active and _template not in ["ordered_switches", "survive_hazards", "depletion"]
 	if _active:
 		process_priority = 600
 
@@ -1393,6 +1394,296 @@ func _fail(reason: String) -> void:
 	get_tree().quit()
 """
 
+# Depletion QA exercises live overlap-driven resource behavior. It observes
+# drain outside all zones, moves the real player inside a real refill Area2D,
+# forces resource exhaustion and restart, then accelerates only the public
+# timer and requires the generated win path.
+DEPLETION_PROBE_GD = """extends Node
+
+const MAX_FRAMES := 1800
+const PHASE_TIMEOUT := 180
+const MOVE_STEP := 20.0
+const CHANGE_EPSILON := 0.2
+
+var _active := false
+var _frame := 0
+var _root: Node
+var _player: Area2D
+var _zones: Array[Area2D] = []
+var _target_zone: Area2D
+var _phase := "initial_outside"
+var _phase_start_frame := 0
+var _settled_frames := 0
+var _resource_max := 0.0
+var _baseline := 0.0
+var _drained_amount := 0.0
+var _refilled_amount := 0.0
+var _drain_verified := false
+var _refill_verified := false
+var _lose_verified := false
+var _restart_verified := false
+var _timer_win_verified := false
+var _milestones := 0
+var _progress_events := 0
+var _max_stall_frames := 0
+var _last_progress_frame := 0
+var _old_root_id := 0
+var _restart_frame := -1
+var _outside_position := Vector2.ZERO
+var _stuck := false
+
+func _ready() -> void:
+	var template := ""
+	var arguments := OS.get_cmdline_user_args()
+	for argument in arguments:
+		if argument.begins_with("--objective-template="):
+			template = argument.trim_prefix("--objective-template=")
+	_active = "--objective-probe" in arguments and template == "depletion"
+	if _active:
+		process_priority = 630
+
+func _has_property(object: Object, property_name: String) -> bool:
+	for property in object.get_property_list():
+		if str(property.get("name", "")) == property_name:
+			return true
+	return false
+
+func _read_property(object: Object, property_name: String, fallback = null):
+	if _has_property(object, property_name):
+		return object.get(property_name)
+	return fallback
+
+func _state() -> String:
+	return str(_read_property(_root, "state", "unknown")) if _root != null else "unknown"
+
+func _resource() -> float:
+	return float(_read_property(_root, "resource", -1.0)) if _root != null else -1.0
+
+func _zones_inside() -> int:
+	return int(_read_property(_root, "zones_inside", -1)) if _root != null else -1
+
+func _initialize_root(after_restart: bool = false) -> bool:
+	_root = get_tree().current_scene
+	if _root == null:
+		return false
+	var player_candidate = _read_property(_root, "player", null)
+	var raw_zones = _read_property(_root, "refill_zones", null)
+	if not (player_candidate is Area2D):
+		_fail("missing_player_interface")
+		return false
+	if typeof(raw_zones) != TYPE_ARRAY:
+		_fail("missing_refill_zone_interface")
+		return false
+	_player = player_candidate
+	_zones = []
+	for candidate in raw_zones:
+		if not (candidate is Area2D):
+			_fail("invalid_refill_zone_interface")
+			return false
+		_zones.append(candidate)
+	if _zones.is_empty():
+		_fail("no_refill_zones")
+		return false
+	for property_name in ["resource_max", "resource", "drain_rate", "refill_rate", "zones_inside", "survival_time", "time_left"]:
+		if not _has_property(_root, property_name):
+			_fail("missing_depletion_interface")
+			return false
+	var reported_max := float(_read_property(_root, "resource_max", -1.0))
+	var drain_rate := float(_read_property(_root, "drain_rate", -1.0))
+	var refill_rate := float(_read_property(_root, "refill_rate", -1.0))
+	var survival_time := float(_read_property(_root, "survival_time", -1.0))
+	if reported_max <= 0.0 or drain_rate <= 0.0 or refill_rate <= drain_rate or survival_time <= 0.0:
+		_fail("invalid_depletion_settings")
+		return false
+	if not after_restart:
+		_resource_max = reported_max
+	elif absf(reported_max - _resource_max) > 0.01:
+		_fail("restart_changed_resource_max")
+		return false
+	if _resource() < _resource_max * 0.9 or _state() != "playing":
+		_fail("dirty_depletion_state")
+		return false
+	_root.set("time_left", maxf(survival_time, 60.0))
+	_target_zone = _zones[0]
+	_outside_position = _find_outside_position()
+	return true
+
+func _find_outside_position() -> Vector2:
+	var candidates := [
+		Vector2(32, 32), Vector2(992, 32),
+		Vector2(32, 544), Vector2(992, 544),
+	]
+	var best: Vector2 = candidates[0]
+	var best_clearance := -1.0
+	for candidate: Vector2 in candidates:
+		var clearance := 1.0e20
+		for zone in _zones:
+			clearance = minf(clearance, candidate.distance_to(zone.global_position))
+		if clearance > best_clearance:
+			best = candidate
+			best_clearance = clearance
+	return best
+
+func _mark_milestone() -> void:
+	_milestones += 1
+	_progress_events += 1
+	_max_stall_frames = maxi(_max_stall_frames, _frame - _last_progress_frame)
+	_last_progress_frame = _frame
+
+func _begin_phase(name: String) -> void:
+	_phase = name
+	_phase_start_frame = _frame
+	_settled_frames = 0
+
+func _place_outside() -> void:
+	_player.global_position = _outside_position
+
+func _move_to_zone() -> void:
+	if _target_zone == null or not is_instance_valid(_target_zone):
+		_fail("refill_zone_disappeared")
+		return
+	_player.global_position = _player.global_position.move_toward(
+		_target_zone.global_position, MOVE_STEP
+	)
+
+func _physics_process(_delta: float) -> void:
+	if not _active:
+		return
+	_frame += 1
+	_max_stall_frames = maxi(_max_stall_frames, _frame - _last_progress_frame)
+	if _frame >= MAX_FRAMES:
+		_fail("timeout")
+		return
+
+	if _phase == "await_restart":
+		if _frame > _restart_frame:
+			Input.action_release("ui_accept")
+		var scene := get_tree().current_scene
+		if scene != null and scene.get_instance_id() != _old_root_id:
+			if not _initialize_root(true):
+				return
+			_restart_verified = true
+			_mark_milestone()
+			_root.set("resource", _resource_max)
+			_root.set("time_left", 0.05)
+			_begin_phase("timer_win")
+		elif _frame - _restart_frame > PHASE_TIMEOUT:
+			_fail("restart_failed")
+		return
+
+	if _root == null:
+		if not _initialize_root():
+			return
+		_last_progress_frame = _frame
+		_place_outside()
+		_begin_phase("initial_outside")
+
+	if get_tree().current_scene != _root:
+		if _phase == "timer_win":
+			_timer_win_verified = true
+			_mark_milestone()
+			_pass()
+		else:
+			_fail("unexpected_scene_change")
+		return
+
+	if _phase == "initial_outside":
+		_place_outside()
+		if _zones_inside() == 0:
+			_settled_frames += 1
+		else:
+			_settled_frames = 0
+		if _settled_frames >= 5:
+			_baseline = _resource()
+			_begin_phase("drain")
+	elif _phase == "drain":
+		var change := _baseline - _resource()
+		if change >= CHANGE_EPSILON:
+			_drained_amount = change
+			_drain_verified = true
+			_mark_milestone()
+			_root.set("resource", _resource_max * 0.5)
+			_begin_phase("seek_refill")
+		elif _resource() > _baseline + 0.01:
+			_fail("resource_increased_outside_zone")
+		elif _frame - _phase_start_frame > PHASE_TIMEOUT:
+			_fail("resource_did_not_drain")
+	elif _phase == "seek_refill":
+		_move_to_zone()
+		if _zones_inside() > 0:
+			_baseline = _resource()
+			_begin_phase("refill")
+		elif _frame - _phase_start_frame > PHASE_TIMEOUT:
+			_fail("refill_zone_not_entered")
+	elif _phase == "refill":
+		var change := _resource() - _baseline
+		if change >= CHANGE_EPSILON:
+			_refilled_amount = change
+			_refill_verified = true
+			_mark_milestone()
+			_place_outside()
+			_begin_phase("loss_outside")
+		elif _frame - _phase_start_frame > PHASE_TIMEOUT:
+			_fail("resource_did_not_refill")
+	elif _phase == "loss_outside":
+		_place_outside()
+		if _zones_inside() == 0:
+			_settled_frames += 1
+		else:
+			_settled_frames = 0
+		if _settled_frames >= 5:
+			_root.set("resource", 0.01)
+			_begin_phase("resource_loss")
+		elif _frame - _phase_start_frame > PHASE_TIMEOUT:
+			_fail("could_not_leave_refill_zone")
+	elif _phase == "resource_loss":
+		if _state() == "over":
+			_lose_verified = true
+			_mark_milestone()
+			_old_root_id = _root.get_instance_id()
+			_restart_frame = _frame
+			_phase = "await_restart"
+			Input.action_press("ui_accept")
+		elif _state() == "won":
+			_fail("won_with_empty_resource")
+		elif _frame - _phase_start_frame > PHASE_TIMEOUT:
+			_fail("empty_resource_did_not_lose")
+	elif _phase == "timer_win":
+		if _state() == "won":
+			_timer_win_verified = true
+			_mark_milestone()
+			_pass()
+		elif _state() == "over":
+			_fail("lost_with_full_resource")
+		elif _frame - _phase_start_frame > PHASE_TIMEOUT:
+			_fail("timer_win_not_reached")
+
+func _print_metrics() -> void:
+	print("[OBJECTIVE_METRICS] completion_seconds=%.3f progress_events=%d max_stall_frames=%d stuck=%s restart=%s deaths=%d" % [float(_frame) / 60.0, _progress_events, _max_stall_frames, str(_stuck), "passed" if _restart_verified else "failed", 1 if _lose_verified else 0])
+	print("[DEPLETION_METRICS] resource_max=%.3f drained_amount=%.3f refilled_amount=%.3f drain_verified=%s refill_verified=%s lose_verified=%s clean_restart=%s timer_win=%s" % [_resource_max, _drained_amount, _refilled_amount, str(_drain_verified), str(_refill_verified), str(_lose_verified), str(_restart_verified), str(_timer_win_verified)])
+
+func _pass() -> void:
+	if not _active:
+		return
+	_active = false
+	Input.action_release("ui_accept")
+	_print_metrics()
+	print("[OBJECTIVE] status=passed template=depletion reason=none collected=%d total=5 remaining=%d frames=%d" % [_milestones, maxi(0, 5 - _milestones), _frame])
+	get_tree().quit()
+
+func _fail(reason: String) -> void:
+	if not _active:
+		return
+	_active = false
+	Input.action_release("ui_accept")
+	_stuck = reason in ["timeout", "resource_did_not_drain", "refill_zone_not_entered", "resource_did_not_refill", "could_not_leave_refill_zone", "empty_resource_did_not_lose", "restart_failed", "timer_win_not_reached"]
+	if _target_zone != null and is_instance_valid(_target_zone):
+		print("[OBJECTIVE_DETAIL] node=%s position=(%.1f,%.1f) ignored=false" % [_target_zone.name, _target_zone.global_position.x, _target_zone.global_position.y])
+	_print_metrics()
+	print("[OBJECTIVE] status=failed template=depletion reason=%s collected=%d total=5 remaining=%d frames=%d" % [reason, _milestones, maxi(0, 5 - _milestones), _frame])
+	get_tree().quit()
+"""
+
 AMBIENCE_GD = """extends Node
 
 func _ready():
@@ -1627,7 +1918,10 @@ TEMPLATE_REQUIREMENTS = {
         "zero."
     ),
     "depletion": (
-        "Structure for this game: a resource value drains every frame in "
+        "Structure for this game: expose `resource_max`, `resource`, "
+        "`drain_rate`, `refill_rate`, `survival_time`, `time_left`, and "
+        "`zones_inside` variables plus `var refill_zones: Array[Area2D]` for "
+        "deterministic gameplay QA. The resource drains every frame in "
         "_process; standing inside refill zone Area2Ds restores it instead "
         "(track overlap by connecting area_entered and area_exited on the "
         "player and counting zones inside); clamp the resource to 0-100; a "
@@ -2130,7 +2424,7 @@ DEPLETION_EXAMPLE_USER = (
     "Lose condition: the lantern's light reaches zero\n"
     "Key item: a crackling stone brazier (role: zone_marker)\n"
     "This is level 1 of 1: The Long Walk: a fog-bound rampart dotted with braziers\n"
-    "Available image assets: hero_sprite.png, key_item.png, level_0_bg.png\n"
+    "Available image assets: hero_sprite.png, hero_walk.png, key_item.png, level_0_bg.png\n"
 )
 
 DEPLETION_EXAMPLE_RESPONSE = """```gdscript
@@ -2140,11 +2434,14 @@ extends Node2D
 var drain_rate = 8.0
 var refill_rate = 15.0
 var survival_time = 30.0
-var light = 100.0
+var resource_max = 100.0
+var resource = resource_max
 var time_left = survival_time
 var zones_inside = 0
 var state = "title"
 var player: Area2D
+var player_sprite: Sprite2D
+var refill_zones: Array[Area2D] = []
 var status_label: Label
 
 func _ready():
@@ -2157,7 +2454,7 @@ func _ready():
 
     player = Area2D.new()
     player.position = Vector2(100, 300)
-    var player_sprite = Sprite2D.new()
+    player_sprite = Sprite2D.new()
     player_sprite.texture = load("res://assets/hero_sprite.png")
     player.add_child(player_sprite)
     var player_shape = CollisionShape2D.new()
@@ -2168,6 +2465,11 @@ func _ready():
     player.area_entered.connect(_on_player_area_entered)
     player.area_exited.connect(_on_player_area_exited)
     add_child(player)
+    Anim.set_poses(
+        player_sprite,
+        load("res://assets/hero_sprite.png"),
+        load("res://assets/hero_walk.png"),
+    )
 
     var zone_positions = [Vector2(220, 300), Vector2(512, 150), Vector2(820, 420)]
     for pos in zone_positions:
@@ -2194,6 +2496,7 @@ func _spawn_zone(pos: Vector2):
     shape.shape = circle
     zone.add_child(shape)
     add_child(zone)
+    refill_zones.append(zone)
 
 func _on_player_area_entered(area: Area2D):
     zones_inside += 1
@@ -2215,13 +2518,13 @@ func _process(delta):
         return
 
     if zones_inside > 0:
-        light += refill_rate * delta
+        resource += refill_rate * delta
     else:
-        light -= drain_rate * delta
-    light = clamp(light, 0.0, 100.0)
+        resource -= drain_rate * delta
+    resource = clamp(resource, 0.0, resource_max)
     time_left -= delta
 
-    if light <= 0.0:
+    if resource <= 0.0:
         state = "over"
         Sfx.play("lose")
         status_label.text = "The lantern gutters out...  Press Enter to restart"
@@ -2242,10 +2545,12 @@ func _process(delta):
         velocity.y += 1.0
     if Input.is_action_pressed("ui_up"):
         velocity.y -= 1.0
-    player.position += velocity.normalized() * speed * delta
+    var direction = velocity.normalized()
+    player.position += direction * speed * delta
     player.position = player.position.clamp(Vector2.ZERO, Vector2(1024, 576))
+    Anim.walk(player_sprite, direction.length() > 0.0, direction.x)
 
-    status_label.text = "Light: %d%%   Time: %ds" % [int(light), int(ceil(time_left))]
+    status_label.text = "Light: %d%%   Time: %ds" % [int(resource), int(ceil(time_left))]
 ```"""
 
 HYBRID_EXAMPLE_USER = (
@@ -3236,6 +3541,7 @@ def coder(state: GraphState) -> GraphState:
     (project_dir / "objective_probe.gd").write_text(OBJECTIVE_PROBE_GD, encoding="utf-8")
     (project_dir / "switch_probe.gd").write_text(SWITCH_PROBE_GD, encoding="utf-8")
     (project_dir / "survival_probe.gd").write_text(SURVIVAL_PROBE_GD, encoding="utf-8")
+    (project_dir / "depletion_probe.gd").write_text(DEPLETION_PROBE_GD, encoding="utf-8")
     beats = [lvl.get("outro_beat", "") for lvl in levels]
     (project_dir / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
     (project_dir / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")
