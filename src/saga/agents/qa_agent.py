@@ -87,10 +87,17 @@ DEPLETION_METRICS = re.compile(
     r"refill_verified=(true|false) lose_verified=(true|false) "
     r"clean_restart=(true|false) timer_win=(true|false)"
 )
+HYBRID_METRICS = re.compile(
+    r"\[HYBRID_METRICS\] drain_first=([\d.]+) drain_second=([\d.]+) "
+    r"refill=([\d.]+) fuel_used=([\d.]+) hazard_damage=([\d.]+) "
+    r"ramp=(true|false) refill_ok=(true|false) fuel_ok=(true|false) "
+    r"hazard_ok=(true|false) lose=(true|false) restart_ok=(true|false) timer_win=(true|false)"
+)
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
 MAX_SURVIVAL_SOLVER_SECONDS = 30.0
 MAX_DEPLETION_SOLVER_SECONDS = 30.0
+MAX_HYBRID_SOLVER_SECONDS = 30.0
 
 # Godot's forced `--quit-after` shutdown doesn't wait for the AudioServer to
 # release an autoplaying stream, so any project with BGM prints these on exit
@@ -103,7 +110,7 @@ BENIGN_EXIT_NOISE = re.compile(
 )
 
 HARNESS_SCRIPT_ERROR = re.compile(
-    r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|screenshot|sfx|music|ambience|anim|game|"
+    r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|screenshot|sfx|music|ambience|anim|game|"
     r"interlude|victory)\.gd",
     re.IGNORECASE,
 )
@@ -309,6 +316,19 @@ def _run_objective_probe(
                 "timer_win_verified": timer_win == "true",
             }
         )
+    if template == "survive_and_deplete":
+        hybrid = HYBRID_METRICS.search(output)
+        if not hybrid:
+            return result, ["QA infrastructure: hybrid probe produced no hybrid metrics."], True
+        values = hybrid.groups()
+        result.update({
+            "drain_first": float(values[0]), "drain_second": float(values[1]),
+            "refilled_amount": float(values[2]), "fuel_used": float(values[3]),
+            "hazard_damage": float(values[4]), "ramp_verified": values[5] == "true",
+            "refill_verified": values[6] == "true", "fuel_verified": values[7] == "true",
+            "hazard_verified": values[8] == "true", "lose_verified": values[9] == "true",
+            "clean_restart": values[10] == "true", "timer_win_verified": values[11] == "true",
+        })
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -339,7 +359,12 @@ def _run_objective_probe(
                     "Resource must drain outside zones, refill inside one, empty-resource "
                     "loss must restart cleanly, and timer expiry must win."
                     if template == "depletion"
-                    else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                    else (
+                        "Drain must accelerate, refill must consume finite fuel, hazards must "
+                        "damage resource, loss must restart cleanly, and timer expiry must win."
+                        if template == "survive_and_deplete"
+                        else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                    )
                 )
             )
         )
@@ -362,7 +387,7 @@ def _run_objective_probe(
     if int(remaining) != 0 or int(collected) < int(total):
         item = (
             "milestones"
-            if template in {"survive_hazards", "depletion"}
+            if template in {"survive_hazards", "depletion", "survive_and_deplete"}
             else "objective items"
         )
         return (
@@ -518,6 +543,17 @@ def _run_objective_probe(
                 ],
                 False,
             )
+    if template == "survive_and_deplete":
+        flags = ["ramp_verified", "refill_verified", "fuel_verified", "hazard_verified", "lose_verified", "clean_restart", "timer_win_verified"]
+        missing = [name for name in flags if not result[name]]
+        if missing:
+            return result, ["Objective completion: hybrid pass omitted: " + ", ".join(missing) + "."], True
+        if not (result["drain_second"] > result["drain_first"] > 0 and result["refilled_amount"] > 0 and result["fuel_used"] > 0 and result["hazard_damage"] > 0):
+            return result, ["Objective completion: hybrid measurements are inconsistent."], True
+        if result["restart_status"] != "passed" or result["deaths"] != 1:
+            return result, ["Objective completion: hybrid lose/restart accounting is inconsistent."], True
+        if result["completion_seconds"] > MAX_HYBRID_SOLVER_SECONDS:
+            return result, [f"Objective completion: hybrid solver exceeded {MAX_HYBRID_SOLVER_SECONDS:.0f}s QA ceiling."], False
     return result, [], False
 
 
@@ -1112,6 +1148,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "ordered_switches",
         "survive_hazards",
         "depletion",
+        "survive_and_deplete",
         "dot_maze",
         "maze_chase",
     }:
@@ -1134,6 +1171,7 @@ def qa_agent(state: GraphState) -> GraphState:
             "ordered_switches": "switches",
             "survive_hazards": "survival milestones",
             "depletion": "resource milestones",
+            "survive_and_deplete": "hybrid milestones",
         }.get(template, "pickups")
         print(
             f"[QA Agent] Objective: completed {objective_result['collected']}/"

@@ -57,6 +57,7 @@ ObjectiveProbe="*res://objective_probe.gd"
 SwitchProbe="*res://switch_probe.gd"
 SurvivalProbe="*res://survival_probe.gd"
 DepletionProbe="*res://depletion_probe.gd"
+HybridProbe="*res://hybrid_probe.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -537,7 +538,7 @@ func _ready() -> void:
 	for argument in arguments:
 		if argument.begins_with("--objective-template="):
 			_template = argument.trim_prefix("--objective-template=")
-	_active = _active and _template not in ["ordered_switches", "survive_hazards", "depletion"]
+	_active = _active and _template not in ["ordered_switches", "survive_hazards", "depletion", "survive_and_deplete"]
 	if _active:
 		process_priority = 600
 
@@ -1684,6 +1685,165 @@ func _fail(reason: String) -> void:
 	get_tree().quit()
 """
 
+HYBRID_PROBE_GD = """extends Node
+
+const MAX_FRAMES := 1800
+const TIMEOUT := 180
+const MOVE_STEP := 22.0
+var _active := false
+var _frame := 0
+var _root: Node
+var _player: Area2D
+var _zones: Array[Area2D] = []
+var _hazards: Array[Area2D] = []
+var _phase := "outside"
+var _phase_frame := 0
+var _baseline := 0.0
+var _fuel_baseline := 0.0
+var _drain_first := 0.0
+var _drain_second := 0.0
+var _refill_amount := 0.0
+var _fuel_used := 0.0
+var _hazard_damage := 0.0
+var _ramp_ok := false
+var _refill_ok := false
+var _fuel_ok := false
+var _hazard_ok := false
+var _lose_ok := false
+var _restart_ok := false
+var _win_ok := false
+var _milestones := 0
+var _max_stall := 0
+var _last_progress := 0
+var _old_root_id := 0
+var _restart_frame := 0
+var _resource_max := 0.0
+var _outside := Vector2(32, 32)
+var _stuck := false
+
+func _ready():
+	var template := ""
+	for argument in OS.get_cmdline_user_args():
+		if argument.begins_with("--objective-template="):
+			template = argument.trim_prefix("--objective-template=")
+	_active = "--objective-probe" in OS.get_cmdline_user_args() and template == "survive_and_deplete"
+	if _active: process_priority = 640
+
+func _has(o: Object, name: String) -> bool:
+	for p in o.get_property_list():
+		if str(p.get("name", "")) == name: return true
+	return false
+
+func _root_value(name: String, fallback = null):
+	return _root.get(name) if _root != null and _has(_root, name) else fallback
+
+func _state() -> String: return str(_root_value("state", "unknown"))
+func _resource() -> float: return float(_root_value("resource", -1.0))
+
+func _initialize_root(after_restart := false) -> bool:
+	_root = get_tree().current_scene
+	if _root == null: return false
+	var p = _root_value("player")
+	var zs = _root_value("zones")
+	var hs = _root_value("hazards")
+	for name in ["resource_max", "resource", "drain_rate", "drain_ramp", "refill_rate", "fuel_burn", "hazard_hit_cost", "hit_cooldown", "time_left", "survival_time", "zone_fuel", "inside_zones"]:
+		if not _has(_root, name): _fail("missing_hybrid_interface"); return false
+	if not (p is Area2D) or typeof(zs) != TYPE_ARRAY or typeof(hs) != TYPE_ARRAY:
+		_fail("missing_hybrid_nodes"); return false
+	_player = p; _zones = []; _hazards = []
+	for z in zs:
+		if not (z is Area2D): _fail("invalid_zone_interface"); return false
+		_zones.append(z)
+	for h in hs:
+		if not (h is Area2D): _fail("invalid_hazard_interface"); return false
+		_hazards.append(h)
+	if _zones.is_empty() or _hazards.is_empty(): _fail("missing_hybrid_objects"); return false
+	var mx := float(_root_value("resource_max", -1.0))
+	if not after_restart: _resource_max = mx
+	if mx <= 0 or absf(mx - _resource_max) > 0.01 or _resource() < mx * 0.9 or _state() != "playing":
+		_fail("dirty_hybrid_state"); return false
+	_root.set("time_left", maxf(float(_root_value("survival_time", 60.0)), 60.0))
+	_outside = Vector2(992, 32)
+	return true
+
+func _mark():
+	_milestones += 1
+	_max_stall = maxi(_max_stall, _frame - _last_progress)
+	_last_progress = _frame
+
+func _begin(name: String): _phase = name; _phase_frame = _frame
+
+func _physics_process(_delta):
+	if not _active: return
+	_frame += 1; _max_stall = maxi(_max_stall, _frame - _last_progress)
+	if _frame >= MAX_FRAMES: _fail("timeout"); return
+	if _phase == "restart":
+		if _frame > _restart_frame: Input.action_release("ui_accept")
+		var scene := get_tree().current_scene
+		if scene != null and scene.get_instance_id() != _old_root_id:
+			if not _initialize_root(true): return
+			_restart_ok = true; _mark(); _root.set("resource", _resource_max); _root.set("time_left", 0.05)
+			for h in _hazards: h.collision_layer = 0; h.collision_mask = 0; h.monitoring = false
+			_begin("win")
+		elif _frame - _restart_frame > TIMEOUT: _fail("restart_failed")
+		return
+	if _root == null:
+		if not _initialize_root(): return
+		_last_progress = _frame; _player.global_position = _outside; _begin("outside")
+	if get_tree().current_scene != _root:
+		if _phase == "win": _win_ok = true; _mark(); _pass()
+		else: _fail("unexpected_scene_change")
+		return
+	if _phase == "outside":
+		_player.global_position = _outside
+		if _frame - _phase_frame == 5: _baseline = _resource()
+		elif _frame - _phase_frame == 95: _drain_first = _baseline - _resource(); _baseline = _resource()
+		elif _frame - _phase_frame == 185:
+			_drain_second = _baseline - _resource()
+			if _drain_first <= 0 or _drain_second <= _drain_first: _fail("drain_ramp_not_observed"); return
+			_ramp_ok = true; _mark(); _root.set("resource", _resource_max * 0.5); _begin("seek_zone")
+	elif _phase == "seek_zone":
+		_player.global_position = _player.global_position.move_toward(_zones[0].global_position, MOVE_STEP)
+		var inside = _root_value("inside_zones", [])
+		if typeof(inside) == TYPE_ARRAY and inside.size() > 0 and inside[0]:
+			_baseline = _resource(); var fuel = _root_value("zone_fuel", []); _fuel_baseline = float(fuel[0]); _begin("refill")
+		elif _frame - _phase_frame > TIMEOUT: _fail("zone_not_entered")
+	elif _phase == "refill":
+		var fuel = _root_value("zone_fuel", [])
+		_refill_amount = _resource() - _baseline; _fuel_used = _fuel_baseline - float(fuel[0])
+		if _refill_amount > 0.2 and _fuel_used > 0.2:
+			_refill_ok = true; _fuel_ok = true; _mark(); _mark(); _player.global_position = _outside
+			_root.set("resource", _resource_max * 0.8); _root.set("hit_cooldown", 0.0); _baseline = _resource(); _begin("hazard")
+		elif _frame - _phase_frame > TIMEOUT: _fail("refill_or_fuel_failed")
+	elif _phase == "hazard":
+		_player.global_position = _player.global_position.move_toward(_hazards[0].global_position, MOVE_STEP)
+		_hazard_damage = _baseline - _resource()
+		if _hazard_damage >= float(_root_value("hazard_hit_cost", 1.0)) * 0.8:
+			_hazard_ok = true; _mark(); _player.global_position = _outside; _root.set("resource", 0.01); _begin("lose")
+		elif _frame - _phase_frame > TIMEOUT: _fail("hazard_did_not_damage")
+	elif _phase == "lose":
+		if _state() == "over":
+			_lose_ok = true; _mark(); _old_root_id = _root.get_instance_id(); _restart_frame = _frame; _phase = "restart"; Input.action_press("ui_accept")
+		elif _frame - _phase_frame > TIMEOUT: _fail("empty_resource_did_not_lose")
+	elif _phase == "win":
+		if _state() == "won": _win_ok = true; _mark(); _pass()
+		elif _frame - _phase_frame > TIMEOUT: _fail("timer_win_not_reached")
+
+func _metrics():
+	print("[OBJECTIVE_METRICS] completion_seconds=%.3f progress_events=%d max_stall_frames=%d stuck=%s restart=%s deaths=%d" % [float(_frame)/60.0, _milestones, _max_stall, str(_stuck), "passed" if _restart_ok else "failed", 1 if _lose_ok else 0])
+	print("[HYBRID_METRICS] drain_first=%.3f drain_second=%.3f refill=%.3f fuel_used=%.3f hazard_damage=%.3f ramp=%s refill_ok=%s fuel_ok=%s hazard_ok=%s lose=%s restart_ok=%s timer_win=%s" % [_drain_first, _drain_second, _refill_amount, _fuel_used, _hazard_damage, str(_ramp_ok), str(_refill_ok), str(_fuel_ok), str(_hazard_ok), str(_lose_ok), str(_restart_ok), str(_win_ok)])
+
+func _pass():
+	if not _active: return
+	_active = false; Input.action_release("ui_accept"); _metrics()
+	print("[OBJECTIVE] status=passed template=survive_and_deplete reason=none collected=%d total=7 remaining=%d frames=%d" % [_milestones, maxi(0, 7-_milestones), _frame]); get_tree().quit()
+
+func _fail(reason: String):
+	if not _active: return
+	_active = false; Input.action_release("ui_accept"); _stuck = true; _metrics()
+	print("[OBJECTIVE] status=failed template=survive_and_deplete reason=%s collected=%d total=7 remaining=%d frames=%d" % [reason, _milestones, maxi(0, 7-_milestones), _frame]); get_tree().quit()
+"""
+
 AMBIENCE_GD = """extends Node
 
 func _ready():
@@ -1954,7 +2114,11 @@ TEMPLATE_REQUIREMENTS = {
         "same time."
     ),
     "survive_and_deplete": (
-        "Structure for this game: combine depletion with roaming hazards. A "
+        "Structure for this game: combine depletion with roaming hazards. "
+        "Expose public `resource_max`, `resource`, `drain_rate`, `drain_ramp`, "
+        "`refill_rate`, `fuel_burn`, `hazard_hit_cost`, `hit_cooldown`, "
+        "`time_left`, `zones`, `zone_fuel`, `inside_zones`, and `hazards` "
+        "adapters for deterministic gameplay QA. A "
         "resource drains every frame, and the drain accelerates as time "
         "passes (a ramp variable). Refill zone Area2Ds restore the resource, "
         "but each zone has finite fuel that burns while it is used - when a "
@@ -2563,7 +2727,7 @@ HYBRID_EXAMPLE_USER = (
     "Lose condition: power reaches zero\n"
     "Key item: a glowing charging pad (role: zone_marker)\n"
     "This is level 1 of 1: The Core Floor: a dim reactor hall lit by scattered charging pads\n"
-    "Available image assets: hero_sprite.png, key_item.png, level_0_bg.png\n"
+    "Available image assets: hero_sprite.png, hero_walk.png, key_item.png, level_0_bg.png\n"
 )
 
 HYBRID_EXAMPLE_RESPONSE = """```gdscript
@@ -2579,19 +2743,21 @@ var hazard_speed = 140.0
 var hazard_hit_cost = 15.0
 var hit_cooldown_time = 1.2
 var survival_time = 60.0
+var resource_max = 100.0
 
-var power = 100.0
+var resource = resource_max
 var time_left = survival_time
 var elapsed = 0.0
 var hit_cooldown = 0.0
 var state = "title"
 var player: Area2D
+var player_sprite: Sprite2D
 var status_label: Label
-var zones = []
+var zones: Array[Area2D] = []
 var zone_fuel = []
 var zone_sprites = []
 var inside_zones = []
-var hazards = []
+var hazards: Array[Area2D] = []
 var hazard_dirs = []
 
 func _ready():
@@ -2604,7 +2770,7 @@ func _ready():
 
     player = Area2D.new()
     player.position = Vector2(512, 300)
-    var player_sprite = Sprite2D.new()
+    player_sprite = Sprite2D.new()
     player_sprite.texture = load("res://assets/hero_sprite.png")
     player.add_child(player_sprite)
     var player_shape = CollisionShape2D.new()
@@ -2614,6 +2780,7 @@ func _ready():
     player.add_child(player_shape)
     player.area_entered.connect(_on_player_touched)
     add_child(player)
+    Anim.set_poses(player_sprite, load("res://assets/hero_sprite.png"), load("res://assets/hero_walk.png"))
 
     var zone_positions = [Vector2(160, 420), Vector2(512, 470), Vector2(870, 400)]
     for i in zone_positions.size():
@@ -2683,7 +2850,7 @@ func _on_player_touched(area: Area2D):
     if state != "playing" or hit_cooldown > 0.0:
         return
     if area in hazards:
-        power -= hazard_hit_cost
+        resource -= hazard_hit_cost
         hit_cooldown = hit_cooldown_time
         player.modulate = Color(1.0, 0.45, 0.45)
         Sfx.play("hit")
@@ -2719,12 +2886,12 @@ func _process(delta):
                 zone_sprites[i].modulate = Color(0.35, 0.35, 0.45)
 
     if refilling:
-        power += refill_rate * delta
+        resource += refill_rate * delta
     else:
-        power -= (drain_rate + elapsed * drain_ramp) * delta
-    power = clamp(power, 0.0, 100.0)
+        resource -= (drain_rate + elapsed * drain_ramp) * delta
+    resource = clamp(resource, 0.0, resource_max)
 
-    if power <= 0.0:
+    if resource <= 0.0:
         state = "over"
         Sfx.play("lose")
         status_label.text = "Systems dark. The reactor wins...  Press Enter to restart"
@@ -2755,14 +2922,16 @@ func _process(delta):
         velocity.y += 1.0
     if Input.is_action_pressed("ui_up"):
         velocity.y -= 1.0
-    player.position += velocity.normalized() * speed * delta
+    var direction = velocity.normalized()
+    player.position += direction * speed * delta
     player.position = player.position.clamp(Vector2.ZERO, Vector2(1024, 576))
+    Anim.walk(player_sprite, direction.length() > 0.0, direction.x)
 
     var pads_left = 0
     for f in zone_fuel:
         if f > 0.0:
             pads_left += 1
-    status_label.text = "Power: %d%%   Time: %ds   Pads: %d" % [int(power), int(ceil(time_left)), pads_left]
+    status_label.text = "Power: %d%%   Time: %ds   Pads: %d" % [int(resource), int(ceil(time_left)), pads_left]
 ```"""
 
 MAZE_EXAMPLE_USER = (
@@ -3542,6 +3711,7 @@ def coder(state: GraphState) -> GraphState:
     (project_dir / "switch_probe.gd").write_text(SWITCH_PROBE_GD, encoding="utf-8")
     (project_dir / "survival_probe.gd").write_text(SURVIVAL_PROBE_GD, encoding="utf-8")
     (project_dir / "depletion_probe.gd").write_text(DEPLETION_PROBE_GD, encoding="utf-8")
+    (project_dir / "hybrid_probe.gd").write_text(HYBRID_PROBE_GD, encoding="utf-8")
     beats = [lvl.get("outro_beat", "") for lvl in levels]
     (project_dir / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
     (project_dir / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")

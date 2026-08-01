@@ -2,6 +2,21 @@
 
 
 TEMPLATE_CONTRACTS = {
+    "survive_and_deplete": [
+        ("the stable player handle required by objective QA", r"var\s+player(?:\s*:\s*Area2D)?\b"),
+        ("the stable refill-zone array required by objective QA", r"var\s+zones(?:\s*:\s*Array(?:\[Area2D\])?)?\b"),
+        ("the stable hazard array required by objective QA", r"var\s+hazards(?:\s*:\s*Array(?:\[Area2D\])?)?\b"),
+        ("the current zone-fuel array required by objective QA", r"var\s+zone_fuel\b"),
+        ("the refill-overlap array required by objective QA", r"var\s+inside_zones\b"),
+        ("the resource maximum required by objective QA", r"var\s+resource_max\b"),
+        ("the current resource required by objective QA", r"var\s+resource\b"),
+        ("the drain rate and ramp required by objective QA", r"var\s+drain_ramp\b"),
+        ("the refill and fuel-burn rates required by objective QA", r"var\s+fuel_burn\b"),
+        ("the hazard hit cost required by objective QA", r"var\s+hazard_hit_cost\b"),
+        ("the hit cooldown required by objective QA", r"var\s+hit_cooldown\b"),
+        ("the survival timer required by objective QA", r"var\s+time_left\b"),
+        ("the title/playing/won/over state required by objective QA", r"var\s+state\b"),
+    ],
     "depletion": [
         (
             "the stable player handle required by objective QA (`var player: Area2D`)",

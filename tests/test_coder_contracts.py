@@ -3,6 +3,8 @@ import re
 from saga.agents.coder import (
     DEPLETION_EXAMPLE_RESPONSE,
     DEPLETION_PROBE_GD,
+    HYBRID_EXAMPLE_RESPONSE,
+    HYBRID_PROBE_GD,
     ORDERED_SWITCHES_EXAMPLE_RESPONSE,
     PROJECT_GODOT_TEMPLATE,
     SURVIVAL_PROBE_GD,
@@ -80,3 +82,12 @@ def test_depletion_example_satisfies_qa_contract_and_installs_probe():
     assert "resource_did_not_drain" in DEPLETION_PROBE_GD
     assert "resource_did_not_refill" in DEPLETION_PROBE_GD
     assert 'Input.action_press("ui_accept")' in DEPLETION_PROBE_GD
+
+
+def test_hybrid_example_satisfies_qa_contract_and_installs_probe():
+    script = extract_gdscript(HYBRID_EXAMPLE_RESPONSE)
+    missing = [d for d, pattern in TEMPLATE_CONTRACTS["survive_and_deplete"] if not re.search(pattern, script)]
+    assert missing == []
+    assert 'HybridProbe="*res://hybrid_probe.gd"' in PROJECT_GODOT_TEMPLATE
+    assert "drain_ramp_not_observed" in HYBRID_PROBE_GD
+    assert "hazard_did_not_damage" in HYBRID_PROBE_GD

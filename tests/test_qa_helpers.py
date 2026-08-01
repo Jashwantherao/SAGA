@@ -52,6 +52,16 @@ def _depletion_metrics(
     )
 
 
+def _hybrid_metrics(**overrides):
+    values = dict(drain_first=2.5, drain_second=2.6, refill=0.4, fuel_used=0.3,
+                  hazard_damage=15.0, ramp="true", refill_ok="true", fuel_ok="true",
+                  hazard_ok="true", lose="true", restart_ok="true", timer_win="true")
+    values.update(overrides)
+    return ("[HYBRID_METRICS] drain_first={drain_first} drain_second={drain_second} refill={refill} "
+            "fuel_used={fuel_used} hazard_damage={hazard_damage} ramp={ramp} refill_ok={refill_ok} "
+            "fuel_ok={fuel_ok} hazard_ok={hazard_ok} lose={lose} restart_ok={restart_ok} timer_win={timer_win}\n").format(**values)
+
+
 def test_find_errors_deduplicates_and_keeps_location():
     output = """
 SCRIPT ERROR: Invalid call
@@ -544,6 +554,25 @@ def test_depletion_missing_resource_metrics_blocks_shipping(monkeypatch):
 
     assert blocked is True
     assert "no resource metrics" in errors[0]
+
+
+def test_hybrid_probe_verifies_every_combined_milestone(monkeypatch):
+    output = (_objective_metrics(seconds=6, progress=7, restart="passed", deaths=1)
+              + _hybrid_metrics()
+              + "[OBJECTIVE] status=passed template=survive_and_deplete reason=none collected=7 total=7 remaining=0 frames=360")
+    monkeypatch.setattr("saga.agents.qa_agent._run", lambda *a, **k: subprocess.CompletedProcess(a, 0, output, ""))
+    result, errors, blocked = _run_objective_probe("project", "scene", "survive_and_deplete")
+    assert errors == [] and blocked is False
+    assert result["drain_second"] > result["drain_first"]
+    assert result["fuel_used"] > 0 and result["hazard_damage"] > 0
+    assert result["completion_score"] == 100
+
+
+def test_hybrid_missing_metrics_blocks_shipping(monkeypatch):
+    output = _objective_metrics(seconds=6, progress=7, restart="passed", deaths=1) + "[OBJECTIVE] status=passed template=survive_and_deplete reason=none collected=7 total=7 remaining=0 frames=360"
+    monkeypatch.setattr("saga.agents.qa_agent._run", lambda *a, **k: subprocess.CompletedProcess(a, 0, output, ""))
+    _result, errors, blocked = _run_objective_probe("project", "scene", "survive_and_deplete")
+    assert blocked is True and "no hybrid metrics" in errors[0]
 
 
 def test_missing_objective_verdict_blocks_shipping(monkeypatch):
