@@ -7,6 +7,8 @@ from saga.agents.coder import (
     DEPLETION_PROBE_GD,
     HYBRID_EXAMPLE_RESPONSE,
     HYBRID_PROBE_GD,
+    HERD_EXAMPLE_RESPONSE,
+    HERD_PROBE_GD,
     OBJECTIVE_PROBE_GD,
     ORDERED_SWITCHES_EXAMPLE_RESPONSE,
     PROJECT_GODOT_TEMPLATE,
@@ -110,3 +112,20 @@ def test_capture_example_satisfies_qa_contract_and_installs_probe():
     assert "contest_did_not_decay" in CAPTURE_PROBE_GD
     assert "ownership_did_not_reset" in CAPTURE_PROBE_GD
     assert "all_owned_did_not_win" in CAPTURE_PROBE_GD
+
+
+def test_herd_example_satisfies_qa_contract_and_installs_probe():
+    script = extract_gdscript(HERD_EXAMPLE_RESPONSE)
+    missing = [
+        description
+        for description, pattern in TEMPLATE_CONTRACTS["herd_to_goal"]
+        if not re.search(pattern, script)
+    ]
+
+    assert missing == []
+    assert 'HerdProbe="*res://herd_probe.gd"' in PROJECT_GODOT_TEMPLATE
+    assert '"herd_to_goal"' in OBJECTIVE_PROBE_GD
+    assert "creature_moved_outside_panic_radius" in HERD_PROBE_GD
+    assert "creature_did_not_flee_toward_goal" in HERD_PROBE_GD
+    assert "settled_creature_moved" in HERD_PROBE_GD
+    assert "all_settled_did_not_win" in HERD_PROBE_GD

@@ -59,6 +59,7 @@ SurvivalProbe="*res://survival_probe.gd"
 DepletionProbe="*res://depletion_probe.gd"
 HybridProbe="*res://hybrid_probe.gd"
 CaptureProbe="*res://capture_probe.gd"
+HerdProbe="*res://herd_probe.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -539,7 +540,7 @@ func _ready() -> void:
 	for argument in arguments:
 		if argument.begins_with("--objective-template="):
 			_template = argument.trim_prefix("--objective-template=")
-	_active = _active and _template not in ["ordered_switches", "survive_hazards", "depletion", "survive_and_deplete", "capture_zones"]
+	_active = _active and _template not in ["ordered_switches", "survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal"]
 	if _active:
 		process_priority = 600
 
@@ -2007,6 +2008,178 @@ func _fail(reason: String):
 	print("[OBJECTIVE] status=failed template=capture_zones reason=%s collected=%d total=4 remaining=%d frames=%d" % [reason, _milestones, maxi(0, 4 - _milestones), _frame]); get_tree().quit()
 """
 
+HERD_PROBE_GD = """extends Node
+
+const MAX_FRAMES := 3600
+const TARGET_TIMEOUT := 720
+const STILL_FRAMES := 30
+var _active := false
+var _frame := 0
+var _root: Node
+var _player: Area2D
+var _goal: Area2D
+var _creatures: Array[Area2D] = []
+var _safe_spot := Vector2(32, 32)
+var _phase := "initialize"
+var _phase_frame := 0
+var _baseline_position := Vector2.ZERO
+var _settled_position := Vector2.ZERO
+var _start_goal_distance := 0.0
+var _still_drift := 0.0
+var _flee_distance := 0.0
+var _goal_gain := 0.0
+var _target_creature := 0
+var _still_ok := false
+var _flee_ok := false
+var _settle_ok := false
+var _persistent_ok := false
+var _win_ok := false
+var _milestones := 0
+var _last_progress := 0
+var _max_stall := 0
+var _stuck := false
+
+func _ready():
+	var template := ""
+	for argument in OS.get_cmdline_user_args():
+		if argument.begins_with("--objective-template="):
+			template = argument.trim_prefix("--objective-template=")
+	_active = "--objective-probe" in OS.get_cmdline_user_args() and template == "herd_to_goal"
+	if _active: process_priority = 660
+
+func _has(object: Object, name: String) -> bool:
+	for property in object.get_property_list():
+		if str(property.get("name", "")) == name: return true
+	return false
+
+func _root_value(name: String, fallback = null):
+	return _root.get(name) if _root != null and _has(_root, name) else fallback
+
+func _is_settled(index: int) -> bool:
+	var values = _root_value("creature_settled", [])
+	return bool(values[index]) if index >= 0 and index < values.size() else false
+
+func _choose_safe_spot() -> Vector2:
+	var best := Vector2(32, 32)
+	var best_distance := -1.0
+	for candidate in [Vector2(32, 32), Vector2(992, 32), Vector2(32, 544), Vector2(992, 544)]:
+		var distance: float = candidate.distance_to(_creatures[0].global_position)
+		if distance > best_distance: best = candidate; best_distance = distance
+	return best
+
+func _initialize_root() -> bool:
+	_root = get_tree().current_scene
+	if _root == null: return false
+	for name in ["player", "creatures", "creature_settled", "goal", "panic_radius", "goal_radius", "speed", "flee_speed", "state"]:
+		if not _has(_root, name): _fail("missing_herd_interface"); return false
+	var player = _root_value("player")
+	var goal = _root_value("goal")
+	var creatures = _root_value("creatures", [])
+	var settled = _root_value("creature_settled", [])
+	if not (player is Area2D) or not (goal is Area2D) or typeof(creatures) != TYPE_ARRAY:
+		_fail("invalid_herd_nodes"); return false
+	if creatures.is_empty() or settled.size() != creatures.size(): _fail("invalid_herd_arrays"); return false
+	_player = player; _goal = goal; _creatures = []
+	for creature in creatures:
+		if not (creature is Area2D): _fail("invalid_herd_creature"); return false
+		_creatures.append(creature)
+	for value in settled:
+		if bool(value): _fail("dirty_herd_settlement"); return false
+	var panic := float(_root_value("panic_radius", 0.0))
+	var goal_radius := float(_root_value("goal_radius", 0.0))
+	var player_speed := float(_root_value("speed", 0.0))
+	var flee_speed := float(_root_value("flee_speed", 0.0))
+	if panic <= 0.0 or goal_radius <= 0.0 or flee_speed <= 0.0 or player_speed <= 0.0 or flee_speed >= player_speed * 0.6:
+		_fail("invalid_herd_balance"); return false
+	if str(_root_value("state", "unknown")) != "playing": _fail("dirty_herd_state"); return false
+	_safe_spot = _choose_safe_spot()
+	if _safe_spot.distance_to(_creatures[0].global_position) <= panic + 10.0: _fail("no_calm_approach_space"); return false
+	_player.global_position = _safe_spot; _begin("settle")
+	return true
+
+func _mark():
+	_milestones += 1
+	_max_stall = maxi(_max_stall, _frame - _last_progress)
+	_last_progress = _frame
+
+func _begin(name: String):
+	_phase = name; _phase_frame = _frame
+
+func _place_behind(index: int):
+	var creature := _creatures[index]
+	var toward_goal := creature.global_position.direction_to(_goal.global_position)
+	if toward_goal.length_squared() < 0.01: toward_goal = Vector2.RIGHT
+	var follow_distance := minf(float(_root_value("panic_radius", 100.0)) * 0.45, 45.0)
+	_player.global_position = creature.global_position - toward_goal * follow_distance
+
+func _physics_process(_delta):
+	if not _active: return
+	_frame += 1; _max_stall = maxi(_max_stall, _frame - _last_progress)
+	if _frame >= MAX_FRAMES: _fail("timeout"); return
+	if _root == null:
+		if not _initialize_root(): return
+	if get_tree().current_scene != _root: _fail("unexpected_scene_change"); return
+	if _phase == "settle":
+		_player.global_position = _safe_spot
+		if _frame - _phase_frame >= 5:
+			_baseline_position = _creatures[0].global_position; _begin("still")
+	elif _phase == "still":
+		_player.global_position = _safe_spot
+		_still_drift = _baseline_position.distance_to(_creatures[0].global_position)
+		if _frame - _phase_frame >= STILL_FRAMES:
+			if _still_drift > 0.5: _fail("creature_moved_outside_panic_radius"); return
+			_still_ok = true; _mark(); _baseline_position = _creatures[0].global_position
+			_start_goal_distance = _baseline_position.distance_to(_goal.global_position); _begin("flee")
+	elif _phase == "flee":
+		_place_behind(0)
+		_flee_distance = _baseline_position.distance_to(_creatures[0].global_position)
+		_goal_gain = _start_goal_distance - _creatures[0].global_position.distance_to(_goal.global_position)
+		if _flee_distance > 2.0 and _goal_gain > 1.0:
+			_flee_ok = true; _mark(); _begin("settle_first")
+		elif _frame - _phase_frame > TARGET_TIMEOUT: _fail("creature_did_not_flee_toward_goal")
+	elif _phase == "settle_first":
+		_place_behind(0)
+		_goal_gain = _start_goal_distance - _creatures[0].global_position.distance_to(_goal.global_position)
+		if _is_settled(0):
+			_settle_ok = true; _mark(); _settled_position = _creatures[0].global_position; _begin("persistent")
+		elif _frame - _phase_frame > TARGET_TIMEOUT: _fail("creature_did_not_settle")
+	elif _phase == "persistent":
+		_player.global_position = _settled_position + Vector2(10, 0)
+		if not _is_settled(0): _fail("settled_flag_was_lost"); return
+		if _frame - _phase_frame >= STILL_FRAMES:
+			if _settled_position.distance_to(_creatures[0].global_position) > 0.5: _fail("settled_creature_moved"); return
+			_persistent_ok = true; _mark(); _target_creature = 1; _begin("herd_all")
+	elif _phase == "herd_all":
+		while _target_creature < _creatures.size() and _is_settled(_target_creature):
+			_target_creature += 1; _phase_frame = _frame
+		if _target_creature < _creatures.size():
+			_place_behind(_target_creature)
+			if _frame - _phase_frame > TARGET_TIMEOUT: _fail("remaining_creature_did_not_settle")
+		else:
+			_player.global_position = _safe_spot; _begin("win")
+	elif _phase == "win":
+		if str(_root_value("state", "unknown")) == "won":
+			_win_ok = true; _mark(); _pass()
+		elif _frame - _phase_frame > TARGET_TIMEOUT: _fail("all_settled_did_not_win")
+
+func _metrics():
+	var settled_count := 0
+	for value in _root_value("creature_settled", []):
+		if bool(value): settled_count += 1
+	print("[OBJECTIVE_METRICS] completion_seconds=%.3f progress_events=%d max_stall_frames=%d stuck=%s restart=not_applicable deaths=0" % [float(_frame) / 60.0, _milestones, _max_stall, str(_stuck)])
+	print("[HERD_METRICS] still_drift=%.3f flee_distance=%.3f goal_gain=%.3f settled=%d creatures=%d still=%s flee=%s settle=%s persistent=%s win=%s" % [_still_drift, _flee_distance, _goal_gain, settled_count, _creatures.size(), str(_still_ok), str(_flee_ok), str(_settle_ok), str(_persistent_ok), str(_win_ok)])
+
+func _pass():
+	if not _active: return
+	_active = false; _metrics()
+	print("[OBJECTIVE] status=passed template=herd_to_goal reason=none collected=%d total=5 remaining=%d frames=%d" % [_milestones, maxi(0, 5 - _milestones), _frame]); get_tree().quit()
+
+func _fail(reason: String):
+	if not _active: return
+	_active = false; _stuck = true; _metrics()
+	print("[OBJECTIVE] status=failed template=herd_to_goal reason=%s collected=%d total=5 remaining=%d frames=%d" % [reason, _milestones, maxi(0, 5 - _milestones), _frame]); get_tree().quit()
+"""
+
 AMBIENCE_GD = """extends Node
 
 func _ready():
@@ -2253,15 +2426,18 @@ TEMPLATE_REQUIREMENTS = {
         "moment the resource hits zero."
     ),
     "herd_to_goal": (
-        "Structure for this game: several creature Area2Ds and one goal zone "
-        "Area2D at a fixed position. Herding only works if the creatures hold "
+        "Structure for this game: expose public `player`, `creatures`, "
+        "`creature_settled`, `goal`, `panic_radius`, `goal_radius`, `speed`, "
+        "`flee_speed`, and `state` adapters for deterministic gameplay QA. "
+        "Use several creature Area2Ds and one goal Area2D at a fixed position. "
+        "Herding only works if the creatures hold "
         "still while you line up a push, so a creature flees ONLY when the "
         "player is within a named panic_radius variable - beyond that radius "
         "it does not move at all. Inside the radius it moves along the vector "
         "pointing away from the player, scaled by speed and delta, clamped "
         "inside the viewport; flee speed must stay well below the player's "
         "speed or it can never be caught up with. A creature whose position "
-        "is inside the goal zone SETTLES permanently: set a settled flag, "
+        "is inside goal_radius SETTLES permanently: set creature_settled[index], "
         "stop it fleeing for the rest of the level no matter how close the "
         "player comes, and play the pickup sound once. Track the settled "
         "count in the label and win when every creature has settled - never "
@@ -2883,6 +3059,150 @@ func _process(delta):
     Anim.walk(player_sprite, direction.length() > 0.0, direction.x)
 
     status_label.text = "Light: %d%%   Time: %ds" % [int(resource), int(ceil(time_left))]
+```"""
+
+HERD_EXAMPLE_USER = (
+    "Title: Mooncalf Crossing\n"
+    "Genre: herding puzzle\n"
+    "Mechanic template: herd_to_goal\n"
+    "Core mechanics: approach skittish creatures from behind and guide them into a sanctuary\n"
+    "Story premise: A keeper must guide three mooncalves home before dawn.\n"
+    "Win condition: settle every creature in the sanctuary\n"
+    "Lose condition: none\n"
+    "Key item: a glowing mooncalf (role: creature)\n"
+    "This is level 1 of 1: Quiet Pasture: an open field with a sanctuary at the east edge\n"
+    "Available image assets: hero_sprite.png, hero_walk.png, key_item.png, level_0_bg.png\n"
+)
+
+HERD_EXAMPLE_RESPONSE = """```gdscript
+extends Node2D
+
+@export var speed = 240.0
+var flee_speed = 90.0
+var panic_radius = 115.0
+var goal_radius = 72.0
+var state = "title"
+var player: Area2D
+var player_sprite: Sprite2D
+var creatures: Array[Area2D] = []
+var creature_sprites: Array[Sprite2D] = []
+var creature_settled: Array[bool] = []
+var goal: Area2D
+var status_label: Label
+
+func _ready():
+    var background = Sprite2D.new()
+    background.texture = load("res://assets/level_0_bg.png")
+    background.centered = false
+    background.position = Vector2.ZERO
+    background.z_index = -1
+    add_child(background)
+
+    player = Area2D.new()
+    player.position = Vector2(100, 300)
+    player_sprite = Sprite2D.new()
+    player_sprite.texture = load("res://assets/hero_sprite.png")
+    player.add_child(player_sprite)
+    var player_shape = CollisionShape2D.new()
+    var player_circle = CircleShape2D.new()
+    player_circle.radius = 20.0
+    player_shape.shape = player_circle
+    player.add_child(player_shape)
+    add_child(player)
+    Anim.set_poses(player_sprite, load("res://assets/hero_sprite.png"), load("res://assets/hero_walk.png"))
+
+    goal = Area2D.new()
+    goal.position = Vector2(850, 300)
+    var goal_sprite = Sprite2D.new()
+    goal_sprite.texture = load("res://assets/key_item.png")
+    goal_sprite.modulate = Color(0.35, 1.0, 0.5, 0.65)
+    goal_sprite.scale = Vector2(1.35, 1.35)
+    goal.add_child(goal_sprite)
+    var goal_shape = CollisionShape2D.new()
+    var goal_circle = CircleShape2D.new()
+    goal_circle.radius = goal_radius
+    goal_shape.shape = goal_circle
+    goal.add_child(goal_shape)
+    add_child(goal)
+
+    for pos in [Vector2(280, 170), Vector2(380, 330), Vector2(250, 470)]:
+        _spawn_creature(pos)
+
+    var canvas = CanvasLayer.new()
+    add_child(canvas)
+    status_label = Label.new()
+    status_label.position = Vector2(20, 20)
+    canvas.add_child(status_label)
+
+    if DisplayServer.get_name() == "headless" or Game.level > 0:
+        state = "playing"
+
+func _spawn_creature(pos: Vector2):
+    var creature = Area2D.new()
+    creature.position = pos
+    var sprite = Sprite2D.new()
+    sprite.texture = load("res://assets/key_item.png")
+    sprite.scale = Vector2(0.65, 0.65)
+    creature.add_child(sprite)
+    var shape = CollisionShape2D.new()
+    var circle = CircleShape2D.new()
+    circle.radius = 22.0
+    shape.shape = circle
+    creature.add_child(shape)
+    add_child(creature)
+    creatures.append(creature)
+    creature_sprites.append(sprite)
+    creature_settled.append(false)
+
+func _process(delta):
+    if state == "title":
+        status_label.text = "MOONCALF CROSSING - Press Enter to start"
+        if Input.is_action_just_pressed("ui_accept"):
+            state = "playing"
+        return
+    if state == "won":
+        return
+
+    for i in creatures.size():
+        var creature = creatures[i]
+        if creature_settled[i]:
+            Anim.hover(creature_sprites[i])
+            continue
+        if creature.global_position.distance_to(goal.global_position) <= goal_radius:
+            creature_settled[i] = true
+            creature_sprites[i].modulate = Color(0.55, 1.0, 0.65)
+            Sfx.play("pickup")
+            continue
+        if creature.global_position.distance_to(player.global_position) < panic_radius:
+            var flee_direction = (creature.global_position - player.global_position).normalized()
+            creature.position += flee_direction * flee_speed * delta
+            creature.position = creature.position.clamp(Vector2(24, 24), Vector2(1000, 552))
+            Anim.walk(creature_sprites[i], true, flee_direction.x)
+        else:
+            Anim.walk(creature_sprites[i], false, 0.0)
+
+    var settled_count = creature_settled.count(true)
+    if settled_count == creatures.size():
+        state = "won"
+        Sfx.play("win")
+        status_label.text = "The herd is safe - level complete!"
+        Game.level_complete()
+        return
+
+    var velocity = Vector2.ZERO
+    if Input.is_action_pressed("ui_right"):
+        velocity.x += 1.0
+    if Input.is_action_pressed("ui_left"):
+        velocity.x -= 1.0
+    if Input.is_action_pressed("ui_down"):
+        velocity.y += 1.0
+    if Input.is_action_pressed("ui_up"):
+        velocity.y -= 1.0
+    var direction = velocity.normalized()
+    player.position += direction * speed * delta
+    player.position = player.position.clamp(Vector2.ZERO, Vector2(1024, 576))
+    Anim.walk(player_sprite, direction.length() > 0.0, direction.x)
+    status_label.text = "Mooncalves safe: %d/%d" % [settled_count, creatures.size()]
 ```"""
 
 CAPTURE_EXAMPLE_USER = (
@@ -3746,6 +4066,7 @@ FEW_SHOTS = {
     ),
     "survive_hazards": (SURVIVE_EXAMPLE_USER, SURVIVE_EXAMPLE_RESPONSE),
     "depletion": (DEPLETION_EXAMPLE_USER, DEPLETION_EXAMPLE_RESPONSE),
+    "herd_to_goal": (HERD_EXAMPLE_USER, HERD_EXAMPLE_RESPONSE),
     "capture_zones": (CAPTURE_EXAMPLE_USER, CAPTURE_EXAMPLE_RESPONSE),
     "survive_and_deplete": (HYBRID_EXAMPLE_USER, HYBRID_EXAMPLE_RESPONSE),
     "maze_chase": (MAZE_EXAMPLE_USER, MAZE_EXAMPLE_RESPONSE),
@@ -3781,13 +4102,13 @@ INTENSITY_LEVERS = {
 
 # Structurally nearest authored example per template. Ordered switches has a
 # dedicated example because autonomous QA requires stable sequence/reset
-# adapters; herd_to_goal shares survive_hazards' per-frame moving-Area2D
-# vector math. Capture zones has a dedicated example for its QA ownership adapters.
+# adapters. Herd and capture zones now have dedicated examples for their
+# permanent-settlement and ownership QA interfaces.
 TEMPLATE_TO_FEW_SHOT = {
     "collect": "collect",
     "ordered_switches": "ordered_switches",
     "survive_hazards": "survive_hazards",
-    "herd_to_goal": "survive_hazards",
+    "herd_to_goal": "herd_to_goal",
     "depletion": "depletion",
     "capture_zones": "capture_zones",
     "survive_and_deplete": "survive_and_deplete",
@@ -4072,6 +4393,7 @@ def coder(state: GraphState) -> GraphState:
     (project_dir / "depletion_probe.gd").write_text(DEPLETION_PROBE_GD, encoding="utf-8")
     (project_dir / "hybrid_probe.gd").write_text(HYBRID_PROBE_GD, encoding="utf-8")
     (project_dir / "capture_probe.gd").write_text(CAPTURE_PROBE_GD, encoding="utf-8")
+    (project_dir / "herd_probe.gd").write_text(HERD_PROBE_GD, encoding="utf-8")
     beats = [lvl.get("outro_beat", "") for lvl in levels]
     (project_dir / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
     (project_dir / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")

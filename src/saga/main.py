@@ -182,7 +182,7 @@ def main() -> None:
     ship_status, ship_ready = assess_ship_status(result)
     level_results = result.get("level_results") or []
     manifest = {
-        "manifest_version": 10,
+        "manifest_version": 11,
         "run_dir": result["run_dir"],
         "idea": args.idea,
         "title": (result.get("design_doc") or {}).get("title"),

@@ -98,12 +98,18 @@ CAPTURE_METRICS = re.compile(
     r"owned=(\d+) zones=(\d+) capture=(true|false) contest=(true|false) "
     r"ownership=(true|false) win=(true|false)"
 )
+HERD_METRICS = re.compile(
+    r"\[HERD_METRICS\] still_drift=([\d.]+) flee_distance=([\d.]+) "
+    r"goal_gain=([\d.]+) settled=(\d+) creatures=(\d+) still=(true|false) "
+    r"flee=(true|false) settle=(true|false) persistent=(true|false) win=(true|false)"
+)
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
 MAX_SURVIVAL_SOLVER_SECONDS = 30.0
 MAX_DEPLETION_SOLVER_SECONDS = 30.0
 MAX_HYBRID_SOLVER_SECONDS = 30.0
 MAX_CAPTURE_SOLVER_SECONDS = 30.0
+MAX_HERD_SOLVER_SECONDS = 60.0
 
 # Godot's forced `--quit-after` shutdown doesn't wait for the AudioServer to
 # release an autoplaying stream, so any project with BGM prints these on exit
@@ -116,7 +122,7 @@ BENIGN_EXIT_NOISE = re.compile(
 )
 
 HARNESS_SCRIPT_ERROR = re.compile(
-    r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|capture_probe|screenshot|sfx|music|ambience|anim|game|"
+    r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|capture_probe|herd_probe|screenshot|sfx|music|ambience|anim|game|"
     r"interlude|victory)\.gd",
     re.IGNORECASE,
 )
@@ -352,6 +358,25 @@ def _run_objective_probe(
                 "zone_win_verified": won == "true",
             }
         )
+    if template == "herd_to_goal":
+        herd = HERD_METRICS.search(output)
+        if not herd:
+            return result, ["QA infrastructure: herd probe produced no herd metrics."], True
+        drift, flee_distance, goal_gain, settled, creatures, still, flee, settle, persistent, won = herd.groups()
+        result.update(
+            {
+                "still_drift": float(drift),
+                "flee_distance": float(flee_distance),
+                "goal_gain": float(goal_gain),
+                "settled_creatures": int(settled),
+                "total_creatures": int(creatures),
+                "still_verified": still == "true",
+                "flee_verified": flee == "true",
+                "settle_verified": settle == "true",
+                "persistent_settle_verified": persistent == "true",
+                "herd_win_verified": won == "true",
+            }
+        )
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -390,7 +415,12 @@ def _run_objective_probe(
                             "Player presence must capture zones, patroller contest must decay "
                             "them and reset ownership, and owning every zone must win."
                             if template == "capture_zones"
-                            else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                            else (
+                                "Creatures must stay calm outside panic range, flee toward the "
+                                "goal when approached, settle permanently, and all settled must win."
+                                if template == "herd_to_goal"
+                                else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                            )
                         )
                     )
                 )
@@ -415,7 +445,7 @@ def _run_objective_probe(
     if int(remaining) != 0 or int(collected) < int(total):
         item = (
             "milestones"
-            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones"}
+            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal"}
             else "objective items"
         )
         return (
@@ -595,6 +625,19 @@ def _run_objective_probe(
             return result, ["Objective completion: capture terminal accounting is inconsistent."], True
         if result["completion_seconds"] > MAX_CAPTURE_SOLVER_SECONDS:
             return result, [f"Objective completion: capture solver exceeded {MAX_CAPTURE_SOLVER_SECONDS:.0f}s QA ceiling."], False
+    if template == "herd_to_goal":
+        flags = ["still_verified", "flee_verified", "settle_verified", "persistent_settle_verified", "herd_win_verified"]
+        missing = [name for name in flags if not result[name]]
+        if missing:
+            return result, ["Objective completion: herd pass omitted: " + ", ".join(missing) + "."], True
+        if result["still_drift"] > 0.5 or result["flee_distance"] <= 0 or result["goal_gain"] <= 0:
+            return result, ["Objective completion: herd movement measurements are inconsistent."], True
+        if result["total_creatures"] < 1 or result["settled_creatures"] != result["total_creatures"]:
+            return result, ["Objective completion: herd settlement accounting is inconsistent."], True
+        if result["restart_status"] != "not_applicable" or result["deaths"] != 0:
+            return result, ["Objective completion: herd terminal accounting is inconsistent."], True
+        if result["completion_seconds"] > MAX_HERD_SOLVER_SECONDS:
+            return result, [f"Objective completion: herd solver exceeded {MAX_HERD_SOLVER_SECONDS:.0f}s QA ceiling."], False
     return result, [], False
 
 
@@ -1191,6 +1234,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "depletion",
         "survive_and_deplete",
         "capture_zones",
+        "herd_to_goal",
         "dot_maze",
         "maze_chase",
     }:
@@ -1215,6 +1259,7 @@ def qa_agent(state: GraphState) -> GraphState:
             "depletion": "resource milestones",
             "survive_and_deplete": "hybrid milestones",
             "capture_zones": "capture milestones",
+            "herd_to_goal": "herding milestones",
         }.get(template, "pickups")
         print(
             f"[QA Agent] Objective: completed {objective_result['collected']}/"

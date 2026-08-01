@@ -156,14 +156,15 @@ TEMPLATE_CONTRACTS = {
         ),
     ],
     "herd_to_goal": [
-        (
-            "the panic radius that keeps creatures still until the player is close",
-            r"panic_radius",
-        ),
-        (
-            "the settled flag that stops a creature fleeing once it reaches the goal",
-            r"settled",
-        ),
+        ("the stable player handle required by objective QA", r"var\s+player(?:\s*:\s*Area2D)?\b"),
+        ("the stable creature array required by objective QA", r"var\s+creatures(?:\s*:\s*Array(?:\[Area2D\])?)?\b"),
+        ("the permanent settled-state array required by objective QA", r"var\s+creature_settled\b"),
+        ("the stable goal-zone handle required by objective QA", r"var\s+goal(?:\s*:\s*Area2D)?\b"),
+        ("the panic radius that keeps distant creatures still", r"var\s+panic_radius\b"),
+        ("the public goal radius required by objective QA", r"var\s+goal_radius\b"),
+        ("the player speed required for herding balance", r"var\s+speed\b"),
+        ("the creature flee speed required for objective QA", r"var\s+flee_speed\b"),
+        ("the title/playing/won state required by objective QA", r"var\s+state\b"),
     ],
 }
 

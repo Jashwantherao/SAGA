@@ -81,6 +81,27 @@ def _capture_metrics(**overrides):
     ).format(**values)
 
 
+def _herd_metrics(**overrides):
+    values = dict(
+        still_drift=0.0,
+        flee_distance=3.0,
+        goal_gain=500.0,
+        settled=3,
+        creatures=3,
+        still="true",
+        flee="true",
+        settle="true",
+        persistent="true",
+        win="true",
+    )
+    values.update(overrides)
+    return (
+        "[HERD_METRICS] still_drift={still_drift} flee_distance={flee_distance} "
+        "goal_gain={goal_gain} settled={settled} creatures={creatures} still={still} "
+        "flee={flee} settle={settle} persistent={persistent} win={win}\n"
+    ).format(**values)
+
+
 def test_find_errors_deduplicates_and_keeps_location():
     output = """
 SCRIPT ERROR: Invalid call
@@ -665,6 +686,82 @@ def test_capture_behavior_failure_is_repairable_not_blocked(monkeypatch):
 
     assert blocked is False
     assert "contest_did_not_decay" in errors[0]
+
+
+def test_herd_probe_verifies_still_flee_settle_persistence_and_win(monkeypatch):
+    output = (
+        _objective_metrics(
+            seconds=22, progress=5, restart="not_applicable", deaths=0
+        )
+        + _herd_metrics()
+        + "[OBJECTIVE] status=passed template=herd_to_goal reason=none "
+        "collected=5 total=5 remaining=0 frames=1320"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    result, errors, blocked = _run_objective_probe(
+        "project", "scene", "herd_to_goal"
+    )
+
+    assert errors == [] and blocked is False
+    assert result["still_drift"] == 0
+    assert result["flee_distance"] > 0 and result["goal_gain"] > 0
+    assert result["settled_creatures"] == result["total_creatures"] == 3
+    assert result["completion_score"] == 100
+
+
+def test_herd_missing_metrics_blocks_shipping(monkeypatch):
+    output = _objective_metrics(
+        seconds=22, progress=5, restart="not_applicable", deaths=0
+    ) + (
+        "[OBJECTIVE] status=passed template=herd_to_goal reason=none "
+        "collected=5 total=5 remaining=0 frames=1320"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    _result, errors, blocked = _run_objective_probe(
+        "project", "scene", "herd_to_goal"
+    )
+
+    assert blocked is True
+    assert "no herd metrics" in errors[0]
+
+
+def test_herd_behavior_failure_is_repairable_not_blocked(monkeypatch):
+    output = (
+        _objective_metrics(
+            seconds=12, progress=1, stuck="true", restart="not_applicable", deaths=0
+        )
+        + _herd_metrics(
+            flee_distance=0.0,
+            goal_gain=0.0,
+            settled=0,
+            still="true",
+            flee="false",
+            settle="false",
+            persistent="false",
+            win="false",
+        )
+        + "[OBJECTIVE] status=failed template=herd_to_goal "
+        "reason=creature_did_not_flee_toward_goal collected=1 total=5 remaining=4 frames=720"
+    )
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+
+    _result, errors, blocked = _run_objective_probe(
+        "project", "scene", "herd_to_goal"
+    )
+
+    assert blocked is False
+    assert "creature_did_not_flee_toward_goal" in errors[0]
 
 
 def test_missing_objective_verdict_blocks_shipping(monkeypatch):
