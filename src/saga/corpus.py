@@ -17,11 +17,18 @@ swallowed with a warning.
 """
 
 import json
+import os
 import time
 from pathlib import Path
 
 DATASET_DIR = Path(__file__).resolve().parent.parent.parent / "datasets"
 CORPUS_PATH = DATASET_DIR / "coder_corpus.jsonl"
+
+
+def _recording_enabled() -> bool:
+    return os.environ.get("SAGA_RECORD_CORPUS", "1").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
 
 
 def record_level(
@@ -36,7 +43,7 @@ def record_level(
     vision_notes: list[str] | None,
 ) -> None:
     """Append one verified (brief -> script) pair. Never raises."""
-    if not prompt or not script:
+    if not _recording_enabled() or not prompt or not script:
         return  # a fix/tune pass has no fresh brief; not a clean training pair
     try:
         doc = design_doc or {}

@@ -1,0 +1,123 @@
+{
+  "id": "coder-quality-pilot-v1",
+  "repetitions": 1,
+  "profiles": [
+    {
+      "id": "ollama-qwen25-14b",
+      "provider": "Ollama",
+      "model": "qwen2.5-coder:14b",
+      "env": {
+        "SAGA_CODER_BACKEND": "ollama",
+        "SAGA_CODER_MODEL": "qwen2.5-coder:14b",
+        "SAGA_DOTMAZE_MODEL": "qwen2.5-coder:14b",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true"
+      }
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "provider": "DeepSeek",
+      "model": "deepseek-v4-pro",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "deepseek-v4-pro",
+        "SAGA_DOTMAZE_MODEL": "deepseek-v4-pro",
+        "SAGA_OPENAI_BASE_URL": "https://api.deepseek.com",
+        "SAGA_OPENAI_KEY_ENV": "DEEPSEEK_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true"
+      }
+    },
+    {
+      "id": "nvidia-glm52",
+      "provider": "NVIDIA NIM",
+      "model": "z-ai/glm-5.2",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "z-ai/glm-5.2",
+        "SAGA_DOTMAZE_MODEL": "z-ai/glm-5.2",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true"
+      }
+    },
+    {
+      "id": "nvidia-laguna-xs21",
+      "provider": "NVIDIA NIM",
+      "model": "poolside/laguna-xs-2.1",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "poolside/laguna-xs-2.1",
+        "SAGA_DOTMAZE_MODEL": "poolside/laguna-xs-2.1",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true"
+      }
+    },
+    {
+      "id": "nvidia-nemotron3-super",
+      "provider": "NVIDIA NIM",
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_DOTMAZE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true"
+      }
+    },
+    {
+      "id": "nvidia-kimi-k26",
+      "provider": "NVIDIA NIM",
+      "model": "moonshotai/kimi-k2.6",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "moonshotai/kimi-k2.6",
+        "SAGA_DOTMAZE_MODEL": "moonshotai/kimi-k2.6",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "signal-orchard",
+      "idea": "Restore a storm-dark orchard by collecting escaped signal seeds.",
+      "levels": 1,
+      "design_doc": "designs/signal_orchard.json",
+      "asset_pack": "../output/runs/20260801-213542-48f6b72b/run.json"
+    },
+    {
+      "id": "ember-reservoir",
+      "idea": "Keep a walking furnace alive while crossing a frozen reservoir.",
+      "levels": 1,
+      "design_doc": "designs/ember_reservoir.json",
+      "asset_pack": "../output/runs/20260801-213542-48f6b72b/run.json"
+    },
+    {
+      "id": "clockwork-catacomb",
+      "idea": "Clear every time shard from a clockwork catacomb while wardens hunt you.",
+      "levels": 1,
+      "design_doc": "designs/clockwork_catacomb.json",
+      "asset_pack": "../output/runs/20260801-213542-48f6b72b/run.json"
+    }
+  ]
+}

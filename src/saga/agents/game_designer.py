@@ -17,6 +17,7 @@ the schema is spelled out in the prompt and _validate() enforces it after
 the fact - which is what that validator was built for.
 """
 
+import copy
 import json
 import re
 
@@ -428,13 +429,21 @@ def _design_local(user_prompt: str, level_count: int | None = None) -> dict:
 def game_designer(state: GraphState) -> GraphState:
     backend = settings.designer_backend
     level_count = state.get("requested_levels")
-    if backend == "claude":
+    supplied = state.get("design_doc")
+    if supplied:
+        design_doc = _normalize(copy.deepcopy(supplied))
+        problems = _validate(design_doc, level_count)
+        if problems:
+            raise ValueError(f"Supplied design doc is invalid: {problems}")
+        backend = "fixed"
+    elif backend == "claude":
         design_doc = _design_claude(state["user_prompt"], level_count)
     elif backend in ("deepseek", "openai", "remote"):
         design_doc = _design_remote(state["user_prompt"], level_count)
     else:
         design_doc = _design_local(state["user_prompt"], level_count)
-    design_doc = _normalize(design_doc)
+    if not supplied:
+        design_doc = _normalize(design_doc)
 
     print(
         f"[Game Designer/{backend}] Produced design doc: {design_doc['title']!r} "

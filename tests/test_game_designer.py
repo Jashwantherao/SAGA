@@ -1,5 +1,5 @@
 from saga.agents.asset_maker import HERO_NATIVE_FACING
-from saga.agents.game_designer import _level_system_prompt, _normalize, _validate
+from saga.agents.game_designer import _level_system_prompt, _normalize, _validate, game_designer
 
 
 def _doc():
@@ -58,3 +58,21 @@ def test_level_override_rejects_wrong_count():
 
 def test_hero_generation_has_an_explicit_native_facing_contract():
     assert "screen-left" in HERO_NATIVE_FACING
+
+
+def test_supplied_design_is_validated_normalized_and_does_not_call_model(monkeypatch):
+    doc = _doc()
+    doc["levels"] = doc["levels"][:1]
+    monkeypatch.setattr(
+        "saga.agents.game_designer._design_local",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("model called")),
+    )
+
+    result = game_designer({
+        "user_prompt": "fixed benchmark",
+        "requested_levels": 1,
+        "design_doc": doc,
+    })
+
+    assert result["design_doc"] is not doc
+    assert result["design_doc"]["extra_sprites"][0]["name"] == "patrol_drone"
