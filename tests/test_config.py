@@ -12,6 +12,7 @@ def test_settings_read_environment_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("SAGA_ARCHITECT_TIMEOUT", "42")
     monkeypatch.setenv("SAGA_INCREMENTAL_BUILD", "true")
     monkeypatch.setenv("SAGA_INCREMENTAL_MAX_SYSTEMS", "4")
+    monkeypatch.setenv("SAGA_INCREMENTAL_MAX_ATTEMPTS", "3")
 
     configured = Settings.from_environment()
 
@@ -25,6 +26,7 @@ def test_settings_read_environment_overrides(monkeypatch, tmp_path):
     assert configured.architect_timeout == 42.0
     assert configured.incremental_build is True
     assert configured.incremental_max_systems == 4
+    assert configured.incremental_max_attempts == 3
 
 
 def test_invalid_numeric_setting_has_a_useful_error(monkeypatch):

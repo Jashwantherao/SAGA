@@ -28,6 +28,7 @@ def _payload(**overrides):
         "stop_gpu_services": False,
         "incremental_build": True,
         "incremental_max_systems": 4,
+        "incremental_max_attempts": 3,
         "deepseek_api_key": "new-secret",
     }
     return studio_settings.StudioSettingsUpdate(**(data | overrides))

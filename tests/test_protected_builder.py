@@ -304,6 +304,109 @@ def test_without_a_probe_the_builder_keeps_its_compile_only_behavior(tmp_path):
     assert "# maze" in active
 
 
+def _escalating_plan():
+    return [
+        {
+            "system_id": "movement",
+            "kind": "movement",
+            "depends_on": [],
+            "recommended_model": "local",
+            "fallback_models": ["laguna", "nemotron"],
+        }
+    ]
+
+
+def _run_escalation(tmp_path, reply_for, max_attempts=2):
+    script = tmp_path / "Level_0.gd"
+    script.write_text("extends Node\n", encoding="utf-8")
+    seen: list[str | None] = []
+
+    def route_chat(_messages, preferred):
+        seen.append(preferred)
+        return reply_for(preferred), preferred
+
+    results = protected_incremental_build(
+        script_file=script,
+        project_dir=tmp_path,
+        scene="res://Level_0.tscn",
+        level_index=0,
+        blueprint={"systems": [_blueprint()["systems"][0]]},
+        build_plan=_escalating_plan(),
+        model="coder",
+        chat=lambda _messages, _model: "```gdscript\nextends Node\n```",
+        route_chat=route_chat,
+        extract_gdscript=lambda text: text.split("```gdscript\n", 1)[1].rsplit("```", 1)[0],
+        candidate_errors=lambda candidate: ["bad candidate"] if "BAD" in candidate else [],
+        promote=_promote,
+        max_attempts=max_attempts,
+    )
+    return results, seen, script.read_text(encoding="utf-8")
+
+
+def test_a_rejected_system_escalates_to_the_next_routed_model(tmp_path):
+    results, seen, active = _run_escalation(
+        tmp_path,
+        lambda preferred: (
+            "```gdscript\nextends Node\nBAD\n```"
+            if preferred == "local"
+            else "```gdscript\nextends Node\n# movement by laguna\n```"
+        ),
+    )
+
+    assert seen == ["local", "laguna"]
+    assert [item["status"] for item in results[1:]] == ["rejected_static", "integrated"]
+    assert [item["attempt"] for item in results[1:]] == [1, 2]
+    assert results[-1]["executed_model"] == "laguna"
+    assert "# movement by laguna" in active
+
+
+def test_escalation_is_bounded_by_max_attempts(tmp_path):
+    results, seen, _ = _run_escalation(
+        tmp_path,
+        lambda _preferred: "```gdscript\nextends Node\nBAD\n```",
+        max_attempts=3,
+    )
+
+    assert seen == ["local", "laguna", "nemotron"]
+    assert [item["status"] for item in results[1:]] == ["rejected_static"] * 3
+
+
+def test_a_later_attempt_is_told_why_its_predecessor_was_rejected(tmp_path):
+    script = tmp_path / "Level_0.gd"
+    script.write_text("extends Node\n", encoding="utf-8")
+    briefs: list[str] = []
+
+    def route_chat(messages, preferred):
+        briefs.append(messages[-1]["content"])
+        if preferred == "local":
+            return "```gdscript\nextends Node\nBAD\n```", preferred
+        return "```gdscript\nextends Node\n# fixed\n```", preferred
+
+    protected_incremental_build(
+        script_file=script,
+        project_dir=tmp_path,
+        scene="res://Level_0.tscn",
+        level_index=0,
+        blueprint={"systems": [_blueprint()["systems"][0]]},
+        build_plan=_escalating_plan(),
+        model="coder",
+        chat=lambda _messages, _model: "```gdscript\nextends Node\n```",
+        route_chat=route_chat,
+        extract_gdscript=lambda text: text.split("```gdscript\n", 1)[1].rsplit("```", 1)[0],
+        candidate_errors=lambda candidate: ["bad candidate"] if "BAD" in candidate else [],
+        promote=_promote,
+    )
+
+    assert "EARLIER ATTEMPTS" not in briefs[0]
+    assert "local was rejected (rejected_static): bad candidate" in briefs[1]
+
+
+def test_a_system_with_no_fallbacks_still_gets_exactly_one_attempt(tmp_path):
+    results, _ = _run_with_probe(tmp_path, None)
+
+    assert [item["attempt"] for item in results[1:]] == [1, 1, 1]
+
+
 def test_qa_evidence_does_not_overclaim_unobserved_hud_behavior():
     active = "extends Node\n"
     base = [

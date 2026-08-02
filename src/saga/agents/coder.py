@@ -4572,6 +4572,7 @@ def coder(state: GraphState) -> GraphState:
             ),
             existing_results=state.get("system_build_results") or [],
             max_systems=settings.incremental_max_systems,
+            max_attempts=settings.incremental_max_attempts,
             probe=_objective_probe_for(project_dir, current_level, template),
         )
 

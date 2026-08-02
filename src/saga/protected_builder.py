@@ -116,6 +116,7 @@ def protected_incremental_build(
     candidate_errors: Callable[[str], list[str]],
     existing_results: list[dict] | None = None,
     max_systems: int = 6,
+    max_attempts: int = 2,
     promote: Callable[..., RepairValidation] = validate_and_promote_repair,
     route_chat: Callable[[list[dict], str | None], tuple[str, str]] | None = None,
     probe: Callable[[], tuple[dict | None, list[str], bool]] | None = None,
@@ -134,7 +135,11 @@ def protected_incremental_build(
     video stack. When the baseline demonstrably completes its objective, a
     candidate that stops completing it is a regression and is rolled back
     here. A baseline that never completed cannot be regressed against, so its
-    passes record the probe verdict without gating on it."""
+    passes record the probe verdict without gating on it.
+
+    max_attempts bounds how many models may try one system: the routed pick
+    first, then the plan's fallbacks, each shown why its predecessors were
+    rejected. Every attempt is its own ledger entry."""
     if route_chat is None:
         route_chat = lambda messages, _preferred: (chat(messages, model), model)  # noqa: E731
     results = _supersede_previous(list(existing_results or []), level_index)
@@ -318,69 +323,91 @@ def protected_incremental_build(
             + "\n".join(f"- {criterion}" for criterion in acceptance)
             + f"\n\nCURRENT COMPLETE SCRIPT:\n```gdscript\n{previous}\n```"
         )
-        started = time.monotonic()
-        executed_model = model
-        try:
-            response, executed_model = route_chat(
-                [
-                    {"role": "system", "content": SPECIALIST_PROMPT},
-                    {"role": "user", "content": specialist_brief},
-                ],
-                step.get("recommended_model"),
-            )
-            candidate = extract_gdscript(response)
-        except Exception as exc:
-            status = "builder_error"
-            errors = [f"{type(exc).__name__}: {exc}"]
-            candidate = previous
-        candidate_hash = script_hash(candidate)
 
-        pass_probe = None
-        pass_probe_status = None
-        if status == "builder_error":
-            pass
-        elif candidate == previous:
-            status = "unchanged"
-        else:
-            errors = candidate_errors(candidate)
-            if errors:
-                status = "rejected_static"
+        # The router's fallbacks exist for exactly this: a model that cannot
+        # satisfy one system is not a reason to abandon that system, and the
+        # next candidate gets to see why its predecessor was rejected. Bounded
+        # so one stubborn system cannot consume the whole build's budget.
+        attempt_models = [step.get("recommended_model"), *(step.get("fallback_models") or [])]
+        attempt_models = list(dict.fromkeys(attempt_models))[:max_attempts]
+        rejected_attempts: list[dict] = []
+
+        for attempt_index, preferred_model in enumerate(attempt_models):
+            started = time.monotonic()
+            status = ""
+            errors = []
+            executed_model = model
+            pass_probe = None
+            pass_probe_status = None
+            brief = specialist_brief
+            if rejected_attempts:
+                history = "\n".join(
+                    f"- {item['executed_model']} was rejected ({item['status']}): "
+                    + "; ".join(item["errors"][:3])
+                    for item in rejected_attempts
+                )
+                brief = (
+                    f"{specialist_brief}\n\nEARLIER ATTEMPTS AT THIS SYSTEM WERE "
+                    f"REJECTED. Do not repeat them:\n{history}"
+                )
+            try:
+                response, executed_model = route_chat(
+                    [
+                        {"role": "system", "content": SPECIALIST_PROMPT},
+                        {"role": "user", "content": brief},
+                    ],
+                    preferred_model,
+                )
+                candidate = extract_gdscript(response)
+            except Exception as exc:
+                status = "builder_error"
+                errors = [f"{type(exc).__name__}: {exc}"]
+                candidate = previous
+            candidate_hash = script_hash(candidate)
+
+            if status == "builder_error":
+                pass
+            elif candidate == previous:
+                status = "unchanged"
             else:
-                validation = promote(
-                    script_file,
-                    candidate,
-                    project_dir=project_dir,
-                    scene=scene,
-                )
-                errors = validation.errors
-                status = "integrated" if validation.passed else "rejected_gate"
+                errors = candidate_errors(candidate)
+                if errors:
+                    status = "rejected_static"
+                else:
+                    validation = promote(
+                        script_file,
+                        candidate,
+                        project_dir=project_dir,
+                        scene=scene,
+                    )
+                    errors = validation.errors
+                    status = "integrated" if validation.passed else "rejected_gate"
 
-            # Compiling is not behaving. A candidate that starts cleanly but
-            # stops completing an objective the baseline completed is rolled
-            # back here, where the retry is cheap, rather than at full QA.
-            if status == "integrated" and probe:
-                pass_probe, probe_errors, probe_blocked = probe()
-                pass_probe_status = (
-                    "blocked"
-                    if probe_blocked
-                    else ("passed" if not probe_errors else "failed")
-                )
-                # "blocked" means the probe itself could not produce a verdict.
-                # A broken harness is not a generated-code defect, so it never
-                # discards a candidate that compiled - the run's own ship gate
-                # already refuses to call an unverifiable build shippable.
-                if pass_probe_status == "failed" and baseline_probe_status == "passed":
-                    script_file.write_text(previous, encoding="utf-8")
-                    status = "rejected_probe"
-                    pass_probe_status = "regression"
-                    errors = probe_errors or [
-                        f"{system_id} stopped completing the objective the baseline completed"
-                    ]
+                # Compiling is not behaving. A candidate that starts cleanly
+                # but stops completing an objective the baseline completed is
+                # rolled back here, where the retry is cheap, not at full QA.
+                if status == "integrated" and probe:
+                    pass_probe, probe_errors, probe_blocked = probe()
+                    pass_probe_status = (
+                        "blocked"
+                        if probe_blocked
+                        else ("passed" if not probe_errors else "failed")
+                    )
+                    # "blocked" means the probe itself could not produce a
+                    # verdict. A broken harness is not a generated-code defect,
+                    # so it never discards a candidate that compiled - the
+                    # run's own ship gate already refuses to call an
+                    # unverifiable build shippable.
+                    if pass_probe_status == "failed" and baseline_probe_status == "passed":
+                        script_file.write_text(previous, encoding="utf-8")
+                        status = "rejected_probe"
+                        pass_probe_status = "regression"
+                        errors = probe_errors or [
+                            f"{system_id} stopped completing the objective the baseline completed"
+                        ]
 
-        active_hash = script_hash(script_file.read_text(encoding="utf-8"))
-        outcomes[system_id] = status
-        results.append(
-            _entry(
+            active_hash = script_hash(script_file.read_text(encoding="utf-8"))
+            entry = _entry(
                 level_index=level_index,
                 system_id=system_id,
                 kind=kind,
@@ -396,13 +423,19 @@ def protected_incremental_build(
                 probe_status=pass_probe_status,
                 probe=_probe_summary(pass_probe),
             )
-        )
-        probe_note = f", probe={pass_probe_status}" if pass_probe_status else ""
-        print(
-            f"[Protected Builder] level {level_index + 1} {system_id}: {status} "
-            f"(recommended={step.get('recommended_model')}, executed={executed_model}"
-            f"{probe_note})"
-        )
+            entry["attempt"] = attempt_index + 1
+            results.append(entry)
+            probe_note = f", probe={pass_probe_status}" if pass_probe_status else ""
+            print(
+                f"[Protected Builder] level {level_index + 1} {system_id} "
+                f"attempt {attempt_index + 1}/{len(attempt_models)}: {status} "
+                f"(recommended={preferred_model}, executed={executed_model}{probe_note})"
+            )
+            if status in accepted:
+                break
+            rejected_attempts.append(entry)
+
+        outcomes[system_id] = status
     return results
 
 

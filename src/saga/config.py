@@ -71,6 +71,7 @@ class Settings:
     coder_agentic: bool
     incremental_build: bool
     incremental_max_systems: int
+    incremental_max_attempts: int
     stop_gpu_services: bool
     agent_max_turns: int
 
@@ -140,6 +141,7 @@ class Settings:
             coder_agentic=_bool_env("SAGA_CODER_AGENTIC"),
             incremental_build=_bool_env("SAGA_INCREMENTAL_BUILD"),
             incremental_max_systems=_int_env("SAGA_INCREMENTAL_MAX_SYSTEMS", 6),
+            incremental_max_attempts=_int_env("SAGA_INCREMENTAL_MAX_ATTEMPTS", 2),
             stop_gpu_services=_bool_env("SAGA_STOP_GPU_SERVICES"),
             agent_max_turns=_int_env("SAGA_AGENT_MAX_TURNS", 14),
             vision_backend=_env("SAGA_VISION_BACKEND", "local").lower(),

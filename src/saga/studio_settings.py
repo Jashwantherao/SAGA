@@ -42,6 +42,7 @@ ENV_FIELDS = {
     "stop_gpu_services": "SAGA_STOP_GPU_SERVICES",
     "incremental_build": "SAGA_INCREMENTAL_BUILD",
     "incremental_max_systems": "SAGA_INCREMENTAL_MAX_SYSTEMS",
+    "incremental_max_attempts": "SAGA_INCREMENTAL_MAX_ATTEMPTS",
 }
 SECRET_FIELDS = {
     "deepseek_api_key": "DEEPSEEK_API_KEY",
@@ -74,6 +75,7 @@ DEFAULTS = {
     "stop_gpu_services": "0",
     "incremental_build": "0",
     "incremental_max_systems": "6",
+    "incremental_max_attempts": "2",
 }
 MODEL_PRESETS = {
     "local": [
@@ -121,6 +123,7 @@ class StudioSettingsUpdate(BaseModel):
     stop_gpu_services: bool = False
     incremental_build: bool = False
     incremental_max_systems: int = Field(default=6, ge=1, le=12)
+    incremental_max_attempts: int = Field(default=2, ge=1, le=4)
     deepseek_api_key: str | None = Field(default=None, max_length=500)
     nvidia_api_key: str | None = Field(default=None, max_length=500)
     anthropic_api_key: str | None = Field(default=None, max_length=500)
@@ -156,7 +159,7 @@ def read_studio_settings() -> dict[str, Any]:
         raw = values.get(env_name, DEFAULTS[field])
         if field in {"video_qa_enabled", "stop_gpu_services", "incremental_build"}:
             result[field] = raw.lower() in {"1", "true", "yes", "on"}
-        elif field == "incremental_max_systems":
+        elif field in {"incremental_max_systems", "incremental_max_attempts"}:
             result[field] = int(raw)
         else:
             result[field] = raw
