@@ -3,11 +3,13 @@ import subprocess
 from saga.agents.qa_agent import (
     _capture_gameplay_video,
     _find_errors,
+    _reconcile_visual_evidence,
     _record_attempt,
     _run_dot_maze_objective_probe,
     _run_maze_objective_probe,
     _run_objective_probe,
     _validate_video_verdict,
+    _vision_review,
     _video_review,
     qa_agent,
 )
@@ -861,6 +863,58 @@ def test_video_review_gates_reversed_facing(monkeypatch):
     assert advisory == []
     assert error is None
     assert "faces opposite" in gating[0]
+
+
+def test_video_visibility_overrules_false_missing_hero_screenshot():
+    screenshot = ["Visual defect: the hero sprite is not visible on screen."]
+
+    gating, notes = _reconcile_visual_evidence(
+        screenshot, [], _video_verdict(player_visible=True)
+    )
+
+    assert gating == []
+    assert "contradicted" in notes[0]
+    assert "video shows the player" in notes[0]
+
+
+def test_video_readability_overrules_false_clipped_hud_screenshot():
+    screenshot = ["Visual defect: on-screen text is clipped or hidden."]
+
+    gating, notes = _reconcile_visual_evidence(
+        screenshot, [], _video_verdict(hud_readable=True)
+    )
+
+    assert gating == []
+    assert "readable HUD" in notes[0]
+
+
+def test_uncontradicted_screenshot_defect_remains_gating():
+    screenshot = ["Visual defect: the background does not fill the screen."]
+
+    gating, notes = _reconcile_visual_evidence(
+        screenshot, ["Vision (advisory): simple art"], _video_verdict()
+    )
+
+    assert gating == screenshot
+    assert notes == screenshot + ["Vision (advisory): simple art"]
+
+
+def test_free_form_broken_visual_claim_is_advisory(monkeypatch):
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._vision_raw",
+        lambda *_args: {
+            "hero_visible": True,
+            "background_fills_screen": True,
+            "text_clipped": False,
+            "placeholder_art": None,
+            "looks_broken": "the composition feels unfinished",
+        },
+    )
+
+    gating, advisory = _vision_review("frame.png", {})
+
+    assert gating == []
+    assert advisory == ["Vision (advisory): the composition feels unfinished"]
 
 
 def test_video_verdict_requires_complete_structured_evidence():

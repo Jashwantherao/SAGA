@@ -98,6 +98,11 @@ def main() -> None:
         help="Use a fixed design-doc JSON file (for reproducible replay and benchmarking)",
     )
     parser.add_argument(
+        "--blueprint",
+        type=Path,
+        help="Use a reviewed Game Blueprint JSON contract instead of invoking the architect",
+    )
+    parser.add_argument(
         "--asset-pack",
         type=Path,
         help="Reuse sprite_paths and bgm_path from an existing SAGA run manifest",
@@ -132,6 +137,15 @@ def main() -> None:
         if not isinstance(fixed_design, dict):
             parser.error("--design-doc must contain a JSON object")
 
+    fixed_blueprint = None
+    if args.blueprint:
+        try:
+            from saga.blueprint import load_blueprint
+
+            fixed_blueprint = load_blueprint(args.blueprint)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            parser.error(f"cannot read --blueprint: {exc}")
+
     frozen_assets = {}
     if args.asset_pack:
         try:
@@ -152,6 +166,7 @@ def main() -> None:
                 "user_prompt": args.idea,
                 "requested_levels": args.levels,
                 "design_doc": fixed_design,
+                "blueprint": fixed_blueprint,
                 "sprite_paths": frozen_assets.get("sprite_paths"),
                 "bgm_path": frozen_assets.get("bgm_path"),
             }
@@ -169,6 +184,16 @@ def main() -> None:
     output_path.write_text(json.dumps(design_doc, indent=2), encoding="utf-8")
     print(f"\nRun workspace: {result['run_dir']}", file=sys.stderr)
     print(f"Design doc: {output_path}", file=sys.stderr)
+    blueprint_path = Path(result["run_dir"]) / "blueprint.json"
+    if result.get("blueprint"):
+        blueprint_path.write_text(
+            json.dumps(result["blueprint"], indent=2), encoding="utf-8"
+        )
+        print(
+            f"Game Blueprint: {blueprint_path} "
+            f"({result.get('blueprint_status')}, model={result.get('blueprint_model')})",
+            file=sys.stderr,
+        )
 
     for path in result.get("sprite_paths") or []:
         print(f"Sprite/background: {path}", file=sys.stderr)
@@ -209,15 +234,26 @@ def main() -> None:
     # Playtest revisions mutate the same state, so write the final design again
     # and keep a compact machine-readable manifest beside every isolated run.
     output_path.write_text(json.dumps(result["design_doc"], indent=2), encoding="utf-8")
+    if result.get("blueprint"):
+        blueprint_path.write_text(
+            json.dumps(result["blueprint"], indent=2), encoding="utf-8"
+        )
     # Playtest may rebuild selected levels, so calculate the release decision
     # again from the updated durable ledger.
     ship_status, ship_ready = assess_ship_status(result)
     level_results = result.get("level_results") or []
     manifest = {
-        "manifest_version": 11,
+        "manifest_version": 13,
         "run_dir": result["run_dir"],
         "idea": args.idea,
         "title": (result.get("design_doc") or {}).get("title"),
+        "blueprint_version": (result.get("blueprint") or {}).get("blueprint_version"),
+        "blueprint_path": str(blueprint_path) if result.get("blueprint") else None,
+        "blueprint_status": result.get("blueprint_status"),
+        "blueprint_model": result.get("blueprint_model"),
+        "blueprint_errors": result.get("blueprint_errors") or [],
+        "blueprint_build_plan": result.get("blueprint_build_plan") or [],
+        "system_build_results": result.get("system_build_results") or [],
         "status": ship_status,
         "ship_ready": ship_ready,
         "current_level": result.get("current_level"),

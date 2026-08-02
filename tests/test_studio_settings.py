@@ -9,6 +9,9 @@ def _payload(**overrides):
         "director_backend": "local",
         "director_model": "",
         "director_remote_model": "director-remote",
+        "architect_backend": "nvidia",
+        "architect_model": "nvidia/nemotron-3-super-120b-a12b",
+        "architect_base_url": "https://integrate.api.nvidia.com/v1/",
         "coder_backend": "deepseek",
         "coder_model": "coder-local",
         "coder_remote_model": "coder-remote",
@@ -23,6 +26,8 @@ def _payload(**overrides):
         "openai_base_url": "https://api.example.test/v1/",
         "vision_base_url": "https://vision.example.test/v1/",
         "stop_gpu_services": False,
+        "incremental_build": True,
+        "incremental_max_systems": 4,
         "deepseek_api_key": "new-secret",
     }
     return studio_settings.StudioSettingsUpdate(**(data | overrides))
@@ -49,3 +54,4 @@ def test_model_urls_are_normalized():
     update = _payload()
     assert update.openai_base_url == "https://api.example.test/v1"
     assert update.vision_base_url == "https://vision.example.test/v1"
+    assert update.architect_base_url == "https://integrate.api.nvidia.com/v1"

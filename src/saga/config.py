@@ -58,11 +58,19 @@ class Settings:
     director_model: str | None
     director_remote_model: str
 
+    architect_backend: str
+    architect_model: str
+    architect_base_url: str
+    architect_key_env: str
+    architect_timeout: float
+
     coder_backend: str
     coder_model: str
     coder_remote_model: str
     dotmaze_model: str
     coder_agentic: bool
+    incremental_build: bool
+    incremental_max_systems: int
     stop_gpu_services: bool
     agent_max_turns: int
 
@@ -114,11 +122,24 @@ class Settings:
             director_backend=_env("SAGA_DIRECTOR_BACKEND", "local").lower(),
             director_model=_optional_env("SAGA_DIRECTOR_MODEL"),
             director_remote_model=_env("SAGA_DIRECTOR_REMOTE_MODEL", "deepseek-v4-pro"),
+            architect_backend=_env("SAGA_ARCHITECT_BACKEND", "nvidia").lower(),
+            architect_model=_env(
+                "SAGA_ARCHITECT_MODEL",
+                "nvidia/nemotron-3-super-120b-a12b",
+            ),
+            architect_base_url=_env(
+                "SAGA_ARCHITECT_BASE_URL",
+                "https://integrate.api.nvidia.com/v1",
+            ).rstrip("/"),
+            architect_key_env=_env("SAGA_ARCHITECT_KEY_ENV", "NVIDIA_API_KEY"),
+            architect_timeout=_float_env("SAGA_ARCHITECT_TIMEOUT", 180.0),
             coder_backend=_env("SAGA_CODER_BACKEND", "ollama").lower(),
             coder_model=coder_model,
             coder_remote_model=coder_remote_model,
             dotmaze_model=_env("SAGA_DOTMAZE_MODEL", "batiai/qwen3.6-35b:q3"),
             coder_agentic=_bool_env("SAGA_CODER_AGENTIC"),
+            incremental_build=_bool_env("SAGA_INCREMENTAL_BUILD"),
+            incremental_max_systems=_int_env("SAGA_INCREMENTAL_MAX_SYSTEMS", 6),
             stop_gpu_services=_bool_env("SAGA_STOP_GPU_SERVICES"),
             agent_max_turns=_int_env("SAGA_AGENT_MAX_TURNS", 14),
             vision_backend=_env("SAGA_VISION_BACKEND", "local").lower(),

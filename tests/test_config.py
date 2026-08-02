@@ -8,6 +8,10 @@ def test_settings_read_environment_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("SAGA_OUTPUT_ROOT", str(tmp_path))
     monkeypatch.setenv("SAGA_VIDEO_QA", "true")
     monkeypatch.setenv("SAGA_VIDEO_MODEL", "test-video-model")
+    monkeypatch.setenv("SAGA_ARCHITECT_MODEL", "test-architect")
+    monkeypatch.setenv("SAGA_ARCHITECT_TIMEOUT", "42")
+    monkeypatch.setenv("SAGA_INCREMENTAL_BUILD", "true")
+    monkeypatch.setenv("SAGA_INCREMENTAL_MAX_SYSTEMS", "4")
 
     configured = Settings.from_environment()
 
@@ -17,6 +21,10 @@ def test_settings_read_environment_overrides(monkeypatch, tmp_path):
     assert configured.output_root == str(tmp_path)
     assert configured.video_qa_enabled is True
     assert configured.video_model == "test-video-model"
+    assert configured.architect_model == "test-architect"
+    assert configured.architect_timeout == 42.0
+    assert configured.incremental_build is True
+    assert configured.incremental_max_systems == 4
 
 
 def test_invalid_numeric_setting_has_a_useful_error(monkeypatch):

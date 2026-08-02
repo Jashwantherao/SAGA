@@ -1,6 +1,6 @@
 # SAGA model-quality benchmark
 
-This benchmark compares coder models while holding the design document, game case, local repair director, asset pipeline, deterministic QA, and NVIDIA video reviewer constant. It reports truthful ship rate, first-pass completion, objective performance, repair behavior, advisories, wall time, and code-size diagnostics.
+This benchmark compares coder models while holding the design document, game case, deterministic Systems Architect contract, local repair director, asset pipeline, deterministic QA, and NVIDIA video reviewer constant. It reports truthful ship rate, first-pass completion, objective performance, repair behavior, advisories, wall time, and code-size diagnostics. Coder suites default the architect to `deterministic` so an extra Nemotron call cannot change the input under test; full-studio suites may opt into a model architect explicitly.
 
 No API secret is stored in a suite or result. Profiles contain only the name of the environment variable that already holds a key.
 
@@ -48,3 +48,26 @@ After the pilot proves provider compatibility and sensible costs:
 ```
 
 Do not compare runs created with different suite files as though they were the same experiment. Add repetitions only after the first matrix works, because a single sample measures model luck as well as model quality.
+
+## Incremental-build A/B
+
+`incremental_ab.json` measures whether the protected incremental builder earns
+its extra cost (one specialist call plus one Godot gate run per system). It
+pairs the two pilot leaders with `SAGA_INCREMENTAL_BUILD` off and on, holding
+everything else constant:
+
+```powershell
+.\.venv\Scripts\python.exe -m saga.benchmark benchmarks\incremental_ab.json `
+  --max-runs 12 `
+  --max-minutes 400 `
+  --timeout-minutes 40 `
+  --output-dir output\benchmarks\incremental-ab-v1
+```
+
+Compare the paired profiles' quality, retries, and median time; the per-system
+ledger for each job is in its manifest's `system_build_results`.
+
+Comparability note: the Systems Architect contract is now appended to every
+Coder prompt, so runs made after that change are not comparable with
+`coder-pilot-v1` results even on the same cases. Rerun under a new suite id
+(or a fresh output dir) instead of extending old result files.

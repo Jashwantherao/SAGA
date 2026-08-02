@@ -51,7 +51,44 @@ def chat(messages: list[dict], model: str) -> str:
 
         # Reasoning models spend much of the budget before emitting the script.
         return hosted_chat(messages, model=model, max_tokens=32000)
+    return _local_chat(messages, model)
 
+
+def routed_chat(messages: list[dict], preferred_model: str | None, fallback_model: str) -> tuple[str, str]:
+    """One specialist completion from the routed model, with the configured
+    coder model as the fallback. Returns (text, executed_model) so the build
+    ledger records which model actually did the work - a routed model that is
+    unknown, missing its key, or failing mid-call degrades to the fallback
+    instead of failing the pass."""
+    from saga.router import resolve_provider
+
+    spec = resolve_provider(preferred_model) if preferred_model != fallback_model else None
+    if spec:
+        try:
+            if spec["backend"] == "ollama":
+                return _local_chat(messages, preferred_model), preferred_model
+            from saga.llm import chat as hosted_chat
+
+            return (
+                hosted_chat(
+                    messages,
+                    model=preferred_model,
+                    max_tokens=32000,
+                    base_url=spec["base_url"],
+                    key_env=spec["key_env"],
+                    timeout=300.0,
+                ),
+                preferred_model,
+            )
+        except Exception as exc:
+            print(
+                f"[Coder] Routed specialist {preferred_model!r} failed "
+                f"({type(exc).__name__}: {exc}); falling back to {fallback_model!r}"
+            )
+    return chat(messages, fallback_model), fallback_model
+
+
+def _local_chat(messages: list[dict], model: str) -> str:
     last_error = None
     for attempt, backoff in enumerate([0, 20, 40, 60]):
         if backoff:

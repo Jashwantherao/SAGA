@@ -28,6 +28,7 @@ from saga.agents.coder_backend import (
     chat as _chat,
     extract_gdscript as _extract_gdscript,
     is_remote as _is_remote,
+    routed_chat as _routed_chat,
     stop_gpu_services as _stop_gpu_services,
 )
 from saga.agents.coder_contracts import (
@@ -36,6 +37,7 @@ from saga.agents.coder_contracts import (
     UNIVERSAL_CONTRACTS,
     animation_call_violations,
 )
+from saga.config import settings
 from saga.repair_gate import recover_interrupted_repair, validate_and_promote_repair
 from saga.safety import assert_safe_gdscript, scan_generated_gdscript
 from saga.sfx import write_default_sfx
@@ -4199,6 +4201,35 @@ def _rejected_repair_result(
     }
 
 
+def _blueprint_contract(state: GraphState) -> str:
+    """Compact architect handoff appended to fresh, repair and tune prompts."""
+    blueprint = state.get("blueprint") or {}
+    if not blueprint:
+        return ""
+    systems = {item.get("id"): item for item in blueprint.get("systems") or []}
+    ordered_ids = [
+        step.get("system_id") for step in state.get("blueprint_build_plan") or []
+    ]
+    if not ordered_ids:
+        ordered_ids = list(systems)
+
+    lines = [
+        "SYSTEMS ARCHITECT CONTRACT (mandatory; preserve it during repairs):",
+        "Core loop: " + " -> ".join(blueprint.get("core_loop") or []),
+    ]
+    for system_id in ordered_ids:
+        system = systems.get(system_id)
+        if not system:
+            continue
+        deps = ", ".join(system.get("depends_on") or []) or "none"
+        lines.append(
+            f"- {system_id} [{system.get('kind')}], after: {deps}: "
+            f"{system.get('description', '')}"
+        )
+        lines.extend(f"  ACCEPT: {criterion}" for criterion in system.get("acceptance") or [])
+    return "\n".join(lines) + "\n"
+
+
 def coder(state: GraphState) -> GraphState:
     design_doc = state["design_doc"]
     sprite_paths = state.get("sprite_paths") or []
@@ -4261,6 +4292,7 @@ def coder(state: GraphState) -> GraphState:
     # cannot recover from an invented-filename error (it has no way to know
     # which files exist) and tends to flail into fallback code instead.
     assets_line = f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
+    blueprint_contract = _blueprint_contract(state)
 
     if qa_errors:
         previous_script = script_file.read_text(encoding="utf-8")
@@ -4268,6 +4300,7 @@ def coder(state: GraphState) -> GraphState:
         user_prompt = (
             f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
+            f"{blueprint_contract}"
             f"Godot reported these errors:\n{errors_desc}\n"
         )
         system_prompt = FIX_SYSTEM_PROMPT
@@ -4277,6 +4310,7 @@ def coder(state: GraphState) -> GraphState:
         user_prompt = (
             f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
+            f"{blueprint_contract}"
             f"Apply these tuning changes:\n{notes_desc}\n"
         )
         system_prompt = TUNE_SYSTEM_PROMPT
@@ -4309,6 +4343,7 @@ def coder(state: GraphState) -> GraphState:
             f"This is level {current_level + 1} of {total_levels}: "
             f"{level['name']}: {level['description']}\n"
             f"{difficulty_line}"
+            f"{blueprint_contract}"
             f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
         )
         requirements = TEMPLATE_REQUIREMENTS.get(template, TEMPLATE_REQUIREMENTS["collect"])
@@ -4480,6 +4515,34 @@ def coder(state: GraphState) -> GraphState:
     else:
         script_file.write_text(gdscript, encoding="utf-8")
 
+    system_build_results = None
+    if not is_repair and settings.incremental_build and state.get("blueprint"):
+        from saga.protected_builder import protected_incremental_build
+
+        print(
+            f"[Protected Builder] Quality mode enabled; refining up to "
+            f"{settings.incremental_max_systems} blueprint systems"
+        )
+        system_build_results = protected_incremental_build(
+            script_file=script_file,
+            project_dir=project_dir,
+            scene=f"res://Level_{current_level}.tscn",
+            level_index=current_level,
+            blueprint=state["blueprint"],
+            build_plan=state.get("blueprint_build_plan") or [],
+            model=model,
+            chat=_chat,
+            route_chat=lambda messages, preferred: _routed_chat(messages, preferred, model),
+            extract_gdscript=_extract_gdscript,
+            candidate_errors=lambda candidate: _final_candidate_errors(
+                candidate,
+                template=template,
+                valid_assets=valid_assets,
+            ),
+            existing_results=state.get("system_build_results") or [],
+            max_systems=settings.incremental_max_systems,
+        )
+
     action = "Fixed" if qa_errors else ("Tuned" if tune_notes else "Generated")
     print(
         f"[Coder] {action} level {current_level + 1}/{total_levels} "
@@ -4500,4 +4563,6 @@ def coder(state: GraphState) -> GraphState:
         # brief survives in state - a level that passes after two repairs
         # is still a valid (brief -> working script) training pair.
         result["coder_prompt"] = user_prompt
+    if system_build_results is not None:
+        result["system_build_results"] = system_build_results
     return result

@@ -106,6 +106,8 @@ def studio_director(state: GraphState) -> GraphState:
         # Benchmark and replay runs may provide an already-authored design.
         # Preserve it so Game Designer can validate and pass it through.
         "design_doc": state.get("design_doc"),
+        # A replay may also supply a reviewed systems contract.
+        "blueprint": state.get("blueprint"),
         "director_action": None,
     }
 

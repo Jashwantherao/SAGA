@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { artifactUrl, formatBytes, formatDate, getJSON, statusLabel } from '../api'
-import type { DesignDoc, LevelAttempt, LevelResult, RunFiles, SagaRun, VideoQaResult } from '../types'
+import type { DesignDoc, LevelAttempt, LevelResult, RunFiles, SagaRun, SystemBuildResult, VideoQaResult } from '../types'
 import Icon from './Icon'
 
 type Tab = 'qa' | 'assets' | 'design'
@@ -184,11 +184,13 @@ function AttemptCard({ attempt, runId }: { attempt: LevelAttempt; runId: string 
 
 function QaLedger({ run, levels }: { run: SagaRun; levels: LevelResult[] }) {
   const [expanded, setExpanded] = useState<number | null>(levels.length === 1 ? 0 : null)
-  if (!levels.length) {
+  const systemBuilds = run.system_build_results || []
+  if (!levels.length && !systemBuilds.length) {
     return <div className="empty-row">No completed level ledger yet — this run may still be in progress or was cancelled early.</div>
   }
   return (
     <div className="ledger detail-ledger">
+      {systemBuilds.length > 0 && <SystemBuildLedger results={systemBuilds} />}
       {levels.map((level, index) => {
         const attempts = level.attempts || []
         const open = expanded === index
@@ -220,6 +222,38 @@ function QaLedger({ run, levels }: { run: SagaRun; levels: LevelResult[] }) {
         && !levels.some((level) => level.attempts?.some((attempt) => attempt.video_qa_result))
         && <VideoQaCard result={run.video_qa_result} />}
     </div>
+  )
+}
+
+function SystemBuildLedger({ results }: { results: SystemBuildResult[] }) {
+  const active = results.filter((result) => result.status !== 'superseded')
+  const confirmed = active.filter((result) => result.qa_confirmed).length
+  const clean = active.every((result) => !result.status.startsWith('rejected') && !result.status.startsWith('blocked'))
+  return (
+    <article className="open">
+      <div className="ledger-row">
+        <span className={`ledger-marker ${clean ? 'passed' : ''}`}>B</span>
+        <div>
+          <h3>Protected system builds</h3>
+          <p>{active.length} active records - {confirmed} behaviorally confirmed</p>
+        </div>
+      </div>
+      <div className="ledger-detail">
+        {active.map((result, index) => (
+          <div className="attempt" key={`${result.level_index}-${result.system_id}-${index}`}>
+            <div className="attempt-head">
+              <span className={`ledger-marker small ${result.qa_confirmed ? 'passed' : ''}`}>{result.qa_confirmed ? 'OK' : 'i'}</span>
+              <strong>Level {result.level_index + 1} - {result.system_id}</strong>
+              <span className="attempt-stage">{statusLabel(result.status)} - {result.kind}</span>
+              {result.executed_model && <span className="chip mono">{result.executed_model}</span>}
+            </div>
+            {result.recommended_model && result.recommended_model !== result.executed_model && <small className="note">Recommended specialist: {result.recommended_model}</small>}
+            {(result.qa_evidence || []).map((evidence) => <small className="note" key={evidence}>{evidence}</small>)}
+            {(result.errors || []).map((error) => <small className="note bad" key={error}>{error}</small>)}
+          </div>
+        ))}
+      </div>
+    </article>
   )
 }
 

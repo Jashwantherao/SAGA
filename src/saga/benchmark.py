@@ -25,6 +25,9 @@ SAFE_ENV_KEYS = {
     "SAGA_DIRECTOR_BACKEND",
     "SAGA_DIRECTOR_MODEL",
     "SAGA_VIDEO_QA",
+    "SAGA_ARCHITECT_BACKEND",
+    "SAGA_INCREMENTAL_BUILD",
+    "SAGA_INCREMENTAL_MAX_SYSTEMS",
 }
 
 
@@ -160,6 +163,10 @@ def run_job(job: Job, suite_path: Path, root: Path, timeout_minutes: float) -> d
     output_root = job_dir / "saga_output"
     env = os.environ.copy()
     env.update({key: str(value) for key, value in job.profile.get("env", {}).items()})
+    # Coder benchmarks must isolate the coder. A model-generated architect
+    # contract would add a shared Nemotron call and change the input under
+    # test; full-studio suites can opt in explicitly per profile.
+    env.setdefault("SAGA_ARCHITECT_BACKEND", "deterministic")
     env["SAGA_OUTPUT_ROOT"] = str(output_root)
     env["SAGA_RECORD_CORPUS"] = "0"
     design = (suite_path.parent / job.case["design_doc"]).resolve()
