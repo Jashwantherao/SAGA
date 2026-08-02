@@ -92,6 +92,16 @@ def main() -> None:
         metavar="N",
         help="Generate exactly N levels (1-5); default is an authored 3-5 level arc",
     )
+    parser.add_argument(
+        "--design-doc",
+        type=Path,
+        help="Use a fixed design-doc JSON file (for reproducible replay and benchmarking)",
+    )
+    parser.add_argument(
+        "--asset-pack",
+        type=Path,
+        help="Reuse sprite_paths and bgm_path from an existing SAGA run manifest",
+    )
     args = parser.parse_args()
 
     from saga.doctor import print_report, required_checks_pass, run_checks
@@ -113,6 +123,26 @@ def main() -> None:
             )
             raise SystemExit(2)
 
+    fixed_design = None
+    if args.design_doc:
+        try:
+            fixed_design = json.loads(args.design_doc.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"cannot read --design-doc: {exc}")
+        if not isinstance(fixed_design, dict):
+            parser.error("--design-doc must contain a JSON object")
+
+    frozen_assets = {}
+    if args.asset_pack:
+        try:
+            frozen_assets = json.loads(args.asset_pack.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"cannot read --asset-pack: {exc}")
+        sprite_paths = frozen_assets.get("sprite_paths") or []
+        missing = [path for path in [*sprite_paths, frozen_assets.get("bgm_path")] if path and not Path(path).is_file()]
+        if not sprite_paths or missing:
+            parser.error(f"--asset-pack has no sprites or missing files: {missing}")
+
     try:
         from saga.graph import build_graph
 
@@ -121,7 +151,9 @@ def main() -> None:
             {
                 "user_prompt": args.idea,
                 "requested_levels": args.levels,
-                "design_doc": None,
+                "design_doc": fixed_design,
+                "sprite_paths": frozen_assets.get("sprite_paths"),
+                "bgm_path": frozen_assets.get("bgm_path"),
             }
         )
     except Exception as exc:

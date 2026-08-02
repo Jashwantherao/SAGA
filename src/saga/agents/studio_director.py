@@ -103,7 +103,9 @@ def studio_director(state: GraphState) -> GraphState:
     return {
         "user_prompt": state["user_prompt"],
         "run_dir": run_dir,
-        "design_doc": None,
+        # Benchmark and replay runs may provide an already-authored design.
+        # Preserve it so Game Designer can validate and pass it through.
+        "design_doc": state.get("design_doc"),
         "director_action": None,
     }
 

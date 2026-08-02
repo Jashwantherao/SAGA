@@ -1,0 +1,26 @@
+{
+  "title": "Clockwork Catacomb",
+  "genre": "dense maze chase arcade",
+  "mechanic_template": "dot_maze",
+  "hero_description": "a brilliant turquoise wind-up mouse with a gold key and white porcelain face",
+  "core_mechanics": ["held arrow-key corridor movement", "consume every time shard", "avoid patrolling and hunting wardens", "power bells temporarily reverse the chase"],
+  "story_premise": "A clockwork mouse steals back the seconds entombed by an immortal mechanical court.",
+  "theme_thread": "Every collected shard returns a stolen second while the court's wardens defend frozen time.",
+  "win_condition": "Consume every time shard in the maze.",
+  "lose_condition": "Lose all lives by touching active wardens.",
+  "levels": [{
+    "name": "The Minute Vault",
+    "description": "a dense black-brass labyrinth with turquoise channels, ivory clock faces, and red warning lamps",
+    "outro_beat": "The vault's hands move for the first time in centuries. Dawn spends its first recovered second.",
+    "intensity": 6,
+    "pressure_notes": "Use fast patrol and hunter routes, short power duration, many dots, and put the final shard in a covered dead end."
+  }],
+  "art_style": "high-contrast brass-and-neon pixel art with crisp readable maze walls",
+  "audio_mood": "rapid ticking, playful bass, and mounting mechanical panic",
+  "key_item": {"description": "a tiny radiant turquoise diamond shaped like a broken clock hand", "role": "pickup"},
+  "extra_sprites": [
+    {"name": "maze_wall", "description": "a modular dark brass maze wall with thin turquoise edge lights"},
+    {"name": "clock_warden", "description": "a round crimson mechanical owl mask with ivory clock eyes and brass wings"},
+    {"name": "power_bell", "description": "a small white porcelain bell with a vivid blue lightning crack"}
+  ]
+}

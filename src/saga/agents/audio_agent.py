@@ -29,6 +29,10 @@ def _musicgen_ready() -> str | None:
 
 
 def audio_agent(state: GraphState) -> GraphState:
+    if state.get("bgm_path"):
+        print(f"[Audio Agent] Reusing frozen BGM -> {state['bgm_path']}")
+        return {"bgm_path": state["bgm_path"]}
+
     # Music is the least essential output, the Coder already handles its
     # absence, and the harness's Music autoload simply stays silent - so an
     # unavailable service should cost the build its soundtrack, not the whole
