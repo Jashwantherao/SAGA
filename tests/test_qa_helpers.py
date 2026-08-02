@@ -148,6 +148,32 @@ def test_level_ledger_keeps_failed_and_successful_attempts():
     assert second[0]["attempts"][0]["errors"] == ["player did not move"]
 
 
+def test_rejected_repair_records_ledger_without_running_godot(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Godot must not run")),
+    )
+    state = {
+        "godot_project_path": str(tmp_path),
+        "current_level": 0,
+        "retry_count": 2,
+        "design_doc": {"levels": [{"name": "Neon Circuit"}]},
+        "level_results": [],
+        "coder_model": "deepseek-v4-pro",
+        "repair_rejected": True,
+        "repair_validation_errors": ["Candidate validation: SCRIPT ERROR"],
+    }
+
+    result = qa_agent(state)
+
+    assert result["retry_count"] == 3
+    assert result["repair_rejected"] is False
+    assert result["level_results"][0]["attempts"][-1]["stage"] == "repair_gate"
+    assert result["level_results"][0]["qa_errors"] == [
+        "Candidate validation: SCRIPT ERROR"
+    ]
+
+
 def test_unresolved_playability_failure_never_becomes_a_pass(monkeypatch, tmp_path):
     script = tmp_path / "Level_0.gd"
     script.write_text("extends Node2D", encoding="utf-8")

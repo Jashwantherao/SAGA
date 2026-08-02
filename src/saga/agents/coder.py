@@ -34,7 +34,9 @@ from saga.agents.coder_contracts import (
     FORBIDDEN_PATTERNS,
     TEMPLATE_CONTRACTS,
     UNIVERSAL_CONTRACTS,
+    animation_call_violations,
 )
+from saga.repair_gate import recover_interrupted_repair, validate_and_promote_repair
 from saga.safety import assert_safe_gdscript, scan_generated_gdscript
 from saga.sfx import write_default_sfx
 from saga.state import GraphState
@@ -4151,6 +4153,52 @@ TUNE_SYSTEM_PROMPT = (
 )
 
 
+def _contract_violations(gdscript: str, template: str) -> list[str]:
+    contract = (TEMPLATE_CONTRACTS.get(template) or []) + UNIVERSAL_CONTRACTS
+    violations = [desc for desc, pattern in contract if not re.search(pattern, gdscript)]
+    violations += animation_call_violations(gdscript)
+    violations += [desc for desc, pattern in FORBIDDEN_PATTERNS if re.search(pattern, gdscript)]
+    return list(dict.fromkeys(violations))
+
+
+def _final_candidate_errors(
+    gdscript: str,
+    *,
+    template: str,
+    valid_assets: set[str],
+) -> list[str]:
+    """Recheck corrected output before it is allowed to replace a script."""
+    errors = [f"Contract: {violation}" for violation in _contract_violations(gdscript, template)]
+    bad_refs = sorted(
+        {match for match in re.findall(r'res://assets/([^"\']+)', gdscript) if match not in valid_assets}
+    )
+    errors += [f"Asset does not exist: res://assets/{reference}" for reference in bad_refs]
+    errors += [finding.message() for finding in scan_generated_gdscript(gdscript)]
+    return errors
+
+
+def _rejected_repair_result(
+    *,
+    project_dir: Path,
+    model: str,
+    original_goal: list[str],
+    errors: list[str],
+) -> GraphState:
+    evidence = [
+        "Repair candidate rejected before promotion; the previous gameplay script was preserved."
+    ]
+    evidence += [f"Candidate validation: {error}" for error in errors]
+    evidence += [f"Original repair goal: {goal}" for goal in original_goal]
+    print(f"[Coder] Repair candidate rejected; previous script restored: {errors}")
+    return {
+        "godot_project_path": str(project_dir),
+        "tune_notes": None,
+        "coder_model": model,
+        "repair_rejected": True,
+        "repair_validation_errors": evidence,
+    }
+
+
 def coder(state: GraphState) -> GraphState:
     design_doc = state["design_doc"]
     sprite_paths = state.get("sprite_paths") or []
@@ -4200,6 +4248,9 @@ def coder(state: GraphState) -> GraphState:
     script_file = project_dir / f"Level_{current_level}.gd"
     qa_errors = state.get("qa_errors") or []
     tune_notes = state.get("tune_notes") or []
+    is_repair = bool(qa_errors or tune_notes)
+    if is_repair and recover_interrupted_repair(script_file):
+        print(f"[Coder] Recovered interrupted repair checkpoint for level {current_level + 1}")
 
     # Fix-vs-fresh is no longer decided here: the Studio Director triages
     # every QA failure and clears qa_errors when it wants a fresh generation
@@ -4316,12 +4367,7 @@ def coder(state: GraphState) -> GraphState:
 
     # Pre-flight: catch silently-simplified-away systems (contract check).
     # One bounded correction round-trip, same shape as the filename check.
-    contract = (TEMPLATE_CONTRACTS.get(template) or []) + UNIVERSAL_CONTRACTS
-    violations = [desc for desc, pattern in contract if not re.search(pattern, gdscript)]
-    # Forbidden patterns are the inverse: present rather than missing. They run
-    # on every path, including fixes, because a fix prompt reacting to a
-    # spurious error is exactly where autoload-shadowing gets introduced.
-    violations += [desc for desc, pattern in FORBIDDEN_PATTERNS if re.search(pattern, gdscript)]
+    violations = _contract_violations(gdscript, template)
     if violations and not tune_notes:
         print(f"[Coder] Contract violation(s), requesting one correction: {violations}")
         errors_desc = "\n".join(
@@ -4377,6 +4423,18 @@ def coder(state: GraphState) -> GraphState:
                 model,
             )
         )
+    final_errors = _final_candidate_errors(
+        gdscript,
+        template=template,
+        valid_assets=valid_assets,
+    )
+    if final_errors and is_repair:
+        return _rejected_repair_result(
+            project_dir=project_dir,
+            model=model,
+            original_goal=list(qa_errors or tune_notes),
+            errors=final_errors,
+        )
     assert_safe_gdscript(gdscript)
 
     (project_dir / "project.godot").write_text(
@@ -4404,7 +4462,23 @@ def coder(state: GraphState) -> GraphState:
     (project_dir / f"Level_{current_level}.tscn").write_text(
         _build_level_tscn(current_level), encoding="utf-8"
     )
-    script_file.write_text(gdscript, encoding="utf-8")
+    if is_repair:
+        validation = validate_and_promote_repair(
+            script_file,
+            gdscript,
+            project_dir=project_dir,
+            scene=f"res://Level_{current_level}.tscn",
+        )
+        if not validation.passed:
+            return _rejected_repair_result(
+                project_dir=project_dir,
+                model=model,
+                original_goal=list(qa_errors or tune_notes),
+                errors=validation.errors,
+            )
+        print(f"[Coder] Repair gate passed for level {current_level + 1}; candidate promoted")
+    else:
+        script_file.write_text(gdscript, encoding="utf-8")
 
     action = "Fixed" if qa_errors else ("Tuned" if tune_notes else "Generated")
     print(
@@ -4413,7 +4487,13 @@ def coder(state: GraphState) -> GraphState:
     )
     # tune_notes are consumed by this pass; clear them so a subsequent QA
     # retry takes the fix path against the already-tuned script.
-    result = {"godot_project_path": str(project_dir), "tune_notes": None, "coder_model": model}
+    result = {
+        "godot_project_path": str(project_dir),
+        "tune_notes": None,
+        "coder_model": model,
+        "repair_rejected": False,
+        "repair_validation_errors": [],
+    }
     if not qa_errors and not tune_notes:
         # Only a fresh generation carries the design brief. Fix/tune passes
         # omit the key entirely rather than setting None, so the original
