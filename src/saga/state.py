@@ -86,6 +86,11 @@ class GraphState(TypedDict, total=False):
     # pair once the level passes; see saga.corpus.
     coder_prompt: Optional[str]
     coder_model: Optional[str]
+    # Transactional repair gate. A rejected candidate never replaces the
+    # previous script; QA records the compiler/contract evidence without
+    # rerunning the expensive gameplay and video stack.
+    repair_rejected: bool
+    repair_validation_errors: Optional[list[str]]
     # Studio Director triage: the supervisor's routing decision for the
     # current QA failure (fix | regenerate | reasset; None outside triage),
     # and a per-run history of what was already tried so the Director can

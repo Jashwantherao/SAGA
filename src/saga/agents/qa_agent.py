@@ -1105,6 +1105,16 @@ def qa_agent(state: GraphState) -> GraphState:
     scene = f"res://Level_{current_level}.tscn"
     script_file = Path(project_dir) / f"Level_{current_level}.gd"
 
+    if state.get("repair_rejected"):
+        errors = list(state.get("repair_validation_errors") or [
+            "Repair candidate was rejected before promotion"
+        ])
+        print(f"[QA Agent] Repair gate rejected candidate; skipping full QA: {errors}")
+        result = _failed_attempt(state, stage="repair_gate", errors=errors)
+        result["repair_rejected"] = False
+        result["repair_validation_errors"] = []
+        return result
+
     # Defense in depth: the Coder checks before writing, and QA checks again
     # immediately before launching Godot so agentic edits or manual changes
     # cannot bypass the generated-code policy.

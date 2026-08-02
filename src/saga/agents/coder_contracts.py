@@ -1,5 +1,7 @@
 """Structural contracts enforced on generated level scripts."""
 
+import re
+
 
 TEMPLATE_CONTRACTS = {
     "capture_zones": [
@@ -170,6 +172,10 @@ TEMPLATE_CONTRACTS = {
 
 UNIVERSAL_CONTRACTS = [
     (
+        "hero idle/walk pose registration via Anim.set_poses",
+        r"Anim\.set_poses\(",
+    ),
+    (
         "per-frame character animation via the Anim autoload - call "
         "Anim.walk(sprite, is_moving, direction.x) each frame for the player "
         "and anything that walks, or Anim.hover(sprite) for anything that "
@@ -177,6 +183,63 @@ UNIVERSAL_CONTRACTS = [
         r"Anim\.(walk|hover)\(",
     ),
 ]
+
+
+def _call_arguments(script: str, call_name: str) -> list[list[str]]:
+    """Return top-level argument lists for calls, tolerating nested expressions."""
+    calls: list[list[str]] = []
+    pattern = re.compile(rf"{re.escape(call_name)}\s*\(")
+    for match in pattern.finditer(script):
+        start = match.end()
+        depth = 1
+        quote = ""
+        escaped = False
+        arguments: list[str] = []
+        argument_start = start
+        for index in range(start, len(script)):
+            character = script[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == quote:
+                    quote = ""
+                continue
+            if character in {'"', "'"}:
+                quote = character
+            elif character in "([{":
+                depth += 1
+            elif character in ")]}":
+                depth -= 1
+                if depth == 0:
+                    arguments.append(script[argument_start:index].strip())
+                    calls.append(arguments if arguments != [""] else [])
+                    break
+            elif character == "," and depth == 1:
+                arguments.append(script[argument_start:index].strip())
+                argument_start = index + 1
+    return calls
+
+
+def animation_call_violations(script: str) -> list[str]:
+    """Catch Anim calls that exist textually but cannot match the harness API."""
+    violations = []
+    for arguments in _call_arguments(script, "Anim.walk"):
+        if len(arguments) != 3:
+            violations.append(
+                "Anim.walk must receive exactly three arguments: "
+                "Anim.walk(sprite, is_moving_bool, direction_x_float)"
+            )
+        elif arguments[1].strip().lower() in {
+            "direction", "input_dir", "input_vector", "motion",
+            "move_dir", "move_vector", "velocity",
+        }:
+            violations.append(
+                "Anim.walk argument 2 must be a bool, not a Vector2; use "
+                "velocity.length() > 0.0 (or equivalent)"
+            )
+    return list(dict.fromkeys(violations))
 
 FORBIDDEN_PATTERNS = [
     (

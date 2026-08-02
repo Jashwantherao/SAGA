@@ -15,9 +15,13 @@ from saga.agents.coder import (
     SURVIVAL_PROBE_GD,
     SURVIVE_EXAMPLE_RESPONSE,
     SWITCH_PROBE_GD,
+    _final_candidate_errors,
 )
 from saga.agents.coder_backend import extract_gdscript
-from saga.agents.coder_contracts import TEMPLATE_CONTRACTS
+from saga.agents.coder_contracts import (
+    TEMPLATE_CONTRACTS,
+    animation_call_violations,
+)
 
 
 def test_maze_chase_contract_exposes_objective_qa_adapters():
@@ -30,6 +34,51 @@ def test_maze_chase_contract_exposes_objective_qa_adapters():
     assert "pickup total" in descriptions
     assert "state" in descriptions
     assert "stable patroller handle" in descriptions
+
+
+def test_animation_contract_rejects_walk_call_with_vector_as_second_argument_only():
+    script = "Anim.walk(player_sprite, velocity)"
+
+    violations = animation_call_violations(script)
+
+    assert violations == [
+        "Anim.walk must receive exactly three arguments: "
+        "Anim.walk(sprite, is_moving_bool, direction_x_float)"
+    ]
+
+
+def test_animation_contract_accepts_nested_boolean_and_direction_arguments():
+    script = "Anim.walk(player_sprite, direction.length() > 0.0, direction.x)"
+
+    assert animation_call_violations(script) == []
+
+
+def test_animation_contract_rejects_vector_as_boolean_even_with_three_arguments():
+    script = "Anim.walk(player_sprite, velocity, velocity.x)"
+
+    assert animation_call_violations(script) == [
+        "Anim.walk argument 2 must be a bool, not a Vector2; use "
+        "velocity.length() > 0.0 (or equivalent)"
+    ]
+
+
+def test_final_candidate_recheck_catches_bad_repair_after_correction_round():
+    script = """
+extends Node2D
+func _process(_delta):
+    Anim.set_poses(sprite, idle, walking)
+    Anim.walk(sprite, velocity)
+    load("res://assets/invented.png")
+"""
+
+    errors = _final_candidate_errors(
+        script,
+        template="unknown",
+        valid_assets={"hero_sprite.png", "hero_walk.png"},
+    )
+
+    assert any("exactly three arguments" in error for error in errors)
+    assert "Asset does not exist: res://assets/invented.png" in errors
 
 
 def test_ordered_switch_contract_exposes_sequence_qa_adapters():
