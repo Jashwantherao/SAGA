@@ -196,6 +196,114 @@ def test_specialist_passes_execute_on_the_routed_model(tmp_path):
     assert by_id["hud"]["executed_model"] == "coder"
 
 
+def _run_with_probe(tmp_path, probe, replies=None):
+    script = tmp_path / "Level_0.gd"
+    script.write_text("extends Node\n", encoding="utf-8")
+    replies = iter(
+        replies
+        or [
+            "```gdscript\nextends Node\n# movement\n```",
+            "```gdscript\nextends Node\n# movement\n# hud\n```",
+            "```gdscript\nextends Node\n# movement\n# hud\n# maze\n```",
+        ]
+    )
+    results = protected_incremental_build(
+        script_file=script,
+        project_dir=tmp_path,
+        scene="res://Level_0.tscn",
+        level_index=0,
+        blueprint=_blueprint(),
+        build_plan=_plan(),
+        model="coder",
+        chat=lambda _messages, _model: next(replies),
+        extract_gdscript=lambda text: text.split("```gdscript\n", 1)[1].rsplit("```", 1)[0],
+        candidate_errors=lambda _candidate: [],
+        promote=_promote,
+        probe=probe,
+    )
+    return results, script.read_text(encoding="utf-8")
+
+
+def test_behavioral_regression_is_rolled_back_at_the_cheap_point(tmp_path):
+    """A candidate that compiles but stops completing the objective must not
+    survive to end-of-level QA."""
+    calls = 0
+
+    def probe():
+        nonlocal calls
+        calls += 1
+        # Baseline and movement complete the objective; hud breaks it.
+        if calls <= 2:
+            return {"status": "passed", "collected": 5, "total": 5}, [], False
+        return {"status": "failed", "collected": 2, "total": 5}, ["objective unreachable"], False
+
+    results, active = _run_with_probe(tmp_path, probe)
+    by_id = {item["system_id"]: item for item in results}
+
+    assert by_id["hud"]["status"] == "rejected_probe"
+    assert by_id["hud"]["probe_status"] == "regression"
+    assert by_id["hud"]["errors"] == ["objective unreachable"]
+    # The last behaviorally-good script survives, and dependents are blocked.
+    assert active == "extends Node\n# movement\n"
+    assert by_id["maze"]["status"] == "blocked_dependency"
+
+
+def test_probe_verdicts_are_recorded_on_passing_systems(tmp_path):
+    results, _ = _run_with_probe(
+        tmp_path, lambda: ({"status": "passed", "collected": 5, "total": 5}, [], False)
+    )
+    by_id = {item["system_id"]: item for item in results}
+
+    assert by_id["__baseline__"]["probe_status"] == "passed"
+    assert all(by_id[name]["probe_status"] == "passed" for name in ("movement", "hud", "maze"))
+    assert by_id["maze"]["probe"] == {"status": "passed", "collected": 5, "total": 5}
+
+
+def test_a_baseline_that_never_completed_cannot_be_regressed_against(tmp_path):
+    """Pre-existing breakage is not attributable to the specialist that ran
+    last, so passes are recorded but never rolled back."""
+    results, active = _run_with_probe(
+        tmp_path, lambda: ({"status": "failed"}, ["never completed"], False)
+    )
+    by_id = {item["system_id"]: item for item in results}
+
+    assert by_id["__baseline__"]["probe_status"] == "failed"
+    assert [by_id[name]["status"] for name in ("movement", "hud", "maze")] == [
+        "integrated",
+        "integrated",
+        "integrated",
+    ]
+    assert by_id["maze"]["probe_status"] == "failed"
+    assert "# maze" in active
+
+
+def test_a_blocked_probe_does_not_reject_a_compiling_candidate(tmp_path):
+    """A broken harness is not a generated-code defect, so it must not discard
+    work that passed every check SAGA could actually run."""
+    calls = 0
+
+    def probe():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {"status": "passed"}, [], False
+        return None, ["QA infrastructure: probe produced no verdict."], True
+
+    results, active = _run_with_probe(tmp_path, probe)
+    by_id = {item["system_id"]: item for item in results}
+
+    assert by_id["movement"]["status"] == "integrated"
+    assert by_id["movement"]["probe_status"] == "blocked"
+    assert "# maze" in active
+
+
+def test_without_a_probe_the_builder_keeps_its_compile_only_behavior(tmp_path):
+    results, active = _run_with_probe(tmp_path, None)
+
+    assert all(item["probe_status"] is None for item in results)
+    assert "# maze" in active
+
+
 def test_qa_evidence_does_not_overclaim_unobserved_hud_behavior():
     active = "extends Node\n"
     base = [

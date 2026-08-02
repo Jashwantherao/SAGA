@@ -4230,6 +4230,37 @@ def _blueprint_contract(state: GraphState) -> str:
     return "\n".join(lines) + "\n"
 
 
+# Mechanics whose deterministic solver can answer "does this still complete?"
+# during a build, not just at the end of one. Kept in sync with the QA Agent's
+# objective-probe gate; a template outside it simply gets no behavioral gate.
+PROBED_TEMPLATES = {
+    "collect",
+    "ordered_switches",
+    "survive_hazards",
+    "depletion",
+    "survive_and_deplete",
+    "capture_zones",
+    "herd_to_goal",
+    "dot_maze",
+    "maze_chase",
+}
+
+
+def _objective_probe_for(project_dir, level_index: int, template: str):
+    """Bind the QA Agent's objective solver to this level, or None when the
+    template has no deterministic completion probe."""
+    if template not in PROBED_TEMPLATES:
+        return None
+    from saga.agents.qa_agent import _run_objective_probe
+
+    def run_probe():
+        return _run_objective_probe(
+            str(project_dir), f"res://Level_{level_index}.tscn", template
+        )
+
+    return run_probe
+
+
 def coder(state: GraphState) -> GraphState:
     design_doc = state["design_doc"]
     sprite_paths = state.get("sprite_paths") or []
@@ -4541,6 +4572,7 @@ def coder(state: GraphState) -> GraphState:
             ),
             existing_results=state.get("system_build_results") or [],
             max_systems=settings.incremental_max_systems,
+            probe=_objective_probe_for(project_dir, current_level, template),
         )
 
     action = "Fixed" if qa_errors else ("Tuned" if tune_notes else "Generated")

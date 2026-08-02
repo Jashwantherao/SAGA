@@ -55,6 +55,8 @@ def _entry(
     candidate_hash: str | None = None,
     active_hash: str | None = None,
     elapsed_seconds: float = 0.0,
+    probe_status: str | None = None,
+    probe: dict | None = None,
 ) -> dict:
     return {
         "level_index": level_index,
@@ -69,9 +71,20 @@ def _entry(
         "candidate_sha256": candidate_hash,
         "active_sha256": active_hash,
         "elapsed_seconds": round(elapsed_seconds, 3),
+        # Behavioral verdict from the template's objective probe, when one
+        # ran for this pass: passed | failed | regression | blocked | None.
+        "probe_status": probe_status,
+        "probe": probe,
         "qa_confirmed": False,
         "qa_evidence": [],
     }
+
+
+def _probe_summary(result: dict | None) -> dict | None:
+    if not result:
+        return None
+    keep = ("status", "reason", "collected", "total", "completion_score", "frames")
+    return {key: result[key] for key in keep if key in result}
 
 
 def _supersede_previous(results: list[dict], level_index: int) -> list[dict]:
@@ -105,13 +118,23 @@ def protected_incremental_build(
     max_systems: int = 6,
     promote: Callable[..., RepairValidation] = validate_and_promote_repair,
     route_chat: Callable[[list[dict], str | None], tuple[str, str]] | None = None,
+    probe: Callable[[], tuple[dict | None, list[str], bool]] | None = None,
 ) -> list[dict]:
     """Refine systems in order while preserving the last compiling script.
 
     route_chat(messages, recommended_model) -> (text, executed_model) lets
     specialist passes run on the build plan's routed model; without it every
     pass executes on the coder's own model. The baseline correction always
-    uses the coder model - it is repairing that model's own draft."""
+    uses the coder model - it is repairing that model's own draft.
+
+    probe() -> (result, errors, blocked) runs the mechanic's deterministic
+    objective solver. Compiling is not behaving: without a probe a specialist
+    can delete the win condition and still integrate, and the loss only
+    surfaces at end-of-level QA where the retry costs the full gameplay and
+    video stack. When the baseline demonstrably completes its objective, a
+    candidate that stops completing it is a regression and is rolled back
+    here. A baseline that never completed cannot be regressed against, so its
+    passes record the probe verdict without gating on it."""
     if route_chat is None:
         route_chat = lambda messages, _preferred: (chat(messages, model), model)  # noqa: E731
     results = _supersede_previous(list(existing_results or []), level_index)
@@ -194,6 +217,23 @@ def protected_incremental_build(
             status = "builder_error"
             errors = [f"{type(exc).__name__}: {exc}"]
             baseline_ok = False
+    # Behavioral reference point. Only a baseline that actually completes its
+    # objective can be regressed against; anything else makes later failures
+    # unattributable to the specialist that happened to run last.
+    baseline_probe = None
+    baseline_probe_status = None
+    if probe and baseline_ok:
+        baseline_probe, probe_errors, probe_blocked = probe()
+        baseline_probe_status = (
+            "blocked"
+            if probe_blocked
+            else ("passed" if not probe_errors else "failed")
+        )
+        print(
+            f"[Protected Builder] level {level_index + 1} baseline objective probe: "
+            f"{baseline_probe_status}"
+        )
+
     active_hash = script_hash(script_file.read_text(encoding="utf-8"))
     results.append(
         _entry(
@@ -207,6 +247,8 @@ def protected_incremental_build(
             candidate_hash=corrected_hash,
             active_hash=active_hash,
             elapsed_seconds=time.monotonic() - started,
+            probe_status=baseline_probe_status,
+            probe=_probe_summary(baseline_probe),
         )
     )
     print(f"[Protected Builder] level {level_index + 1} baseline: {status}")
@@ -293,6 +335,8 @@ def protected_incremental_build(
             candidate = previous
         candidate_hash = script_hash(candidate)
 
+        pass_probe = None
+        pass_probe_status = None
         if status == "builder_error":
             pass
         elif candidate == previous:
@@ -311,6 +355,28 @@ def protected_incremental_build(
                 errors = validation.errors
                 status = "integrated" if validation.passed else "rejected_gate"
 
+            # Compiling is not behaving. A candidate that starts cleanly but
+            # stops completing an objective the baseline completed is rolled
+            # back here, where the retry is cheap, rather than at full QA.
+            if status == "integrated" and probe:
+                pass_probe, probe_errors, probe_blocked = probe()
+                pass_probe_status = (
+                    "blocked"
+                    if probe_blocked
+                    else ("passed" if not probe_errors else "failed")
+                )
+                # "blocked" means the probe itself could not produce a verdict.
+                # A broken harness is not a generated-code defect, so it never
+                # discards a candidate that compiled - the run's own ship gate
+                # already refuses to call an unverifiable build shippable.
+                if pass_probe_status == "failed" and baseline_probe_status == "passed":
+                    script_file.write_text(previous, encoding="utf-8")
+                    status = "rejected_probe"
+                    pass_probe_status = "regression"
+                    errors = probe_errors or [
+                        f"{system_id} stopped completing the objective the baseline completed"
+                    ]
+
         active_hash = script_hash(script_file.read_text(encoding="utf-8"))
         outcomes[system_id] = status
         results.append(
@@ -327,11 +393,15 @@ def protected_incremental_build(
                 candidate_hash=candidate_hash,
                 active_hash=active_hash,
                 elapsed_seconds=time.monotonic() - started,
+                probe_status=pass_probe_status,
+                probe=_probe_summary(pass_probe),
             )
         )
+        probe_note = f", probe={pass_probe_status}" if pass_probe_status else ""
         print(
             f"[Protected Builder] level {level_index + 1} {system_id}: {status} "
-            f"(recommended={step.get('recommended_model')}, executed={executed_model})"
+            f"(recommended={step.get('recommended_model')}, executed={executed_model}"
+            f"{probe_note})"
         )
     return results
 

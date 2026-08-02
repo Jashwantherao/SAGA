@@ -167,11 +167,26 @@ from every run — the production-memory loop from the v2 proposal.
   script diff) alongside level pairs — strictly more valuable training
   data, same `SAGA_RECORD_CORPUS` switch.
 
+## Implemented so far
+
+The Systems Architect, blueprint contract, executing model router, and the
+protected builder's compile gate all shipped in "Agent Team v2 foundation".
+The behavioral half of step 3 landed with them, in a cheaper form than the
+full probe registry below: each promoted candidate reruns the mechanic's
+existing objective solver, and a pass that stops completing an objective the
+baseline completed is rolled back on the spot (`rejected_probe`), with its
+dependents blocked. Two rules keep that honest — a baseline that never
+completed cannot be regressed against, and a *blocked* probe (broken harness)
+never discards a candidate that compiled. The per-kind registry below is still
+what turns acceptance criteria into verdicts; the objective solver only proves
+the mechanic still works, not that the new system does what it promised.
+
 ## Milestones (one PR each)
 
 1. **Build gate + probe registry (phase-1 probes)** — generalize the
    repair gate transaction, add movement/pickup/hud probes, unit-tested
    against hand-written good and regressing scripts. No graph changes.
+   *(Gate: done. Per-kind probes: outstanding.)*
 2. **System pass loop** — `--blueprint` flag, blueprint intake node,
    Coder system-pass prompt, `advance_system`, per-system Director
    triage, ledger. End-to-end on a 3-system blueprint (movement, pickup,
