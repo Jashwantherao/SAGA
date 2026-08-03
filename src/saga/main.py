@@ -10,13 +10,48 @@ import sys
 from pathlib import Path
 
 
+# Builder ledger statuses whose script is part of the shipped game. Anything
+# else (rejected, superseded, skipped) contributes no code, so it carries no
+# acceptance claim either.
+LIVE_BUILD_STATUSES = {
+    "baseline_compiles",
+    "baseline_corrected",
+    "integrated",
+    "unchanged",
+}
+
+
+def unconfirmed_systems(result: dict) -> list[str]:
+    """Blueprint systems that shipped code without behavioral proof.
+
+    Per-level QA proves the game still runs; it does not prove that a system
+    did what its acceptance criteria promised. Only some kinds have a probe
+    that can say so today (baseline, movement, the objective kinds, and hud
+    via video QA), so an unconfirmed system is a gap in evidence rather than
+    a known defect - reported as a warning, not a failure. A system whose
+    builder hash no longer matches the script QA actually ran is unproven for
+    the same reason: the evidence describes different code.
+    """
+    unconfirmed = []
+    for item in result.get("system_build_results") or []:
+        if item.get("status") not in LIVE_BUILD_STATUSES:
+            continue
+        system_id = item.get("system_id") or item.get("id") or item.get("kind") or "?"
+        if not item.get("qa_confirmed"):
+            unconfirmed.append(f"{system_id}: no acceptance probe confirmed this system")
+        elif item.get("builder_hash_matches_qa") is False:
+            unconfirmed.append(f"{system_id}: QA evidence describes a different script")
+    return unconfirmed
+
+
 def assess_ship_status(result: dict) -> tuple[str, bool]:
     """Return the truthful aggregate release status for a completed run.
 
     ``qa_passed`` is the current (normally final) level's status. Shipping
     additionally requires one clean ledger entry for every designed level, so
     a later success cannot erase an earlier defect or a skipped level.
-    Advisory-only findings are shippable but explicitly reported as warnings.
+    Advisory-only findings are shippable but explicitly reported as warnings -
+    including blueprint systems that shipped without acceptance evidence.
     """
     if result.get("ship_blocked"):
         return "blocked", False
@@ -39,7 +74,7 @@ def assess_ship_status(result: dict) -> tuple[str, bool]:
     if not result.get("qa_passed") or not all_passed:
         return "failed", False
 
-    has_warnings = any(
+    has_warnings = bool(unconfirmed_systems(result)) or any(
         (item.get("vision_notes") or [])
         or (item.get("balance_notes") or [])
         or (item.get("video_notes") or [])
@@ -243,7 +278,7 @@ def main() -> None:
     ship_status, ship_ready = assess_ship_status(result)
     level_results = result.get("level_results") or []
     manifest = {
-        "manifest_version": 13,
+        "manifest_version": 14,
         "run_dir": result["run_dir"],
         "idea": args.idea,
         "title": (result.get("design_doc") or {}).get("title"),
@@ -254,6 +289,7 @@ def main() -> None:
         "blueprint_errors": result.get("blueprint_errors") or [],
         "blueprint_build_plan": result.get("blueprint_build_plan") or [],
         "system_build_results": result.get("system_build_results") or [],
+        "unconfirmed_systems": unconfirmed_systems(result),
         "status": ship_status,
         "ship_ready": ship_ready,
         "current_level": result.get("current_level"),
