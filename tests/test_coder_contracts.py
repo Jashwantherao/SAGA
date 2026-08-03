@@ -294,3 +294,49 @@ def test_godot3_api_calls_are_named_with_their_replacement():
         violations = _godot3_violations(source)
         assert violations, f"{source!r} should be rejected"
         assert any(expected in item for item in violations), f"{source!r} -> {violations}"
+
+
+def test_unherdable_speed_balance_is_caught_before_the_probe_runs():
+    """A real 3-level run spent all six retries on invalid_herd_balance. The
+    probe enforces flee_speed < 0.6 x speed but reports only a reason code, and
+    the prompt said merely "well below", so nothing ever named the threshold."""
+    from saga.agents.coder_contracts import balance_violations
+
+    violations = balance_violations(
+        "@export var speed = 240.0\nvar flee_speed = 200.0\n", "herd_to_goal"
+    )
+
+    assert len(violations) == 1
+    assert "200" in violations[0] and "144" in violations[0]
+
+
+def test_a_balanced_herd_passes():
+    from saga.agents.coder_contracts import balance_violations
+
+    assert balance_violations(
+        "@export var speed = 240.0\nvar flee_speed = 90.0\n", "herd_to_goal"
+    ) == []
+
+
+def test_the_herd_worked_example_satisfies_the_rule_it_teaches():
+    """The few-shot is the model's template for these numbers; if it tripped
+    the check, every herd game would start from a rejected example."""
+    from saga.agents.coder import HERD_EXAMPLE_RESPONSE
+    from saga.agents.coder_contracts import balance_violations
+
+    assert balance_violations(HERD_EXAMPLE_RESPONSE, "herd_to_goal") == []
+
+
+def test_balance_rules_apply_only_to_their_own_template():
+    from saga.agents.coder_contracts import balance_violations
+
+    unbalanced = "@export var speed = 240.0\nvar flee_speed = 200.0\n"
+
+    assert balance_violations(unbalanced, "collect") == []
+
+
+def test_probe_rejection_names_the_threshold_it_enforced():
+    from saga.agents.qa_agent import PROBE_REASON_HINTS
+
+    assert "0.6" in PROBE_REASON_HINTS["invalid_herd_balance"]
+    assert "greater than drain_rate" in PROBE_REASON_HINTS["invalid_depletion_settings"]

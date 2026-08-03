@@ -241,6 +241,39 @@ def animation_call_violations(script: str) -> list[str]:
             )
     return list(dict.fromkeys(violations))
 
+def _numeric_var(gdscript: str, name: str) -> float | None:
+    match = re.search(
+        rf"(?:@export\s+)?var\s+{name}\s*(?::\s*float\s*)?[:=]?=\s*(-?\d+(?:\.\d+)?)",
+        gdscript,
+    )
+    return float(match.group(1)) if match else None
+
+
+# The objective probes refuse to solve a level whose numbers make the mechanic
+# impossible, but they report only a reason code - a real run spent all six
+# retries on "invalid_herd_balance" without ever being told which numbers were
+# wrong. Checking the same relationships statically turns that into one
+# actionable message before a Godot process is spawned.
+HERD_FLEE_SPEED_RATIO = 0.6
+
+
+def balance_violations(gdscript: str, template: str) -> list[str]:
+    """Numeric preconditions the deterministic objective probe will enforce."""
+    violations = []
+    if template == "herd_to_goal":
+        speed = _numeric_var(gdscript, "speed")
+        flee_speed = _numeric_var(gdscript, "flee_speed")
+        if speed and flee_speed and flee_speed >= speed * HERD_FLEE_SPEED_RATIO:
+            violations.append(
+                f"flee_speed ({flee_speed:g}) must stay below "
+                f"{HERD_FLEE_SPEED_RATIO:g} x speed ({speed:g}), i.e. under "
+                f"{speed * HERD_FLEE_SPEED_RATIO:g} - creatures that flee nearly as "
+                "fast as the player can never be herded, and objective QA rejects "
+                "the level as invalid_herd_balance"
+            )
+    return violations
+
+
 FORBIDDEN_PATTERNS = [
     (
         "the script declares a local variable that shadows a harness autoload "

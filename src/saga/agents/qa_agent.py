@@ -178,6 +178,31 @@ def _find_errors(output: str) -> list[str]:
     return found
 
 
+# A probe that refuses a level because its numbers make the mechanic
+# unsolvable reports only a reason code, and the per-template requirement text
+# describes the mechanic rather than the threshold that was violated. A real
+# run spent all six retries on invalid_herd_balance without ever learning which
+# numbers were wrong. These name the rule so one repair can satisfy it.
+PROBE_REASON_HINTS = {
+    "invalid_herd_balance": (
+        " Specifically: panic_radius, goal_radius, speed and flee_speed must all "
+        "be positive, and flee_speed must be less than 0.6 x speed."
+    ),
+    "invalid_depletion_settings": (
+        " Specifically: the maximum resource, drain_rate and survival_time must "
+        "all be positive, and refill_rate must be strictly greater than drain_rate."
+    ),
+    "invalid_survival_settings": (
+        " Specifically: the starting resource must be at least 2 and "
+        "survival_time must be positive."
+    ),
+    "invalid_capture_rates": (
+        " Specifically: capture_required, capture_radius, capture_rate and "
+        "decay_rate must all be positive."
+    ),
+}
+
+
 def _run_objective_probe(
     project_dir: str,
     scene: str,
@@ -429,6 +454,7 @@ def _run_objective_probe(
                 f"Objective completion: {template} solver failed "
                 f"({reason}); collected {collected}/{total} with {remaining} remaining. "
                 f"{objective_requirement}"
+                f"{PROBE_REASON_HINTS.get(reason, '')}"
                 f"{position_note}"
             ],
             False,

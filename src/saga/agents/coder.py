@@ -36,6 +36,7 @@ from saga.agents.coder_contracts import (
     TEMPLATE_CONTRACTS,
     UNIVERSAL_CONTRACTS,
     animation_call_violations,
+    balance_violations,
 )
 from saga.config import settings
 from saga.repair_gate import recover_interrupted_repair, validate_and_promote_repair
@@ -2444,8 +2445,10 @@ TEMPLATE_REQUIREMENTS = {
         "player is within a named panic_radius variable - beyond that radius "
         "it does not move at all. Inside the radius it moves along the vector "
         "pointing away from the player, scaled by speed and delta, clamped "
-        "inside the viewport; flee speed must stay well below the player's "
-        "speed or it can never be caught up with. A creature whose position "
+        "inside the viewport; flee_speed MUST be less than 0.6 x speed (aim "
+        "for about 0.4 x, as the worked example does) or the creature can "
+        "never be caught up with and objective QA rejects the level outright. "
+        "A creature whose position "
         "is inside goal_radius SETTLES permanently: set creature_settled[index], "
         "stop it fleeing for the rest of the level no matter how close the "
         "player comes, and play the pickup sound once. Track the settled "
@@ -4164,6 +4167,7 @@ def _contract_violations(gdscript: str, template: str) -> list[str]:
     contract = (TEMPLATE_CONTRACTS.get(template) or []) + UNIVERSAL_CONTRACTS
     violations = [desc for desc, pattern in contract if not re.search(pattern, gdscript)]
     violations += animation_call_violations(gdscript)
+    violations += balance_violations(gdscript, template)
     violations += [desc for desc, pattern in FORBIDDEN_PATTERNS if re.search(pattern, gdscript)]
     return list(dict.fromkeys(violations))
 
