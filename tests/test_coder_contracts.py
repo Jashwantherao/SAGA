@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import re
 
 from saga.agents.coder import (
@@ -178,3 +180,45 @@ def test_herd_example_satisfies_qa_contract_and_installs_probe():
     assert "creature_did_not_flee_toward_goal" in HERD_PROBE_GD
     assert "settled_creature_moved" in HERD_PROBE_GD
     assert "all_settled_did_not_win" in HERD_PROBE_GD
+
+
+def _reject(previous_evidence, errors):
+    from saga.agents.coder import _rejected_repair_result
+
+    return _rejected_repair_result(
+        project_dir=Path("."),
+        model="m",
+        original_goal=list(previous_evidence),
+        errors=list(errors),
+    )["repair_validation_errors"]
+
+
+def test_repeated_repair_rejections_do_not_nest_their_own_evidence():
+    """A rejected repair feeds its evidence back as the next attempt's goal.
+    Re-wrapping it verbatim nested one prefix per retry and repeated the same
+    parse errors a dozen times, growing the prompt fastest exactly when the
+    model was already failing to hold it."""
+    errors = ['Parse Error: Could not find base class "KinematicBody2D".']
+
+    evidence = _reject(["Original goal from QA"], errors)
+    for _ in range(5):
+        evidence = _reject(evidence, errors)
+
+    assert not any("Original repair goal: Original repair goal:" in item for item in evidence)
+    assert len(evidence) == len(set(evidence)), "no duplicated lines"
+    assert len(evidence) <= 8
+
+
+def test_rejection_still_reports_the_goal_and_the_validation_failure():
+    evidence = _reject(["player must move with the arrow keys"], ["unbalanced indent"])
+
+    assert "Candidate validation: unbalanced indent" in evidence
+    assert "Original repair goal: player must move with the arrow keys" in evidence
+
+
+def test_a_goal_restating_this_rejection_is_not_echoed_back():
+    errors = ["unbalanced indent"]
+    first = _reject(["fix the indent"], errors)
+    second = _reject(first, errors)
+
+    assert second.count("Candidate validation: unbalanced indent") == 1

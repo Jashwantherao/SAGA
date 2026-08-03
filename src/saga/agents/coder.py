@@ -4180,6 +4180,16 @@ def _final_candidate_errors(
     return errors
 
 
+_REJECTED_NOTICE = (
+    "Repair candidate rejected before promotion; the previous gameplay script was preserved."
+)
+_GOAL_PREFIX = "Original repair goal: "
+_VALIDATION_PREFIX = "Candidate validation: "
+# Enough history for the model to see what it keeps getting wrong, bounded so
+# a stubborn level cannot crowd the actual script out of the prompt.
+_MAX_GOALS = 6
+
+
 def _rejected_repair_result(
     *,
     project_dir: Path,
@@ -4187,11 +4197,24 @@ def _rejected_repair_result(
     original_goal: list[str],
     errors: list[str],
 ) -> GraphState:
-    evidence = [
-        "Repair candidate rejected before promotion; the previous gameplay script was preserved."
-    ]
-    evidence += [f"Candidate validation: {error}" for error in errors]
-    evidence += [f"Original repair goal: {goal}" for goal in original_goal]
+    evidence = [_REJECTED_NOTICE]
+    evidence += [f"{_VALIDATION_PREFIX}{error}" for error in errors]
+
+    # A rejected repair feeds its own evidence back in as the next attempt's
+    # goal, so re-wrapping it verbatim nested one prefix per retry and
+    # repeated the same two parse errors a dozen times - growing the prompt
+    # fastest exactly when the model is already failing to hold it. Unwrap to
+    # the underlying goal, drop what this rejection already states, dedupe.
+    goals: list[str] = []
+    for goal in original_goal:
+        while goal.startswith(_GOAL_PREFIX):
+            goal = goal[len(_GOAL_PREFIX) :]
+        if goal == _REJECTED_NOTICE or goal in evidence or goal in goals:
+            continue
+        if goal.startswith(_VALIDATION_PREFIX) and goal[len(_VALIDATION_PREFIX) :] in errors:
+            continue
+        goals.append(goal)
+    evidence += [f"{_GOAL_PREFIX}{goal}" for goal in goals[:_MAX_GOALS]]
     print(f"[Coder] Repair candidate rejected; previous script restored: {errors}")
     return {
         "godot_project_path": str(project_dir),
