@@ -14,6 +14,11 @@ tasks ("architecture", "repair") that are not buildable systems.
 """
 
 import os
+import time
+
+import httpx
+
+from saga.config import settings
 
 NEMOTRON = "nvidia/nemotron-3-super-120b-a12b"
 LAGUNA = "poolside/laguna-xs-2.1"
@@ -32,15 +37,58 @@ MODEL_PROVIDERS = {
 }
 
 
+# A routed local specialist that waits on a dead daemon is pure cost: the
+# retry ladder in coder_backend._local_chat spends two minutes before the
+# fallback model gets a turn, and six kinds route local-first, so an offline
+# Ollama used to add ~12 minutes of sleep to a build. Probing is cheap, but
+# not per-call cheap, so the answer is cached briefly - short enough that a
+# daemon started mid-run is picked up, long enough to cost one probe a pass.
+LOCAL_PROBE_TTL_SECONDS = 60.0
+LOCAL_PROBE_TIMEOUT_SECONDS = 2.0
+
+_local_probe: tuple[float, bool] | None = None
+
+
+def local_backend_reachable(*, force: bool = False) -> bool:
+    """True when the Ollama daemon answers its model listing right now.
+
+    Uses the same endpoint doctor and service_manager health-check against,
+    so "reachable" means one thing across SAGA. Pass ``force`` to bypass the
+    cache when a stale answer would be misleading - mid-retry, for instance.
+    """
+    global _local_probe
+    now = time.monotonic()
+    if not force and _local_probe and now - _local_probe[0] < LOCAL_PROBE_TTL_SECONDS:
+        return _local_probe[1]
+    try:
+        response = httpx.get(
+            f"{settings.ollama_url}/api/tags", timeout=LOCAL_PROBE_TIMEOUT_SECONDS
+        )
+        reachable = response.status_code == 200
+    except Exception:
+        reachable = False
+    _local_probe = (now, reachable)
+    return reachable
+
+
+def reset_local_probe() -> None:
+    """Drop the cached reachability answer (service restarts, and tests)."""
+    global _local_probe
+    _local_probe = None
+
+
 def resolve_provider(model_id: str | None) -> dict | None:
     """Transport spec for a routed model, or None when it cannot be called
-    right now (unknown id, or its API key is absent) - the caller then uses
-    its own fallback model instead of failing the pass."""
+    right now (unknown id, its API key is absent, or - for local models - the
+    Ollama daemon is down) - the caller then uses its own fallback model
+    instead of failing the pass."""
     spec = MODEL_PROVIDERS.get(model_id or "")
     if not spec:
         return None
     key_env = spec.get("key_env")
     if key_env and not os.environ.get(key_env):
+        return None
+    if spec["backend"] == "ollama" and not local_backend_reachable():
         return None
     return dict(spec)
 

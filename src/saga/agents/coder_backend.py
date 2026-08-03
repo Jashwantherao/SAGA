@@ -89,20 +89,49 @@ def routed_chat(messages: list[dict], preferred_model: str | None, fallback_mode
 
 
 def _local_chat(messages: list[dict], model: str) -> str:
+    """One local completion, retrying while the runner is merely unstable.
+
+    The backoff ladder exists for a loading runner - a model swap or a VRAM
+    reload makes Ollama refuse calls for a while, and waiting is the only
+    cure. A daemon that is not listening at all is a different failure: no
+    amount of sleeping starts it, so the ladder stops rather than spending
+    two minutes to reach the same error.
+    """
+    from saga.router import local_backend_reachable
+
     last_error = None
+    attempts = 0
     for attempt, backoff in enumerate([0, 20, 40, 60]):
         if backoff:
+            if not local_backend_reachable(force=True):
+                break
             print(
                 f"[Coder] Ollama runner unstable (attempt {attempt}), "
                 f"waiting {backoff}s: {last_error}"
             )
             time.sleep(backoff)
+        attempts += 1
         try:
             return ollama.chat(model=model, messages=messages)["message"]["content"]
-        except (ollama.ResponseError, httpx.ConnectError, httpx.ReadTimeout) as exc:
+        # The Ollama SDK raises a builtin ConnectionError - not httpx's - when
+        # the daemon is not listening. Leaving it out of this tuple let it
+        # escape uncaught, so a dead daemon skipped both the retry ladder and
+        # the diagnosis below and surfaced as a raw SDK traceback.
+        except (
+            ollama.ResponseError,
+            ConnectionError,
+            httpx.ConnectError,
+            httpx.ReadTimeout,
+        ) as exc:
             last_error = exc
+    if not local_backend_reachable(force=True):
+        raise RuntimeError(
+            f"Ollama is not listening on {settings.ollama_url}, so model {model!r} "
+            f"cannot run: {last_error}"
+        )
     raise RuntimeError(
-        f"Ollama runner did not recover after 4 attempts for model {model!r}: {last_error}"
+        f"Ollama runner did not recover after {attempts} attempts "
+        f"for model {model!r}: {last_error}"
     )
 
 
