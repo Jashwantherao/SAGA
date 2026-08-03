@@ -254,10 +254,61 @@ FORBIDDEN_PATTERNS = [
         "never run and the game can never advance a level. Call it directly",
         r"if\s+Game\s*!=\s*null",
     ),
+]
+
+# Godot 3 names a model reaches for by reflex, especially a small local one
+# falling back on training data that predates Godot 4. The engine reports them
+# only as "Could not find base class X" or a failed identifier lookup at load
+# time - a full Coder+QA retry spent to learn something a regex knows, and a
+# message that never names the replacement, so the model can spiral on it. A
+# real run burned all six retries on `extends KinematicBody2D`.
+#
+# Every pattern must leave the Godot 4 spelling alone: \b between "Sprite" and
+# "2D" does not exist, so \bSprite\b cannot match inside Sprite2D. The
+# false-positive test asserts that against the worked examples.
+GODOT3_RENAMES = [
+    (r"\bKinematicBody2D\b", "KinematicBody2D", "CharacterBody2D"),
+    (r"\bKinematicBody\b", "KinematicBody", "CharacterBody3D"),
+    (r"\bSprite\b", "Sprite", "Sprite2D"),
+    (r"\bAnimatedSprite\b", "AnimatedSprite", "AnimatedSprite2D"),
+    (r"\bSpatial\b", "Spatial", "Node3D"),
+    (r"\bYSort\b", "YSort", "a Node2D with y_sort_enabled = true"),
+    (r"\bParticles2D\b", "Particles2D", "GPUParticles2D"),
+    (r"\bCollisionShape\b", "CollisionShape", "CollisionShape2D"),
     (
-        "the script uses 'Sprite', which does not exist in Godot 4 - it was "
-        "renamed Sprite2D (or Sprite3D in 3D). Replace every use, as a type "
-        "hint, constructor, or 'is' check, with Sprite2D",
-        r"\bSprite\b",
+        r"\bPool(?:String|Int|Real|Byte|Vector2|Vector3|Color)Array\b",
+        "a PoolXArray type",
+        "the matching PackedXArray (PackedStringArray, PackedInt32Array, ...)",
+    ),
+    (r"(?<![@\w])export\s+var\b", "bare 'export var'", "@export var"),
+    (r"(?<![@\w])onready\s+var\b", "bare 'onready var'", "@onready var"),
+    (r"\byield\s*\(", "yield(...)", "await"),
+    (r"\.instance\(\)", ".instance()", ".instantiate()"),
+    (r"\brand_range\b", "rand_range", "randf_range"),
+    (r"\.empty\(\)", ".empty()", ".is_empty()"),
+    (r"\bOS\s*\.\s*get_ticks_msec\b", "OS.get_ticks_msec", "Time.get_ticks_msec"),
+]
+
+FORBIDDEN_PATTERNS += [
+    (
+        f"the script uses {old}, which does not exist in Godot 4 - use {new} "
+        "instead, everywhere it appears (extends clause, type hint, "
+        "constructor, or 'is' check)",
+        pattern,
+    )
+    for pattern, old, new in GODOT3_RENAMES
+]
+
+FORBIDDEN_PATTERNS += [
+    (
+        "move_and_slide() takes no arguments in Godot 4 - assign the velocity "
+        "property first, then call move_and_slide() with an empty argument list",
+        r"move_and_slide\s*\(\s*[^)\s]",
+    ),
+    (
+        "the script uses Godot 3's connect(\"signal\", target, \"method\") "
+        "signature, which no longer exists - connect a Callable instead, as "
+        "signal_name.connect(_on_signal)",
+        r"\.connect\(\s*\"",
     ),
 ]

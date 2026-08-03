@@ -222,3 +222,75 @@ def test_a_goal_restating_this_rejection_is_not_echoed_back():
     second = _reject(first, errors)
 
     assert second.count("Candidate validation: unbalanced indent") == 1
+
+
+def _godot3_violations(source):
+    from saga.agents.coder_contracts import FORBIDDEN_PATTERNS
+
+    return [desc for desc, pattern in FORBIDDEN_PATTERNS if re.search(pattern, source)]
+
+
+def test_godot3_base_class_is_caught_before_a_godot_spawn():
+    """A real run burned all six retries on `extends KinematicBody2D`: Godot
+    reports it only as "Could not find base class", which never names the
+    replacement, so the model spiralled instead of repairing."""
+    violations = _godot3_violations("extends KinematicBody2D\n")
+
+    assert len(violations) == 1
+    assert "CharacterBody2D" in violations[0]
+
+
+def test_the_worked_examples_trip_no_godot3_rule():
+    """The few-shot responses are known-good Godot 4. Any match here is a
+    false positive that would reject correct code on every single run."""
+    from saga.agents import coder
+
+    sources = {
+        name: getattr(coder, name)
+        for name in dir(coder)
+        if name.endswith(("EXAMPLE_RESPONSE", "_GD"))
+    }
+    offenders = {
+        name: _godot3_violations(source)
+        for name, source in sources.items()
+        if isinstance(source, str) and _godot3_violations(source)
+    }
+
+    assert sources, "expected worked examples to check against"
+    assert offenders == {}
+
+
+def test_godot4_spellings_are_not_mistaken_for_their_godot3_ancestors():
+    """The \b in \bSprite\b cannot fire inside Sprite2D - that boundary is
+    what makes a rename table safe to run over every candidate."""
+    clean = (
+        "extends CharacterBody2D\n"
+        "@export var speed := 200.0\n"
+        "@onready var art: Sprite2D = $Sprite2D\n"
+        "var shape := $CollisionShape2D\n"
+        "var puff := $GPUParticles2D\n"
+        "var names := PackedStringArray()\n"
+        "func _physics_process(_d):\n"
+        "\tvelocity = Vector2.ZERO\n"
+        "\tmove_and_slide()\n"
+        "\tbody_entered.connect(_on_body_entered)\n"
+        "\tvar n = preload('res://x.tscn').instantiate()\n"
+        "\tif names.is_empty():\n"
+        "\t\tprint(Time.get_ticks_msec(), randf_range(0.0, 1.0))\n"
+    )
+
+    assert _godot3_violations(clean) == []
+
+
+def test_godot3_api_calls_are_named_with_their_replacement():
+    for source, expected in [
+        ("move_and_slide(velocity)", "no arguments"),
+        ('button.connect("pressed", self, "_on_pressed")', "Callable"),
+        ("export var speed = 5", "@export var"),
+        ("onready var hero = $Hero", "@onready var"),
+        ("yield(get_tree(), 'idle_frame')", "await"),
+        ("var n = scene.instance()", ".instantiate()"),
+    ]:
+        violations = _godot3_violations(source)
+        assert violations, f"{source!r} should be rejected"
+        assert any(expected in item for item in violations), f"{source!r} -> {violations}"
