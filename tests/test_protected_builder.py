@@ -196,6 +196,58 @@ def test_specialist_passes_execute_on_the_routed_model(tmp_path):
     assert by_id["hud"]["executed_model"] == "coder"
 
 
+def _capture_briefs(tmp_path):
+    """Run one build and return the user-role brief each specialist saw."""
+    script = tmp_path / "Level_0.gd"
+    script.write_text("extends Node\n", encoding="utf-8")
+    briefs = []
+
+    def route_chat(messages, _preferred):
+        briefs.append(messages[1]["content"])
+        return f"```gdscript\nextends Node\n# {len(briefs)}\n```", "coder"
+
+    protected_incremental_build(
+        script_file=script,
+        project_dir=tmp_path,
+        scene="res://Level_0.tscn",
+        level_index=0,
+        blueprint=_blueprint(),
+        build_plan=_plan(),
+        model="coder",
+        chat=lambda _messages, _model: "```gdscript\nextends Node\n```",
+        route_chat=route_chat,
+        extract_gdscript=lambda text: text.split("```gdscript\n", 1)[1].rsplit("```", 1)[0],
+        candidate_errors=lambda _candidate: [],
+        promote=_promote,
+    )
+    return briefs
+
+
+def test_specialist_briefs_carry_no_skill_reference_by_default(tmp_path):
+    briefs = _capture_briefs(tmp_path)
+
+    assert briefs
+    assert all("Engine reference" not in brief for brief in briefs)
+
+
+def test_enabled_skill_reference_precedes_the_system_contract(tmp_path, monkeypatch):
+    """Some vendored skills assume a many-script project, so the acceptance
+    criteria and the current script have to be what the model reads last."""
+    from types import SimpleNamespace
+
+    from saga import skills
+
+    monkeypatch.setattr(
+        skills, "settings", SimpleNamespace(skill_context=True, skill_context_limit=2)
+    )
+
+    movement = _capture_briefs(tmp_path)[0]
+
+    assert "godot-2d-movement" in movement
+    assert movement.index("Engine reference") < movement.index("ACCEPTANCE CRITERIA")
+    assert movement.index("Engine reference") < movement.index("CURRENT COMPLETE SCRIPT")
+
+
 def _run_with_probe(tmp_path, probe, replies=None):
     script = tmp_path / "Level_0.gd"
     script.write_text("extends Node\n", encoding="utf-8")

@@ -16,6 +16,7 @@ import time
 from typing import Callable
 
 from saga.repair_gate import RepairValidation, validate_and_promote_repair
+from saga.skills import skill_context
 
 
 SPECIALIST_PROMPT = """You are a specialist builder inside an automated Godot studio.
@@ -315,8 +316,15 @@ def protected_incremental_build(
         previous = script_file.read_text(encoding="utf-8")
         previous_hash = script_hash(previous)
         acceptance = system.get("acceptance") or step.get("acceptance") or []
+        # Background knowledge first, this system's contract last: several
+        # vendored skills assume a project of many scripts, so the acceptance
+        # criteria and the actual script must be what the model reads most
+        # recently. SPECIALIST_PROMPT stays in the system role above both.
+        # Empty string unless SAGA_SKILL_CONTEXT is on.
+        reference = skill_context(kind)
         specialist_brief = (
-            f"SYSTEM: {system_id} ({kind})\n"
+            (f"{reference}\n\n" if reference else "")
+            + f"SYSTEM: {system_id} ({kind})\n"
             f"DESCRIPTION: {system.get('description', '')}\n"
             f"DEPENDENCIES: {', '.join(depends_on) if depends_on else 'none'}\n"
             "ACCEPTANCE CRITERIA:\n"

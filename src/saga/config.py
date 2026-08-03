@@ -69,6 +69,8 @@ class Settings:
     coder_remote_model: str
     dotmaze_model: str
     coder_agentic: bool
+    skill_context: bool
+    skill_context_limit: int
     incremental_build: bool
     incremental_max_systems: int
     incremental_max_attempts: int
@@ -139,6 +141,8 @@ class Settings:
             coder_remote_model=coder_remote_model,
             dotmaze_model=_env("SAGA_DOTMAZE_MODEL", "batiai/qwen3.6-35b:q3"),
             coder_agentic=_bool_env("SAGA_CODER_AGENTIC"),
+            skill_context=_bool_env("SAGA_SKILL_CONTEXT"),
+            skill_context_limit=_int_env("SAGA_SKILL_CONTEXT_LIMIT", 2),
             incremental_build=_bool_env("SAGA_INCREMENTAL_BUILD"),
             incremental_max_systems=_int_env("SAGA_INCREMENTAL_MAX_SYSTEMS", 6),
             incremental_max_attempts=_int_env("SAGA_INCREMENTAL_MAX_ATTEMPTS", 2),

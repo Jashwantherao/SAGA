@@ -154,6 +154,38 @@ before the Director escalates. Route effectiveness feeds back into the
 ledger (`model` per attempt), so the benchmark and the router improve
 from every run — the production-memory loop from the v2 proposal.
 
+## Skill context (vendored engine knowledge)
+
+`skills.skill_context(kind)` routes the same task kinds to a curated subset of
+[awesome-gamedev-agent-skills](https://github.com/gamedev-skills/awesome-gamedev-agent-skills)
+(Apache-2.0), vendored under `vendor/gamedev-skills` at an exact commit by
+`scripts/vendor_skills.py`. Two skills per kind, injected at the head of the
+specialist brief so the acceptance criteria and the current script stay the
+most recent thing the model reads; `SPECIALIST_PROMPT` remains in the system
+role above both. Where a skill disagrees with SAGA's contract the contract
+wins, and the injected header says so — several upstream skills assume a
+project of many scripts and resources while the template Coder emits a single
+`Level_N.gd`.
+
+Three deliberate constraints:
+
+- **Pinned.** A skill edited upstream must never silently change a build or
+  invalidate a benchmark. `vendor_skills.py --check` fails on drift.
+- **Capped.** Two skills cost ~3.1k tokens on average. That is the whole
+  reason for progressive disclosure rather than loading the corpus.
+- **Off by default.** `SAGA_SKILL_CONTEXT=1` enables it. The local 14B is
+  the model most likely to *benefit* (weakest engine knowledge) and most
+  likely to *regress* (it drops declarations once a prompt outgrows its
+  few-shots), so the flag stays off until `benchmarks/skill_context_ab.json`
+  says otherwise. That suite pins everything else per pair and requires
+  `SAGA_INCREMENTAL_BUILD=1` in both arms — skill text reaches only the
+  specialist brief, so with incremental off the two arms are identical
+  prompts and the run measures nothing.
+
+Skills are knowledge, not capability: injecting the `rpg` skill does not give
+SAGA inventories. The scope firewall still decides which kinds the pipeline
+can build and verify.
+
 ## Migration and compatibility
 
 - The v2 path activates only when a blueprint is supplied
