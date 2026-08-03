@@ -41,6 +41,7 @@ from saga.config import settings
 from saga.repair_gate import recover_interrupted_repair, validate_and_promote_repair
 from saga.safety import assert_safe_gdscript, scan_generated_gdscript
 from saga.sfx import write_default_sfx
+from saga.skills import skill_context_for_kinds
 from saga.state import GraphState
 from saga.workspace import project_dir as run_project_dir
 
@@ -4230,6 +4231,29 @@ def _blueprint_contract(state: GraphState) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _skill_reference(state: GraphState) -> str:
+    """Vendored engine knowledge for the kinds this game actually contains.
+
+    The blueprint names them, so the monolithic Coder gets the same routed
+    references a specialist builder would - it writes every system in one
+    script, and until this existed the skill layer could not reach the path
+    that produces almost all of SAGA's GDScript. Empty unless
+    SAGA_SKILL_CONTEXT is on.
+    """
+    blueprint = state.get("blueprint") or {}
+    ordered_ids = [
+        step.get("system_id") for step in state.get("blueprint_build_plan") or []
+    ]
+    systems = {item.get("id"): item for item in blueprint.get("systems") or []}
+    kinds = [
+        systems[system_id].get("kind")
+        for system_id in (ordered_ids or list(systems))
+        if system_id in systems and systems[system_id].get("kind")
+    ]
+    reference = skill_context_for_kinds(kinds)
+    return f"{reference}\n\n" if reference else ""
+
+
 # Mechanics whose deterministic solver can answer "does this still complete?"
 # during a build, not just at the end of one. Kept in sync with the QA Agent's
 # objective-probe gate; a template outside it simply gets no behavioral gate.
@@ -4324,11 +4348,15 @@ def coder(state: GraphState) -> GraphState:
     # which files exist) and tends to flail into fallback code instead.
     assets_line = f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
     blueprint_contract = _blueprint_contract(state)
+    # Background knowledge leads; the script, the contract and the errors are
+    # what the model must read most recently.
+    skill_reference = _skill_reference(state)
 
     if qa_errors:
         previous_script = script_file.read_text(encoding="utf-8")
         errors_desc = "\n".join(f"- {e}" for e in qa_errors)
         user_prompt = (
+            f"{skill_reference}"
             f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
             f"{blueprint_contract}"
@@ -4339,6 +4367,7 @@ def coder(state: GraphState) -> GraphState:
         previous_script = script_file.read_text(encoding="utf-8")
         notes_desc = "\n".join(f"- {n}" for n in tune_notes)
         user_prompt = (
+            f"{skill_reference}"
             f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
             f"{blueprint_contract}"
@@ -4363,6 +4392,7 @@ def coder(state: GraphState) -> GraphState:
                 f"later levels get faster hazards, more of them, and tighter margins.\n"
             )
         user_prompt = (
+            f"{skill_reference}"
             f"Title: {design_doc['title']}\n"
             f"Genre: {design_doc['genre']}\n"
             f"Mechanic template: {template}\n"

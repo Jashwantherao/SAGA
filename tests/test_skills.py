@@ -87,6 +87,75 @@ def test_unknown_kind_gets_silence_not_a_default(skills_on):
     assert skills.skill_context("teleportation") == ""
 
 
+def test_whole_game_selection_spreads_across_kinds_before_going_deep(skills_on):
+    """The monolithic Coder writes every system in one script, so a capped
+    budget must cover several kinds rather than two skills about one."""
+    kinds = ["movement", "pickup", "hud", "objective"]
+
+    assert skills.skills_for_kinds(kinds, limit=2) == [
+        "godot/godot-2d-movement",
+        "godot/godot-signals-groups",
+    ]
+    assert skills.skills_for_kinds(kinds, limit=1) == ["godot/godot-2d-movement"]
+
+
+def test_whole_game_selection_deduplicates_shared_skills(skills_on):
+    """pickup and objective both route to signals-groups; paying for it twice
+    would waste half a two-skill budget."""
+    selected = skills.skills_for_kinds(["pickup", "objective"], limit=4)
+
+    assert len(selected) == len(set(selected))
+    assert "godot/godot-signals-groups" in selected
+
+
+def test_whole_game_context_is_empty_without_kinds(skills_on):
+    """A run with no blueprint gets no reference rather than a default."""
+    assert skills.skill_context_for_kinds([]) == ""
+
+
+def _coder_state():
+    return {
+        "blueprint": {
+            "systems": [
+                {"id": "movement", "kind": "movement"},
+                {"id": "pickup", "kind": "pickup"},
+                {"id": "hud", "kind": "hud"},
+            ]
+        },
+        "blueprint_build_plan": [
+            {"system_id": "movement"},
+            {"system_id": "pickup"},
+            {"system_id": "hud"},
+        ],
+    }
+
+
+def test_the_monolithic_coder_reaches_the_skill_layer(skills_on):
+    """The default path writes almost all of SAGA's GDScript; a skill layer
+    that only reached the specialist builder could never affect a normal run."""
+    from saga.agents.coder import _skill_reference
+
+    reference = _skill_reference(_coder_state())
+
+    assert "Engine reference" in reference
+    assert "godot-2d-movement" in reference
+    assert reference.endswith("\n\n"), "must separate cleanly from the prompt below"
+
+
+def test_coder_reference_is_empty_without_a_blueprint(skills_on):
+    from saga.agents.coder import _skill_reference
+
+    assert _skill_reference({}) == ""
+
+
+def test_coder_reference_is_empty_when_the_feature_is_off(monkeypatch):
+    from saga.agents.coder import _skill_reference
+
+    monkeypatch.setattr(skills, "settings", _settings(False))
+
+    assert _skill_reference(_coder_state()) == ""
+
+
 def test_routes_cover_the_pipeline_tasks_that_are_not_systems():
     for kind in ("architecture", "repair", "baseline"):
         assert skills.SKILL_ROUTES[kind]

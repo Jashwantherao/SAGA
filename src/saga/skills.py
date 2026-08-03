@@ -79,6 +79,29 @@ def skills_for(kind: str, *, limit: int | None = None) -> list[str]:
     return [skill for skill in routed if skill in present][: max(cap, 0)]
 
 
+def skills_for_kinds(kinds: list[str], *, limit: int | None = None) -> list[str]:
+    """Skills for a whole game's worth of kinds, favouring breadth over depth.
+
+    The monolithic Coder writes every system in one script, so it needs one
+    prompt covering several kinds rather than two skills about one. Selection
+    takes every kind's first skill before any kind's second, so a capped
+    budget spreads across the systems in play instead of being spent entirely
+    on whichever kind happens to sort first.
+    """
+    cap = settings.skill_context_limit if limit is None else limit
+    present = available_skills()
+    routes = [SKILL_ROUTES.get(kind, []) for kind in kinds]
+    ordered: list[str] = []
+    for rank in range(max((len(routed) for routed in routes), default=0)):
+        for routed in routes:
+            if rank >= len(routed):
+                continue
+            skill = routed[rank]
+            if skill in present and skill not in ordered:
+                ordered.append(skill)
+    return ordered[: max(cap, 0)]
+
+
 @lru_cache(maxsize=64)
 def _skill_body(skill: str) -> str:
     """A skill's prose, minus the YAML frontmatter.
@@ -96,15 +119,7 @@ def _skill_body(skill: str) -> str:
     return text.strip()
 
 
-def skill_context(kind: str, *, limit: int | None = None) -> str:
-    """Reference material for one task kind, or "" when there is none.
-
-    Empty is the normal answer: the feature is off by default, and callers
-    concatenate the result unconditionally.
-    """
-    if not settings.skill_context:
-        return ""
-    selected = skills_for(kind, limit=limit)
+def _render(selected: list[str]) -> str:
     if not selected:
         return ""
     sections = [
@@ -118,3 +133,25 @@ def skill_context(kind: str, *, limit: int | None = None) -> str:
         "disagree with the rules that follow, the rules that follow win.\n\n"
         + "\n\n".join(sections)
     )
+
+
+def skill_context(kind: str, *, limit: int | None = None) -> str:
+    """Reference material for one task kind, or "" when there is none.
+
+    Empty is the normal answer: the feature is off by default, and callers
+    concatenate the result unconditionally.
+    """
+    if not settings.skill_context:
+        return ""
+    return _render(skills_for(kind, limit=limit))
+
+
+def skill_context_for_kinds(kinds: list[str], *, limit: int | None = None) -> str:
+    """Reference material for a whole game, or "" when there is none.
+
+    The monolithic Coder's counterpart to skill_context: same budget, spread
+    across every kind the blueprint declares rather than spent on one.
+    """
+    if not settings.skill_context or not kinds:
+        return ""
+    return _render(skills_for_kinds(kinds, limit=limit))
