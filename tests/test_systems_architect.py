@@ -132,6 +132,91 @@ def test_scope_firewall_strips_generated_out_of_scope_systems():
     assert any("save_load" in note for note in bp["scope_notes"])
 
 
+def _scaffolding_only(design):
+    """What an over-ambitious architect leaves behind: the firewall keeps the
+    movement/hud scaffolding and removes every RPG system, so nothing that
+    implements the template's actual mechanic survives."""
+    bp = deterministic_blueprint(design)
+    bp["systems"] = [
+        system
+        for system in bp["systems"]
+        if system["kind"] in {"movement", "camera", "hud"}
+    ] or [
+        {
+            "id": "movement",
+            "kind": "movement",
+            "description": "The hero walks.",
+            "depends_on": [],
+            "acceptance": ["arrow keys move the hero"],
+        }
+    ]
+    return bp
+
+
+def test_firewall_leaving_only_scaffolding_is_rejected_not_validated_clean():
+    """validate_blueprint is design-blind and accepts any non-empty systems
+    list, so without a viability check a contract describing a game with no
+    gameplay passes structurally."""
+    design = _design("collect")
+    stripped = architect_module._canonicalize(_scaffolding_only(design), design)
+
+    assert validate_blueprint(stripped) == [], "structurally valid is the whole problem"
+
+    problems = architect_module._blueprint_problems(stripped, design)
+    assert len(problems) == 1
+    assert "collect core loop" in problems[0]
+    assert "pickup" in problems[0]
+
+
+def test_a_blueprint_that_keeps_its_mechanic_stays_viable():
+    design = _design("collect")
+    bp = architect_module._canonicalize(deterministic_blueprint(design), design)
+
+    assert architect_module._blueprint_problems(bp, design) == []
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "collect",
+        "survive_hazards",
+        "ordered_switches",
+        "depletion",
+        "survive_and_deplete",
+        "maze_chase",
+        "dot_maze",
+        "herd_to_goal",
+        "capture_zones",
+    ],
+)
+def test_deterministic_fallback_stays_viable_for_every_template(template):
+    """The fallback contract must never trip the check it is meant to survive."""
+    design = _design(template)
+
+    assert architect_module._viability_problems(deterministic_blueprint(design), design) == []
+
+
+def test_supplied_complex_blueprint_is_not_held_to_arcade_mechanics(tmp_path, monkeypatch):
+    """The firewall never runs on a human-reviewed contract, so nothing was
+    silently removed and the viability check must not reject it for being
+    outside the arcade templates."""
+    example = (
+        Path(__file__).resolve().parent.parent / "blueprints" / "example_action_rpg.json"
+    )
+    bp = json.loads(example.read_text(encoding="utf-8"))
+    monkeypatch.setattr(
+        architect_module,
+        "settings",
+        SimpleNamespace(architect_backend="nvidia", architect_model="nemotron-test"),
+    )
+
+    result = systems_architect(
+        {"run_dir": str(tmp_path), "design_doc": _design("collect"), "blueprint": bp}
+    )
+
+    assert result["blueprint"]["systems"], "supplied contract must survive intact"
+
+
 def test_supplied_blueprint_keeps_out_of_scope_systems_with_advisory_note(
     tmp_path, monkeypatch
 ):

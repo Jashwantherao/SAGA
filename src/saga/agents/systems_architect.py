@@ -161,6 +161,34 @@ def _allowed_kinds(design: dict) -> set[str]:
     return allowed
 
 
+def _viability_problems(bp: dict, design: dict) -> list[str]:
+    """Reject a blueprint the firewall stripped down past the core loop.
+
+    validate_blueprint is design-blind: it accepts any non-empty systems list,
+    so an architect that answers a collect template with movement, hud and
+    four out-of-scope RPG systems leaves a contract that validates clean and
+    describes a game with no gameplay in it. The firewall runs before
+    validation, so nothing else notices. Scaffolding kinds (movement, camera,
+    hud, level_transition) cannot satisfy this on their own - at least one
+    system must implement the template's own mechanic.
+    """
+    template = design.get("mechanic_template") or "collect"
+    mechanic_kinds = TEMPLATE_SYSTEM_KINDS.get(template, {"objective"})
+    kinds = {system.get("kind") for system in bp.get("systems") or []}
+    if kinds & mechanic_kinds:
+        return []
+    return [
+        f"no system implements the {template} core loop: expected at least one "
+        f"of {sorted(mechanic_kinds)}, got {sorted(kind for kind in kinds if kind)}"
+    ]
+
+
+def _blueprint_problems(bp: dict, design: dict) -> list[str]:
+    """Structural validity plus core-loop viability, for the generated paths
+    where the scope firewall can silently remove the mechanic."""
+    return validate_blueprint(bp) + _viability_problems(bp, design)
+
+
 def _annotate_out_of_scope(bp: dict, design: dict) -> None:
     """A supplied, human-reviewed blueprint keeps every system it declares.
 
@@ -429,7 +457,7 @@ def _generate_remote(design: dict) -> dict:
         temperature=0.2,
     )
     bp = _canonicalize(_parse_json(raw), design)
-    problems = validate_blueprint(bp)
+    problems = _blueprint_problems(bp, design)
     if problems:
         print(f"[Systems Architect] Invalid blueprint, one corrective retry: {problems}")
         messages += [
@@ -451,7 +479,7 @@ def _generate_remote(design: dict) -> dict:
             temperature=0.1,
         )
         bp = _canonicalize(_parse_json(raw), design)
-        problems = validate_blueprint(bp)
+        problems = _blueprint_problems(bp, design)
         if problems:
             raise ValueError(f"architect produced an invalid blueprint: {problems}")
     return bp
@@ -470,7 +498,7 @@ def _generate_local(design: dict) -> dict:
         options={"num_ctx": 16384, "num_predict": 8000, "temperature": 0.2},
     )
     bp = _canonicalize(_parse_json(response["message"]["content"]), design)
-    problems = validate_blueprint(bp)
+    problems = _blueprint_problems(bp, design)
     if problems:
         raise ValueError(f"local architect produced an invalid blueprint: {problems}")
     return bp
@@ -519,7 +547,11 @@ def systems_architect(state: GraphState) -> GraphState:
             bp = deterministic_blueprint(design)
             status = "fallback"
 
-    problems = validate_blueprint(bp)
+    # A supplied blueprint keeps every system it declares - the firewall never
+    # ran on it - so only the generated paths can have lost their core loop to
+    # scope filtering. Holding a human-reviewed complex-game contract to the
+    # arcade templates' mechanic kinds would reject it for being ambitious.
+    problems = validate_blueprint(bp) if supplied else _blueprint_problems(bp, design)
     if problems:
         raise ValueError(f"Systems Architect produced an invalid fallback: {problems}")
     plan = compile_build_plan(bp)
