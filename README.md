@@ -127,7 +127,7 @@ Every model is swappable via environment variable without touching code:
 | Variable | Default | Controls |
 |---|---|---|
 | `SAGA_DESIGNER_BACKEND` | `local` | `local` or `claude` |
-| `SAGA_DIRECTOR_BACKEND` | `local` | Studio Director triage: `local`, `claude`, or `deepseek`/`openai`/`remote` |
+| `SAGA_DIRECTOR_BACKEND` | `local` | Studio Director triage: `local`, `claude`, `deepseek`/`openai`/`remote`, or `deterministic` for bounded no-model repair routing |
 | `SAGA_DIRECTOR_MODEL` | the Coder's model | Director's local triage model. Defaults to whatever the Coder is using so a triage between attempts costs no VRAM swap |
 | `SAGA_DIRECTOR_REMOTE_MODEL` | `deepseek-v4-pro` | Director's model when hosted |
 | `SAGA_ARCHITECT_BACKEND` | `nvidia` | Systems Architect transport: hosted, `local`, or `deterministic`/`off` for the no-call fallback |
@@ -137,12 +137,16 @@ Every model is swappable via environment variable without touching code:
 | `SAGA_ARCHITECT_TIMEOUT` | `180` | Architect timeout in seconds before deterministic fallback |
 | `SAGA_INCREMENTAL_BUILD` | unset | Set to `1` for protected dependency-ordered specialist refinement after the initial draft |
 | `SAGA_INCREMENTAL_MAX_SYSTEMS` | `6` | Maximum focused system-builder calls per level in quality mode |
+| `SAGA_EXPERIENCE_MEMORY` | unset | Set to `1` to give fresh Coder generations a compact, similar, first-pass script from the QA-verified same-mechanic corpus; remains opt-in pending broader A/B evidence |
+| `SAGA_EXPERIENCE_MEMORY_LIMIT` | `1` | Maximum verified prior scripts injected into one fresh-generation prompt |
+| `SAGA_EXPERIENCE_MEMORY_MAX_CHARS` | `12000` | Hard prompt budget for complete memory examples; partial scripts are never included |
 | `SAGA_DESIGNER_MODEL` | `hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q3_K_S` | Game Designer's local model |
 | `SAGA_CODER_MODEL` | `qwen2.5-coder:14b` | Coder's model |
 | `SAGA_DOTMAZE_MODEL` | `batiai/qwen3.6-35b:q3` | Coder's model specifically for `dot_maze` (its few-shot exceeds the 14B's reliable imitation length) |
 | `SAGA_VISION_MODEL` | `gemma4:12b` | QA's screenshot reviewer (local backend) |
 | `SAGA_CODER_BACKEND` | `ollama` | `ollama`, or `deepseek`/`openai`/`remote` for any OpenAI-compatible API |
 | `SAGA_CODER_REMOTE_MODEL` | `deepseek-v4-pro` | Coder's model when hosted |
+| `SAGA_CODER_TIMEOUT` | `300` | Maximum seconds for one hosted Coder or specialist attempt before it fails visibly; SDK auto-retries are disabled so the ceiling is real |
 | `SAGA_OPENAI_BASE_URL` | `https://api.deepseek.com` | Any OpenAI-compatible endpoint |
 | `SAGA_OPENAI_KEY_ENV` | `DEEPSEEK_API_KEY` | Which env var holds the key |
 | `SAGA_VISION_BACKEND` | `local` | `nvidia` routes screenshot review to a hosted VLM |

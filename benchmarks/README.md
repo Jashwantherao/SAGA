@@ -67,6 +67,35 @@ everything else constant:
 Compare the paired profiles' quality, retries, and median time; the per-system
 ledger for each job is in its manifest's `system_build_results`.
 
+## Verified-experience-memory A/B
+
+`experience_memory_ab.json` isolates retrieval from the local QA-passed Coder
+corpus. Both arms use the same model, deterministic architect, fixed design
+documents, assets, and QA stack; only `SAGA_EXPERIENCE_MEMORY` changes. The
+retriever never crosses mechanic templates and emits only complete scripts.
+
+```powershell
+.\.venv\Scripts\python.exe -m saga.benchmark benchmarks\experience_memory_ab.json `
+  --max-runs 6 `
+  --max-minutes 240 `
+  --timeout-minutes 40 `
+  --output-dir output\benchmarks\experience-memory-ab-v1
+```
+
+Promote memory to the default only if the on arm improves first-pass levels or
+quality without reducing truthful ship rate. A larger prompt by itself is not
+evidence of a better agent.
+
+The first `experience-memory-ab-v1` pilot (2026-08-08, one repetition per
+case) kept ship rate even at 67%, but was mixed by mechanic: `collect` improved
+from 4 retries/78.33 quality to 0 retries/98.33, while
+`survive_and_deplete` regressed from 0 retries/100 to 2 retries/80 and both
+`dot_maze` arms failed. Memory therefore remains opt-in. The retriever now
+admits only compact (at most 8,000 characters), first-pass examples with at
+least 20% query-token overlap; this excludes the two harmful references from
+that pilot while retaining the useful `collect` example. Repeat the suite
+before changing the default.
+
 Comparability note: the Systems Architect contract is now appended to every
 Coder prompt, so runs made after that change are not comparable with
 `coder-pilot-v1` results even on the same cases. Rerun under a new suite id

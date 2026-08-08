@@ -58,6 +58,18 @@ def test_extracts_tagged_gdscript():
     assert extract_gdscript("```gdscript\nextends Node2D\n```") == "extends Node2D"
 
 
+def test_hosted_coder_call_has_an_explicit_timeout(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(coder_backend, "CODER_BACKEND", "openai")
+    monkeypatch.setattr(
+        "saga.llm.chat",
+        lambda messages, **kwargs: captured.update(kwargs) or "ok",
+    )
+
+    assert coder_backend.chat([], "hosted-model") == "ok"
+    assert captured["timeout"] == coder_backend.settings.coder_timeout
+
+
 def test_falls_back_to_generic_code_fence():
     assert extract_gdscript("```\nextends Node2D\n```") == "extends Node2D"
 

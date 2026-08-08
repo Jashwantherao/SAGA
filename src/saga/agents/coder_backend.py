@@ -50,7 +50,12 @@ def chat(messages: list[dict], model: str) -> str:
         from saga.llm import chat as hosted_chat
 
         # Reasoning models spend much of the budget before emitting the script.
-        return hosted_chat(messages, model=model, max_tokens=32000)
+        return hosted_chat(
+            messages,
+            model=model,
+            max_tokens=32000,
+            timeout=settings.coder_timeout,
+        )
     return _local_chat(messages, model)
 
 
@@ -76,7 +81,7 @@ def routed_chat(messages: list[dict], preferred_model: str | None, fallback_mode
                     max_tokens=32000,
                     base_url=spec["base_url"],
                     key_env=spec["key_env"],
-                    timeout=300.0,
+                    timeout=settings.coder_timeout,
                 ),
                 preferred_model,
             )

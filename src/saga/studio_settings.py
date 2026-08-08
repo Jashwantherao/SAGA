@@ -29,6 +29,7 @@ ENV_FIELDS = {
     "coder_backend": "SAGA_CODER_BACKEND",
     "coder_model": "SAGA_CODER_MODEL",
     "coder_remote_model": "SAGA_CODER_REMOTE_MODEL",
+    "coder_timeout": "SAGA_CODER_TIMEOUT",
     "dotmaze_model": "SAGA_DOTMAZE_MODEL",
     "vision_backend": "SAGA_VISION_BACKEND",
     "vision_model": "SAGA_VISION_MODEL",
@@ -43,6 +44,7 @@ ENV_FIELDS = {
     "incremental_build": "SAGA_INCREMENTAL_BUILD",
     "incremental_max_systems": "SAGA_INCREMENTAL_MAX_SYSTEMS",
     "incremental_max_attempts": "SAGA_INCREMENTAL_MAX_ATTEMPTS",
+    "experience_memory": "SAGA_EXPERIENCE_MEMORY",
 }
 SECRET_FIELDS = {
     "deepseek_api_key": "DEEPSEEK_API_KEY",
@@ -62,6 +64,7 @@ DEFAULTS = {
     "coder_backend": "ollama",
     "coder_model": "qwen2.5-coder:14b",
     "coder_remote_model": "deepseek-v4-pro",
+    "coder_timeout": "300",
     "dotmaze_model": "batiai/qwen3.6-35b:q3",
     "vision_backend": "local",
     "vision_model": "gemma4:12b",
@@ -76,6 +79,7 @@ DEFAULTS = {
     "incremental_build": "0",
     "incremental_max_systems": "6",
     "incremental_max_attempts": "2",
+    "experience_memory": "0",
 }
 MODEL_PRESETS = {
     "local": [
@@ -101,7 +105,9 @@ class StudioSettingsUpdate(BaseModel):
     designer_backend: Literal["local", "deepseek", "openai", "remote", "claude"]
     designer_model: str = Field(min_length=1, max_length=250)
     designer_remote_model: str = Field(min_length=1, max_length=250)
-    director_backend: Literal["local", "deepseek", "openai", "remote", "claude"]
+    director_backend: Literal[
+        "local", "deepseek", "openai", "remote", "claude", "deterministic"
+    ]
     director_model: str = Field(default="", max_length=250)
     director_remote_model: str = Field(min_length=1, max_length=250)
     architect_backend: Literal["nvidia", "local", "deterministic", "off"]
@@ -110,6 +116,7 @@ class StudioSettingsUpdate(BaseModel):
     coder_backend: Literal["ollama", "deepseek", "openai", "remote"]
     coder_model: str = Field(min_length=1, max_length=250)
     coder_remote_model: str = Field(min_length=1, max_length=250)
+    coder_timeout: float = Field(default=300, ge=30, le=1800)
     dotmaze_model: str = Field(min_length=1, max_length=250)
     vision_backend: Literal["local", "nvidia", "openai", "remote"]
     vision_model: str = Field(min_length=1, max_length=250)
@@ -124,6 +131,7 @@ class StudioSettingsUpdate(BaseModel):
     incremental_build: bool = False
     incremental_max_systems: int = Field(default=6, ge=1, le=12)
     incremental_max_attempts: int = Field(default=2, ge=1, le=4)
+    experience_memory: bool = False
     deepseek_api_key: str | None = Field(default=None, max_length=500)
     nvidia_api_key: str | None = Field(default=None, max_length=500)
     anthropic_api_key: str | None = Field(default=None, max_length=500)
@@ -157,10 +165,15 @@ def read_studio_settings() -> dict[str, Any]:
     result: dict[str, Any] = {}
     for field, env_name in ENV_FIELDS.items():
         raw = values.get(env_name, DEFAULTS[field])
-        if field in {"video_qa_enabled", "stop_gpu_services", "incremental_build"}:
+        if field in {
+            "video_qa_enabled", "stop_gpu_services", "incremental_build",
+            "experience_memory",
+        }:
             result[field] = raw.lower() in {"1", "true", "yes", "on"}
         elif field in {"incremental_max_systems", "incremental_max_attempts"}:
             result[field] = int(raw)
+        elif field == "coder_timeout":
+            result[field] = float(raw)
         else:
             result[field] = raw
     result["api_keys"] = {

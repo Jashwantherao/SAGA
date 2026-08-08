@@ -122,15 +122,18 @@ def _triage(state: GraphState) -> GraphState:
         f"(retry {retry_count}/{MAX_RETRIES}) - triaging"
     )
     evidence = _evidence_text(state, MAX_RETRIES)
-    try:
-        if backend == "claude":
-            decision = _decide_claude(evidence)
-        elif backend in ("deepseek", "openai", "remote"):
-            decision = _decide_remote(evidence)
-        else:
-            decision = _decide_local(evidence, _director_model(state))
-    except Exception as e:
-        decision = _fallback(retry_count, f"{type(e).__name__}: {e}")
+    if backend in {"deterministic", "off"}:
+        decision = _deterministic_decision(retry_count)
+    else:
+        try:
+            if backend == "claude":
+                decision = _decide_claude(evidence)
+            elif backend in ("deepseek", "openai", "remote"):
+                decision = _decide_remote(evidence)
+            else:
+                decision = _decide_local(evidence, _director_model(state))
+        except Exception as e:
+            decision = _fallback(retry_count, f"{type(e).__name__}: {e}")
     decision = _sanitize(decision, state, retry_count)
     print(f"[Studio Director/{backend}] {decision['action']}: {decision['reasoning']}")
     return _apply(state, decision)
@@ -246,6 +249,11 @@ def _fallback(retry_count: int, why: str) -> dict:
     coder.py used to hardcode. The pipeline must never block on its own
     supervisor."""
     print(f"[Studio Director] LLM triage unavailable ({why}) - deterministic fallback")
+    return _deterministic_decision(retry_count)
+
+
+def _deterministic_decision(retry_count: int) -> dict:
+    """Stable no-model triage for benchmarks and offline productions."""
     if retry_count >= 3:
         action = "regenerate"
         reasoning = "three fix attempts have not converged; fresh sampling beats repeating a failed repair"

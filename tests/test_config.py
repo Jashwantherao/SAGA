@@ -3,6 +3,7 @@ from saga.config import Settings
 
 def test_settings_read_environment_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("SAGA_CODER_MODEL", "test-coder")
+    monkeypatch.setenv("SAGA_CODER_TIMEOUT", "123")
     monkeypatch.setenv("SAGA_CODER_AGENTIC", "true")
     monkeypatch.setenv("SAGA_AGENT_MAX_TURNS", "7")
     monkeypatch.setenv("SAGA_OUTPUT_ROOT", str(tmp_path))
@@ -13,10 +14,14 @@ def test_settings_read_environment_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("SAGA_INCREMENTAL_BUILD", "true")
     monkeypatch.setenv("SAGA_INCREMENTAL_MAX_SYSTEMS", "4")
     monkeypatch.setenv("SAGA_INCREMENTAL_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv("SAGA_EXPERIENCE_MEMORY", "true")
+    monkeypatch.setenv("SAGA_EXPERIENCE_MEMORY_LIMIT", "2")
+    monkeypatch.setenv("SAGA_EXPERIENCE_MEMORY_MAX_CHARS", "9000")
 
     configured = Settings.from_environment()
 
     assert configured.coder_model == "test-coder"
+    assert configured.coder_timeout == 123.0
     assert configured.coder_agentic is True
     assert configured.agent_max_turns == 7
     assert configured.output_root == str(tmp_path)
@@ -27,6 +32,9 @@ def test_settings_read_environment_overrides(monkeypatch, tmp_path):
     assert configured.incremental_build is True
     assert configured.incremental_max_systems == 4
     assert configured.incremental_max_attempts == 3
+    assert configured.experience_memory is True
+    assert configured.experience_memory_limit == 2
+    assert configured.experience_memory_max_chars == 9000
 
 
 def test_invalid_numeric_setting_has_a_useful_error(monkeypatch):

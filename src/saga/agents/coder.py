@@ -39,6 +39,7 @@ from saga.agents.coder_contracts import (
     balance_violations,
 )
 from saga.config import settings
+from saga.experience import experience_context
 from saga.repair_gate import recover_interrupted_repair, validate_and_promote_repair
 from saga.safety import assert_safe_gdscript, scan_generated_gdscript
 from saga.sfx import write_default_sfx
@@ -4285,6 +4286,36 @@ def _skill_reference(state: GraphState) -> str:
     return f"{reference}\n\n" if reference else ""
 
 
+def _experience_reference(design_doc: dict, level_index: int) -> str:
+    """One relevant QA-passed script, bounded and disabled for clean A/Bs."""
+    if not settings.experience_memory:
+        return ""
+    levels = design_doc.get("levels") or [{}]
+    level = levels[min(level_index, len(levels) - 1)]
+    query = "\n".join(
+        [
+            str(design_doc.get("title") or ""),
+            str(design_doc.get("story_premise") or ""),
+            " ".join(design_doc.get("core_mechanics") or []),
+            str(design_doc.get("win_condition") or ""),
+            str(design_doc.get("lose_condition") or ""),
+            str(level.get("name") or ""),
+            str(level.get("description") or ""),
+            str(level.get("pressure_notes") or ""),
+        ]
+    )
+    reference = experience_context(
+        template=design_doc.get("mechanic_template") or "collect",
+        query=query,
+        limit=settings.experience_memory_limit,
+        max_chars=settings.experience_memory_max_chars,
+    )
+    if reference:
+        print("[Coder] Added QA-verified experience memory to the fresh-generation prompt")
+        return f"{reference}\n\n"
+    return ""
+
+
 # Mechanics whose deterministic solver can answer "does this still complete?"
 # during a build, not just at the end of one. Kept in sync with the QA Agent's
 # objective-probe gate; a template outside it simply gets no behavioral gate.
@@ -4382,7 +4413,6 @@ def coder(state: GraphState) -> GraphState:
     # Background knowledge leads; the script, the contract and the errors are
     # what the model must read most recently.
     skill_reference = _skill_reference(state)
-
     if qa_errors:
         previous_script = script_file.read_text(encoding="utf-8")
         errors_desc = "\n".join(f"- {e}" for e in qa_errors)
@@ -4406,6 +4436,9 @@ def coder(state: GraphState) -> GraphState:
         )
         system_prompt = TUNE_SYSTEM_PROMPT
     else:
+        # A worked reference is useful only for fresh generation. Repair
+        # prompts already carry the previous script and concrete QA errors.
+        experience_reference = _experience_reference(design_doc, current_level)
         key_item = design_doc["key_item"]
         level = levels[current_level]
         intensity = level.get("intensity")
@@ -4424,6 +4457,7 @@ def coder(state: GraphState) -> GraphState:
             )
         user_prompt = (
             f"{skill_reference}"
+            f"{experience_reference}"
             f"Title: {design_doc['title']}\n"
             f"Genre: {design_doc['genre']}\n"
             f"Mechanic template: {template}\n"

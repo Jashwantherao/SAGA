@@ -67,10 +67,14 @@ class Settings:
     coder_backend: str
     coder_model: str
     coder_remote_model: str
+    coder_timeout: float
     dotmaze_model: str
     coder_agentic: bool
     skill_context: bool
     skill_context_limit: int
+    experience_memory: bool
+    experience_memory_limit: int
+    experience_memory_max_chars: int
     incremental_build: bool
     incremental_max_systems: int
     incremental_max_attempts: int
@@ -139,10 +143,16 @@ class Settings:
             coder_backend=_env("SAGA_CODER_BACKEND", "ollama").lower(),
             coder_model=coder_model,
             coder_remote_model=coder_remote_model,
+            coder_timeout=_float_env("SAGA_CODER_TIMEOUT", 300.0),
             dotmaze_model=_env("SAGA_DOTMAZE_MODEL", "batiai/qwen3.6-35b:q3"),
             coder_agentic=_bool_env("SAGA_CODER_AGENTIC"),
             skill_context=_bool_env("SAGA_SKILL_CONTEXT"),
             skill_context_limit=_int_env("SAGA_SKILL_CONTEXT_LIMIT", 2),
+            experience_memory=_bool_env("SAGA_EXPERIENCE_MEMORY"),
+            experience_memory_limit=_int_env("SAGA_EXPERIENCE_MEMORY_LIMIT", 1),
+            experience_memory_max_chars=_int_env(
+                "SAGA_EXPERIENCE_MEMORY_MAX_CHARS", 12_000
+            ),
             incremental_build=_bool_env("SAGA_INCREMENTAL_BUILD"),
             incremental_max_systems=_int_env("SAGA_INCREMENTAL_MAX_SYSTEMS", 6),
             incremental_max_attempts=_int_env("SAGA_INCREMENTAL_MAX_ATTEMPTS", 2),

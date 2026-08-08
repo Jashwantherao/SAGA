@@ -97,6 +97,10 @@ def validate_blueprint(bp: dict) -> list[str]:
             problems.append(f"entities[{i}].ai_states must name at least one state")
 
     systems = bp.get("systems") or []
+    if not 3 <= len(systems) <= 12:
+        problems.append(
+            f"systems must contain 3-12 buildable systems, got {len(systems)}"
+        )
     seen_ids = set()
     for i, system in enumerate(systems):
         sid = system.get("id", "")

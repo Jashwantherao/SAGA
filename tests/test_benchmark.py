@@ -2,7 +2,15 @@ import json
 
 import pytest
 
-from saga.benchmark import Job, build_jobs, extract_result, load_suite, score, write_reports
+from saga.benchmark import (
+    Job,
+    build_job_environment,
+    build_jobs,
+    extract_result,
+    load_suite,
+    score,
+    write_reports,
+)
 
 
 def _suite(tmp_path):
@@ -40,6 +48,25 @@ def test_jobs_filter_and_repeat(tmp_path):
     assert [job.job_id for job in build_jobs(suite, {"model-a"}, {"case-a"})] == [
         "model-a__case-a__r1", "model-a__case-a__r2"
     ]
+
+
+def test_coder_benchmark_does_not_inherit_parent_architect(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAGA_ARCHITECT_BACKEND", "nvidia")
+
+    env = build_job_environment({"env": {}}, tmp_path / "output")
+
+    assert env["SAGA_ARCHITECT_BACKEND"] == "deterministic"
+
+
+def test_profile_can_explicitly_opt_into_model_architect(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAGA_ARCHITECT_BACKEND", "deterministic")
+
+    env = build_job_environment(
+        {"env": {"SAGA_ARCHITECT_BACKEND": "nvidia"}},
+        tmp_path / "output",
+    )
+
+    assert env["SAGA_ARCHITECT_BACKEND"] == "nvidia"
 
 
 def test_score_prioritizes_truthful_ship_and_first_pass():

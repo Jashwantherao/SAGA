@@ -49,6 +49,7 @@ def record_level(
         doc = design_doc or {}
         level = (doc.get("levels") or [{}])[min(level_index, len(doc.get("levels") or [{}]) - 1)]
         record = {
+            "schema_version": 2,
             "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "template": template,
             "model": model,
@@ -60,6 +61,10 @@ def record_level(
             # may want to weight clean first-try generations higher.
             "first_try": retry_count == 0,
             "vision_notes": vision_notes or [],
+            "verification": {
+                "status": "passed",
+                "gates": ["godot_startup", "runtime", "template_contract"],
+            },
             "prompt": prompt,
             "completion": script,
         }

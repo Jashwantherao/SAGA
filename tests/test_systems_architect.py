@@ -141,15 +141,15 @@ def _scaffolding_only(design):
         system
         for system in bp["systems"]
         if system["kind"] in {"movement", "camera", "hud"}
-    ] or [
-        {
-            "id": "movement",
-            "kind": "movement",
-            "description": "The hero walks.",
-            "depends_on": [],
-            "acceptance": ["arrow keys move the hero"],
-        }
     ]
+    if not any(system["kind"] == "camera" for system in bp["systems"]):
+        bp["systems"].append({
+            "id": "camera",
+            "kind": "camera",
+            "description": "The camera follows the hero.",
+            "depends_on": ["movement"],
+            "acceptance": ["the camera keeps the hero visible"],
+        })
     return bp
 
 

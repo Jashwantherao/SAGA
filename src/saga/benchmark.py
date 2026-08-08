@@ -18,6 +18,7 @@ SAFE_ENV_KEYS = {
     "SAGA_CODER_BACKEND",
     "SAGA_CODER_MODEL",
     "SAGA_CODER_REMOTE_MODEL",
+    "SAGA_CODER_TIMEOUT",
     "SAGA_DOTMAZE_MODEL",
     "SAGA_OPENAI_BASE_URL",
     "SAGA_OPENAI_KEY_ENV",
@@ -31,6 +32,9 @@ SAFE_ENV_KEYS = {
     "SAGA_INCREMENTAL_MAX_ATTEMPTS",
     "SAGA_SKILL_CONTEXT",
     "SAGA_SKILL_CONTEXT_LIMIT",
+    "SAGA_EXPERIENCE_MEMORY",
+    "SAGA_EXPERIENCE_MEMORY_LIMIT",
+    "SAGA_EXPERIENCE_MEMORY_MAX_CHARS",
 }
 
 
@@ -157,6 +161,26 @@ def extract_result(job: Job, output_root: Path, elapsed: float, exit_code: int, 
     }
 
 
+def build_job_environment(profile: dict, output_root: Path) -> dict[str, str]:
+    """Build an isolated environment for one benchmark job.
+
+    The parent process may have a model architect selected for normal studio
+    runs.  A coder benchmark must not inherit that selection: doing so adds a
+    second model call and changes the contract presented to the coder.  Only a
+    profile that explicitly names ``SAGA_ARCHITECT_BACKEND`` may opt in.
+    """
+    env = os.environ.copy()
+    profile_env = {
+        key: str(value) for key, value in profile.get("env", {}).items()
+    }
+    env.update(profile_env)
+    if "SAGA_ARCHITECT_BACKEND" not in profile_env:
+        env["SAGA_ARCHITECT_BACKEND"] = "deterministic"
+    env["SAGA_OUTPUT_ROOT"] = str(output_root)
+    env["SAGA_RECORD_CORPUS"] = "0"
+    return env
+
+
 def run_job(job: Job, suite_path: Path, root: Path, timeout_minutes: float) -> dict:
     job_dir = root / "jobs" / job.job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -164,14 +188,7 @@ def run_job(job: Job, suite_path: Path, root: Path, timeout_minutes: float) -> d
     if result_path.exists():
         return json.loads(result_path.read_text(encoding="utf-8"))
     output_root = job_dir / "saga_output"
-    env = os.environ.copy()
-    env.update({key: str(value) for key, value in job.profile.get("env", {}).items()})
-    # Coder benchmarks must isolate the coder. A model-generated architect
-    # contract would add a shared Nemotron call and change the input under
-    # test; full-studio suites can opt in explicitly per profile.
-    env.setdefault("SAGA_ARCHITECT_BACKEND", "deterministic")
-    env["SAGA_OUTPUT_ROOT"] = str(output_root)
-    env["SAGA_RECORD_CORPUS"] = "0"
+    env = build_job_environment(job.profile, output_root)
     design = (suite_path.parent / job.case["design_doc"]).resolve()
     command = [
         sys.executable, "-u", "-m", "saga.main", job.case["idea"],

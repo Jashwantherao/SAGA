@@ -56,6 +56,35 @@ def test_every_system_needs_acceptance_criteria():
     assert any("acceptance" in problem for problem in validate_blueprint(bp))
 
 
+@pytest.mark.parametrize("count", [0, 2, 13])
+def test_blueprint_enforces_advertised_system_count(count):
+    bp = _bp()
+    prototype = bp["systems"][-1]
+    while len(bp["systems"]) < count:
+        index = len(bp["systems"])
+        bp["systems"].append({
+            **prototype,
+            "id": f"system_{index}",
+            "depends_on": [],
+        })
+    bp["systems"] = bp["systems"][:count]
+
+    assert any("3-12" in problem for problem in validate_blueprint(bp))
+
+
+def test_blueprint_accepts_minimum_system_count():
+    bp = _bp()
+    bp["systems"].append({
+        "id": "hud",
+        "kind": "hud",
+        "description": "show progress",
+        "depends_on": ["pickups"],
+        "acceptance": ["the HUD shows collected pickups"],
+    })
+
+    assert validate_blueprint(bp) == []
+
+
 def test_unknown_dependency_is_flagged():
     bp = _bp()
     bp["systems"][1]["depends_on"] = ["teleporter"]

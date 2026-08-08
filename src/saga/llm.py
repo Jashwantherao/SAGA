@@ -83,7 +83,16 @@ def chat(
         kwargs["temperature"] = temperature
     if extra_body:
         kwargs["extra_body"] = extra_body
-    response = _get_client(base_url, key_env).chat.completions.create(**kwargs)
+    client = _get_client(base_url, key_env)
+    if timeout is not None:
+        # The OpenAI SDK retries timeouts by default, which turns a nominal
+        # five-minute ceiling into three opaque five-minute attempts. Callers
+        # that supplied a timeout are explicitly asking for a bounded agent
+        # step, so make it one attempt and let the pipeline's own retry/repair
+        # policy decide what happens next.
+        client = client.with_options(timeout=timeout, max_retries=0)
+        kwargs.pop("timeout", None)
+    response = client.chat.completions.create(**kwargs)
     return response.choices[0].message.content or ""
 
 
@@ -108,4 +117,8 @@ def chat_raw(
         kwargs["tools"] = tools
     if timeout is not None:
         kwargs["timeout"] = timeout
-    return _get_client(base_url, key_env).chat.completions.create(**kwargs).choices[0].message
+    client = _get_client(base_url, key_env)
+    if timeout is not None:
+        client = client.with_options(timeout=timeout, max_retries=0)
+        kwargs.pop("timeout", None)
+    return client.chat.completions.create(**kwargs).choices[0].message
