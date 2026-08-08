@@ -23,9 +23,13 @@ ENV_FIELDS = {
     "director_backend": "SAGA_DIRECTOR_BACKEND",
     "director_model": "SAGA_DIRECTOR_MODEL",
     "director_remote_model": "SAGA_DIRECTOR_REMOTE_MODEL",
+    "architect_backend": "SAGA_ARCHITECT_BACKEND",
+    "architect_model": "SAGA_ARCHITECT_MODEL",
+    "architect_base_url": "SAGA_ARCHITECT_BASE_URL",
     "coder_backend": "SAGA_CODER_BACKEND",
     "coder_model": "SAGA_CODER_MODEL",
     "coder_remote_model": "SAGA_CODER_REMOTE_MODEL",
+    "coder_timeout": "SAGA_CODER_TIMEOUT",
     "dotmaze_model": "SAGA_DOTMAZE_MODEL",
     "vision_backend": "SAGA_VISION_BACKEND",
     "vision_model": "SAGA_VISION_MODEL",
@@ -37,6 +41,10 @@ ENV_FIELDS = {
     "openai_base_url": "SAGA_OPENAI_BASE_URL",
     "vision_base_url": "SAGA_VISION_BASE_URL",
     "stop_gpu_services": "SAGA_STOP_GPU_SERVICES",
+    "incremental_build": "SAGA_INCREMENTAL_BUILD",
+    "incremental_max_systems": "SAGA_INCREMENTAL_MAX_SYSTEMS",
+    "incremental_max_attempts": "SAGA_INCREMENTAL_MAX_ATTEMPTS",
+    "experience_memory": "SAGA_EXPERIENCE_MEMORY",
 }
 SECRET_FIELDS = {
     "deepseek_api_key": "DEEPSEEK_API_KEY",
@@ -50,9 +58,13 @@ DEFAULTS = {
     "director_backend": "local",
     "director_model": "",
     "director_remote_model": "deepseek-v4-pro",
+    "architect_backend": "nvidia",
+    "architect_model": "nvidia/nemotron-3-super-120b-a12b",
+    "architect_base_url": "https://integrate.api.nvidia.com/v1",
     "coder_backend": "ollama",
     "coder_model": "qwen2.5-coder:14b",
     "coder_remote_model": "deepseek-v4-pro",
+    "coder_timeout": "300",
     "dotmaze_model": "batiai/qwen3.6-35b:q3",
     "vision_backend": "local",
     "vision_model": "gemma4:12b",
@@ -64,6 +76,10 @@ DEFAULTS = {
     "openai_base_url": "https://api.deepseek.com",
     "vision_base_url": "https://integrate.api.nvidia.com/v1",
     "stop_gpu_services": "0",
+    "incremental_build": "0",
+    "incremental_max_systems": "6",
+    "incremental_max_attempts": "2",
+    "experience_memory": "0",
 }
 MODEL_PRESETS = {
     "local": [
@@ -74,8 +90,12 @@ MODEL_PRESETS = {
     ],
     "deepseek": ["deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
     "nvidia": [
+        "nvidia/nemotron-3-super-120b-a12b",
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "poolside/laguna-xs-2.1",
+        "z-ai/glm-5.2",
+        "moonshotai/kimi-k2.6",
     ],
     "claude": ["claude-sonnet-5"],
 }
@@ -85,12 +105,18 @@ class StudioSettingsUpdate(BaseModel):
     designer_backend: Literal["local", "deepseek", "openai", "remote", "claude"]
     designer_model: str = Field(min_length=1, max_length=250)
     designer_remote_model: str = Field(min_length=1, max_length=250)
-    director_backend: Literal["local", "deepseek", "openai", "remote", "claude"]
+    director_backend: Literal[
+        "local", "deepseek", "openai", "remote", "claude", "deterministic"
+    ]
     director_model: str = Field(default="", max_length=250)
     director_remote_model: str = Field(min_length=1, max_length=250)
+    architect_backend: Literal["nvidia", "local", "deterministic", "off"]
+    architect_model: str = Field(min_length=1, max_length=250)
+    architect_base_url: str = Field(min_length=8, max_length=500)
     coder_backend: Literal["ollama", "deepseek", "openai", "remote"]
     coder_model: str = Field(min_length=1, max_length=250)
     coder_remote_model: str = Field(min_length=1, max_length=250)
+    coder_timeout: float = Field(default=300, ge=30, le=1800)
     dotmaze_model: str = Field(min_length=1, max_length=250)
     vision_backend: Literal["local", "nvidia", "openai", "remote"]
     vision_model: str = Field(min_length=1, max_length=250)
@@ -102,11 +128,15 @@ class StudioSettingsUpdate(BaseModel):
     openai_base_url: str = Field(min_length=8, max_length=500)
     vision_base_url: str = Field(min_length=8, max_length=500)
     stop_gpu_services: bool = False
+    incremental_build: bool = False
+    incremental_max_systems: int = Field(default=6, ge=1, le=12)
+    incremental_max_attempts: int = Field(default=2, ge=1, le=4)
+    experience_memory: bool = False
     deepseek_api_key: str | None = Field(default=None, max_length=500)
     nvidia_api_key: str | None = Field(default=None, max_length=500)
     anthropic_api_key: str | None = Field(default=None, max_length=500)
 
-    @field_validator("openai_base_url", "vision_base_url")
+    @field_validator("openai_base_url", "vision_base_url", "architect_base_url")
     @classmethod
     def validate_url(cls, value: str) -> str:
         clean = value.strip().rstrip("/")
@@ -116,7 +146,7 @@ class StudioSettingsUpdate(BaseModel):
 
     @field_validator(
         "designer_model", "designer_remote_model", "director_model",
-        "director_remote_model", "coder_model", "coder_remote_model",
+        "director_remote_model", "architect_model", "coder_model", "coder_remote_model",
         "dotmaze_model", "vision_model", "vision_remote_model",
         "feedback_model", "video_model",
     )
@@ -135,7 +165,17 @@ def read_studio_settings() -> dict[str, Any]:
     result: dict[str, Any] = {}
     for field, env_name in ENV_FIELDS.items():
         raw = values.get(env_name, DEFAULTS[field])
-        result[field] = raw.lower() in {"1", "true", "yes", "on"} if field in {"video_qa_enabled", "stop_gpu_services"} else raw
+        if field in {
+            "video_qa_enabled", "stop_gpu_services", "incremental_build",
+            "experience_memory",
+        }:
+            result[field] = raw.lower() in {"1", "true", "yes", "on"}
+        elif field in {"incremental_max_systems", "incremental_max_attempts"}:
+            result[field] = int(raw)
+        elif field == "coder_timeout":
+            result[field] = float(raw)
+        else:
+            result[field] = raw
     result["api_keys"] = {
         field.removesuffix("_api_key"): bool(values.get(env_name))
         for field, env_name in SECRET_FIELDS.items()

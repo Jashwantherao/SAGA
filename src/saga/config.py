@@ -58,11 +58,26 @@ class Settings:
     director_model: str | None
     director_remote_model: str
 
+    architect_backend: str
+    architect_model: str
+    architect_base_url: str
+    architect_key_env: str
+    architect_timeout: float
+
     coder_backend: str
     coder_model: str
     coder_remote_model: str
+    coder_timeout: float
     dotmaze_model: str
     coder_agentic: bool
+    skill_context: bool
+    skill_context_limit: int
+    experience_memory: bool
+    experience_memory_limit: int
+    experience_memory_max_chars: int
+    incremental_build: bool
+    incremental_max_systems: int
+    incremental_max_attempts: int
     stop_gpu_services: bool
     agent_max_turns: int
 
@@ -114,11 +129,33 @@ class Settings:
             director_backend=_env("SAGA_DIRECTOR_BACKEND", "local").lower(),
             director_model=_optional_env("SAGA_DIRECTOR_MODEL"),
             director_remote_model=_env("SAGA_DIRECTOR_REMOTE_MODEL", "deepseek-v4-pro"),
+            architect_backend=_env("SAGA_ARCHITECT_BACKEND", "nvidia").lower(),
+            architect_model=_env(
+                "SAGA_ARCHITECT_MODEL",
+                "nvidia/nemotron-3-super-120b-a12b",
+            ),
+            architect_base_url=_env(
+                "SAGA_ARCHITECT_BASE_URL",
+                "https://integrate.api.nvidia.com/v1",
+            ).rstrip("/"),
+            architect_key_env=_env("SAGA_ARCHITECT_KEY_ENV", "NVIDIA_API_KEY"),
+            architect_timeout=_float_env("SAGA_ARCHITECT_TIMEOUT", 180.0),
             coder_backend=_env("SAGA_CODER_BACKEND", "ollama").lower(),
             coder_model=coder_model,
             coder_remote_model=coder_remote_model,
+            coder_timeout=_float_env("SAGA_CODER_TIMEOUT", 300.0),
             dotmaze_model=_env("SAGA_DOTMAZE_MODEL", "batiai/qwen3.6-35b:q3"),
             coder_agentic=_bool_env("SAGA_CODER_AGENTIC"),
+            skill_context=_bool_env("SAGA_SKILL_CONTEXT"),
+            skill_context_limit=_int_env("SAGA_SKILL_CONTEXT_LIMIT", 2),
+            experience_memory=_bool_env("SAGA_EXPERIENCE_MEMORY"),
+            experience_memory_limit=_int_env("SAGA_EXPERIENCE_MEMORY_LIMIT", 1),
+            experience_memory_max_chars=_int_env(
+                "SAGA_EXPERIENCE_MEMORY_MAX_CHARS", 12_000
+            ),
+            incremental_build=_bool_env("SAGA_INCREMENTAL_BUILD"),
+            incremental_max_systems=_int_env("SAGA_INCREMENTAL_MAX_SYSTEMS", 6),
+            incremental_max_attempts=_int_env("SAGA_INCREMENTAL_MAX_ATTEMPTS", 2),
             stop_gpu_services=_bool_env("SAGA_STOP_GPU_SERVICES"),
             agent_max_turns=_int_env("SAGA_AGENT_MAX_TURNS", 14),
             vision_backend=_env("SAGA_VISION_BACKEND", "local").lower(),

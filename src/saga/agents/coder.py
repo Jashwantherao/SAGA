@@ -28,6 +28,7 @@ from saga.agents.coder_backend import (
     chat as _chat,
     extract_gdscript as _extract_gdscript,
     is_remote as _is_remote,
+    routed_chat as _routed_chat,
     stop_gpu_services as _stop_gpu_services,
 )
 from saga.agents.coder_contracts import (
@@ -35,10 +36,14 @@ from saga.agents.coder_contracts import (
     TEMPLATE_CONTRACTS,
     UNIVERSAL_CONTRACTS,
     animation_call_violations,
+    balance_violations,
 )
+from saga.config import settings
+from saga.experience import experience_context
 from saga.repair_gate import recover_interrupted_repair, validate_and_promote_repair
 from saga.safety import assert_safe_gdscript, scan_generated_gdscript
 from saga.sfx import write_default_sfx
+from saga.skills import skill_context_for_kinds
 from saga.state import GraphState
 from saga.workspace import project_dir as run_project_dir
 
@@ -2259,7 +2264,11 @@ GODOT4_API_NOTES = (
     "`await`. Signals connect and emit as `sig.connect(callable)` and "
     "`sig.emit(...)`. Renamed: instance() -> instantiate(), .empty() -> "
     ".is_empty(), rand_range -> randf_range, OS.get_ticks_msec() -> "
-    "Time.get_ticks_msec(). Set label text size with "
+    "Time.get_ticks_msec(). Godot 3 node names are gone: KinematicBody2D -> "
+    "CharacterBody2D, Sprite -> Sprite2D, AnimatedSprite -> AnimatedSprite2D, "
+    "CollisionShape -> CollisionShape2D, Particles2D -> GPUParticles2D, "
+    "export/onready -> @export/@onready. move_and_slide() takes no arguments; "
+    "set the velocity property first. Set label text size with "
     "label.add_theme_font_size_override(\"font_size\", n). A physics body must "
     "be inside the tree before move_and_slide() or any body_test_motion() "
     "call. Parse JSON with JSON.parse_string(text), which returns the value "
@@ -2437,8 +2446,10 @@ TEMPLATE_REQUIREMENTS = {
         "player is within a named panic_radius variable - beyond that radius "
         "it does not move at all. Inside the radius it moves along the vector "
         "pointing away from the player, scaled by speed and delta, clamped "
-        "inside the viewport; flee speed must stay well below the player's "
-        "speed or it can never be caught up with. A creature whose position "
+        "inside the viewport; flee_speed MUST be less than 0.6 x speed (aim "
+        "for about 0.4 x, as the worked example does) or the creature can "
+        "never be caught up with and objective QA rejects the level outright. "
+        "A creature whose position "
         "is inside goal_radius SETTLES permanently: set creature_settled[index], "
         "stop it fleeing for the rest of the level no matter how close the "
         "player comes, and play the pickup sound once. Track the settled "
@@ -4157,6 +4168,7 @@ def _contract_violations(gdscript: str, template: str) -> list[str]:
     contract = (TEMPLATE_CONTRACTS.get(template) or []) + UNIVERSAL_CONTRACTS
     violations = [desc for desc, pattern in contract if not re.search(pattern, gdscript)]
     violations += animation_call_violations(gdscript)
+    violations += balance_violations(gdscript, template)
     violations += [desc for desc, pattern in FORBIDDEN_PATTERNS if re.search(pattern, gdscript)]
     return list(dict.fromkeys(violations))
 
@@ -4177,6 +4189,16 @@ def _final_candidate_errors(
     return errors
 
 
+_REJECTED_NOTICE = (
+    "Repair candidate rejected before promotion; the previous gameplay script was preserved."
+)
+_GOAL_PREFIX = "Original repair goal: "
+_VALIDATION_PREFIX = "Candidate validation: "
+# Enough history for the model to see what it keeps getting wrong, bounded so
+# a stubborn level cannot crowd the actual script out of the prompt.
+_MAX_GOALS = 6
+
+
 def _rejected_repair_result(
     *,
     project_dir: Path,
@@ -4184,11 +4206,24 @@ def _rejected_repair_result(
     original_goal: list[str],
     errors: list[str],
 ) -> GraphState:
-    evidence = [
-        "Repair candidate rejected before promotion; the previous gameplay script was preserved."
-    ]
-    evidence += [f"Candidate validation: {error}" for error in errors]
-    evidence += [f"Original repair goal: {goal}" for goal in original_goal]
+    evidence = [_REJECTED_NOTICE]
+    evidence += [f"{_VALIDATION_PREFIX}{error}" for error in errors]
+
+    # A rejected repair feeds its own evidence back in as the next attempt's
+    # goal, so re-wrapping it verbatim nested one prefix per retry and
+    # repeated the same two parse errors a dozen times - growing the prompt
+    # fastest exactly when the model is already failing to hold it. Unwrap to
+    # the underlying goal, drop what this rejection already states, dedupe.
+    goals: list[str] = []
+    for goal in original_goal:
+        while goal.startswith(_GOAL_PREFIX):
+            goal = goal[len(_GOAL_PREFIX) :]
+        if goal == _REJECTED_NOTICE or goal in evidence or goal in goals:
+            continue
+        if goal.startswith(_VALIDATION_PREFIX) and goal[len(_VALIDATION_PREFIX) :] in errors:
+            continue
+        goals.append(goal)
+    evidence += [f"{_GOAL_PREFIX}{goal}" for goal in goals[:_MAX_GOALS]]
     print(f"[Coder] Repair candidate rejected; previous script restored: {errors}")
     return {
         "godot_project_path": str(project_dir),
@@ -4197,6 +4232,119 @@ def _rejected_repair_result(
         "repair_rejected": True,
         "repair_validation_errors": evidence,
     }
+
+
+def _blueprint_contract(state: GraphState) -> str:
+    """Compact architect handoff appended to fresh, repair and tune prompts."""
+    blueprint = state.get("blueprint") or {}
+    if not blueprint:
+        return ""
+    systems = {item.get("id"): item for item in blueprint.get("systems") or []}
+    ordered_ids = [
+        step.get("system_id") for step in state.get("blueprint_build_plan") or []
+    ]
+    if not ordered_ids:
+        ordered_ids = list(systems)
+
+    lines = [
+        "SYSTEMS ARCHITECT CONTRACT (mandatory; preserve it during repairs):",
+        "Core loop: " + " -> ".join(blueprint.get("core_loop") or []),
+    ]
+    for system_id in ordered_ids:
+        system = systems.get(system_id)
+        if not system:
+            continue
+        deps = ", ".join(system.get("depends_on") or []) or "none"
+        lines.append(
+            f"- {system_id} [{system.get('kind')}], after: {deps}: "
+            f"{system.get('description', '')}"
+        )
+        lines.extend(f"  ACCEPT: {criterion}" for criterion in system.get("acceptance") or [])
+    return "\n".join(lines) + "\n"
+
+
+def _skill_reference(state: GraphState) -> str:
+    """Vendored engine knowledge for the kinds this game actually contains.
+
+    The blueprint names them, so the monolithic Coder gets the same routed
+    references a specialist builder would - it writes every system in one
+    script, and until this existed the skill layer could not reach the path
+    that produces almost all of SAGA's GDScript. Empty unless
+    SAGA_SKILL_CONTEXT is on.
+    """
+    blueprint = state.get("blueprint") or {}
+    ordered_ids = [
+        step.get("system_id") for step in state.get("blueprint_build_plan") or []
+    ]
+    systems = {item.get("id"): item for item in blueprint.get("systems") or []}
+    kinds = [
+        systems[system_id].get("kind")
+        for system_id in (ordered_ids or list(systems))
+        if system_id in systems and systems[system_id].get("kind")
+    ]
+    reference = skill_context_for_kinds(kinds)
+    return f"{reference}\n\n" if reference else ""
+
+
+def _experience_reference(design_doc: dict, level_index: int) -> str:
+    """One relevant QA-passed script, bounded and disabled for clean A/Bs."""
+    if not settings.experience_memory:
+        return ""
+    levels = design_doc.get("levels") or [{}]
+    level = levels[min(level_index, len(levels) - 1)]
+    query = "\n".join(
+        [
+            str(design_doc.get("title") or ""),
+            str(design_doc.get("story_premise") or ""),
+            " ".join(design_doc.get("core_mechanics") or []),
+            str(design_doc.get("win_condition") or ""),
+            str(design_doc.get("lose_condition") or ""),
+            str(level.get("name") or ""),
+            str(level.get("description") or ""),
+            str(level.get("pressure_notes") or ""),
+        ]
+    )
+    reference = experience_context(
+        template=design_doc.get("mechanic_template") or "collect",
+        query=query,
+        limit=settings.experience_memory_limit,
+        max_chars=settings.experience_memory_max_chars,
+    )
+    if reference:
+        print("[Coder] Added QA-verified experience memory to the fresh-generation prompt")
+        return f"{reference}\n\n"
+    return ""
+
+
+# Mechanics whose deterministic solver can answer "does this still complete?"
+# during a build, not just at the end of one. Kept in sync with the QA Agent's
+# objective-probe gate; a template outside it simply gets no behavioral gate.
+PROBED_TEMPLATES = {
+    "collect",
+    "ordered_switches",
+    "survive_hazards",
+    "depletion",
+    "survive_and_deplete",
+    "capture_zones",
+    "herd_to_goal",
+    "dot_maze",
+    "maze_chase",
+}
+
+
+def _objective_probe_for(project_dir, level_index: int, template: str):
+    """Bind the QA Agent's objective solver to this level, or None when the
+    template has no deterministic completion probe."""
+    if template not in PROBED_TEMPLATES:
+        return None
+    from saga.agents.qa_agent import _run_objective_probe
+
+    def run_probe():
+        return _run_objective_probe(
+            str(project_dir), f"res://Level_{level_index}.tscn", template
+        )
+
+    return run_probe
 
 
 def coder(state: GraphState) -> GraphState:
@@ -4261,13 +4409,18 @@ def coder(state: GraphState) -> GraphState:
     # cannot recover from an invented-filename error (it has no way to know
     # which files exist) and tends to flail into fallback code instead.
     assets_line = f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
-
+    blueprint_contract = _blueprint_contract(state)
+    # Background knowledge leads; the script, the contract and the errors are
+    # what the model must read most recently.
+    skill_reference = _skill_reference(state)
     if qa_errors:
         previous_script = script_file.read_text(encoding="utf-8")
         errors_desc = "\n".join(f"- {e}" for e in qa_errors)
         user_prompt = (
+            f"{skill_reference}"
             f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
+            f"{blueprint_contract}"
             f"Godot reported these errors:\n{errors_desc}\n"
         )
         system_prompt = FIX_SYSTEM_PROMPT
@@ -4275,12 +4428,17 @@ def coder(state: GraphState) -> GraphState:
         previous_script = script_file.read_text(encoding="utf-8")
         notes_desc = "\n".join(f"- {n}" for n in tune_notes)
         user_prompt = (
+            f"{skill_reference}"
             f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
+            f"{blueprint_contract}"
             f"Apply these tuning changes:\n{notes_desc}\n"
         )
         system_prompt = TUNE_SYSTEM_PROMPT
     else:
+        # A worked reference is useful only for fresh generation. Repair
+        # prompts already carry the previous script and concrete QA errors.
+        experience_reference = _experience_reference(design_doc, current_level)
         key_item = design_doc["key_item"]
         level = levels[current_level]
         intensity = level.get("intensity")
@@ -4298,6 +4456,8 @@ def coder(state: GraphState) -> GraphState:
                 f"later levels get faster hazards, more of them, and tighter margins.\n"
             )
         user_prompt = (
+            f"{skill_reference}"
+            f"{experience_reference}"
             f"Title: {design_doc['title']}\n"
             f"Genre: {design_doc['genre']}\n"
             f"Mechanic template: {template}\n"
@@ -4309,6 +4469,7 @@ def coder(state: GraphState) -> GraphState:
             f"This is level {current_level + 1} of {total_levels}: "
             f"{level['name']}: {level['description']}\n"
             f"{difficulty_line}"
+            f"{blueprint_contract}"
             f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
         )
         requirements = TEMPLATE_REQUIREMENTS.get(template, TEMPLATE_REQUIREMENTS["collect"])
@@ -4480,6 +4641,36 @@ def coder(state: GraphState) -> GraphState:
     else:
         script_file.write_text(gdscript, encoding="utf-8")
 
+    system_build_results = None
+    if not is_repair and settings.incremental_build and state.get("blueprint"):
+        from saga.protected_builder import protected_incremental_build
+
+        print(
+            f"[Protected Builder] Quality mode enabled; refining up to "
+            f"{settings.incremental_max_systems} blueprint systems"
+        )
+        system_build_results = protected_incremental_build(
+            script_file=script_file,
+            project_dir=project_dir,
+            scene=f"res://Level_{current_level}.tscn",
+            level_index=current_level,
+            blueprint=state["blueprint"],
+            build_plan=state.get("blueprint_build_plan") or [],
+            model=model,
+            chat=_chat,
+            route_chat=lambda messages, preferred: _routed_chat(messages, preferred, model),
+            extract_gdscript=_extract_gdscript,
+            candidate_errors=lambda candidate: _final_candidate_errors(
+                candidate,
+                template=template,
+                valid_assets=valid_assets,
+            ),
+            existing_results=state.get("system_build_results") or [],
+            max_systems=settings.incremental_max_systems,
+            max_attempts=settings.incremental_max_attempts,
+            probe=_objective_probe_for(project_dir, current_level, template),
+        )
+
     action = "Fixed" if qa_errors else ("Tuned" if tune_notes else "Generated")
     print(
         f"[Coder] {action} level {current_level + 1}/{total_levels} "
@@ -4500,4 +4691,6 @@ def coder(state: GraphState) -> GraphState:
         # brief survives in state - a level that passes after two repairs
         # is still a valid (brief -> working script) training pair.
         result["coder_prompt"] = user_prompt
+    if system_build_results is not None:
+        result["system_build_results"] = system_build_results
     return result

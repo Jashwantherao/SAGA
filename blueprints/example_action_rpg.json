@@ -1,0 +1,157 @@
+{
+  "blueprint_version": 1,
+  "title": "Emberfall Warden",
+  "premise": "A lantern-bearing warden crosses a dimming keep to relight its heart-forge, trading sparks with the rust creatures that snuffed it.",
+  "core_loop": [
+    "Explore a room and fight or avoid rust creatures",
+    "Collect sparks and gear from fallen enemies and caches",
+    "Spend sparks with the hermit to open the path onward",
+    "Reach the heart-forge, defeat its warden, and relight it"
+  ],
+  "win_condition": "The heart-forge boss is defeated and the forge is relit.",
+  "lose_condition": "Hero hp reaches 0 with no checkpoint spark remaining.",
+  "player": {
+    "controls": [
+      "arrow keys: move in four directions",
+      "z: swing the lantern (melee attack)",
+      "x: interact / advance dialogue",
+      "c: open and close the inventory"
+    ],
+    "abilities": [
+      "lantern swing: 1 damage in a short frontal arc, 0.4s cooldown",
+      "spark dash: brief burst of speed, unlocked by the hermit's quest"
+    ]
+  },
+  "entities": [
+    {
+      "name": "rust_stalker",
+      "description": "A low, four-legged clot of corroded plate that hunts by lantern light.",
+      "ai_states": ["patrol", "chase", "attack", "staggered"]
+    },
+    {
+      "name": "forge_warden",
+      "description": "The boss: a furnace golem whose chest vents glow before each slam.",
+      "ai_states": ["idle", "slam", "vent_burst", "enraged", "defeated"]
+    },
+    {
+      "name": "hermit",
+      "description": "A soot-robed keeper who trades sparks for passage and gives the quest.",
+      "ai_states": ["idle", "talking"]
+    }
+  ],
+  "save_state": [
+    "hero position and current room",
+    "hero hp and unlocked abilities",
+    "inventory contents and spark count",
+    "quest stage and boss-defeated flag"
+  ],
+  "systems": [
+    {
+      "id": "movement",
+      "kind": "movement",
+      "description": "Four-directional hero movement with wall collision inside each 1024x576 room.",
+      "depends_on": [],
+      "acceptance": [
+        "Holding an arrow key moves the hero at a constant speed in that direction",
+        "The hero never passes through a wall rect or leaves the playfield",
+        "Releasing all keys stops the hero within one frame"
+      ]
+    },
+    {
+      "id": "hud",
+      "kind": "hud",
+      "description": "Always-visible hp, spark count, and quest hint line on a CanvasLayer.",
+      "depends_on": ["movement"],
+      "acceptance": [
+        "The HUD shows current hp, spark count, and active quest hint every frame",
+        "HUD values change in the same frame as the underlying state"
+      ]
+    },
+    {
+      "id": "combat",
+      "kind": "combat",
+      "description": "Lantern-swing melee with damage, knockback, hit cooldown, and hero death.",
+      "depends_on": ["movement", "hud"],
+      "acceptance": [
+        "A swing damages every enemy inside the frontal arc exactly once",
+        "Enemy contact costs the hero 1 hp and grants 1.0s of invulnerability",
+        "Hero hp never drops below 0 and death triggers the lose flow"
+      ]
+    },
+    {
+      "id": "stalker_ai",
+      "kind": "enemy_ai",
+      "description": "rust_stalker state machine: patrol waypoints, chase on sight, attack in range, staggered on hit.",
+      "depends_on": ["combat"],
+      "acceptance": [
+        "A stalker outside detection radius follows its patrol route",
+        "A stalker inside detection radius chases the hero and attacks in range",
+        "A hit stalker enters staggered for 0.5s and cannot deal damage during it"
+      ]
+    },
+    {
+      "id": "inventory",
+      "kind": "inventory",
+      "description": "Sparks and gear pickups collect into a c-key inventory panel.",
+      "depends_on": ["hud"],
+      "acceptance": [
+        "Walking over a pickup removes it from the room and adds it to the inventory",
+        "The inventory panel lists every held item and the exact spark count",
+        "Spending sparks reduces the count and never goes negative"
+      ]
+    },
+    {
+      "id": "dialogue",
+      "kind": "dialogue",
+      "description": "x-key dialogue with the hermit, advancing line by line with a visible speaker name.",
+      "depends_on": ["movement"],
+      "acceptance": [
+        "Pressing x next to the hermit opens dialogue and freezes hero movement",
+        "Each x press advances one line; the final press closes the dialogue and unfreezes the hero"
+      ]
+    },
+    {
+      "id": "quest",
+      "kind": "quest",
+      "description": "One quest: the hermit asks for 10 sparks, then unlocks spark dash and the forge door.",
+      "depends_on": ["dialogue", "inventory"],
+      "acceptance": [
+        "The quest stage advances only when 10 sparks are handed to the hermit",
+        "Completing the quest unlocks spark dash and opens the forge door",
+        "The HUD hint reflects the current quest stage"
+      ]
+    },
+    {
+      "id": "rooms",
+      "kind": "level_transition",
+      "description": "Three connected rooms with edge exits; enemies and pickups persist per room.",
+      "depends_on": ["movement", "stalker_ai", "inventory"],
+      "acceptance": [
+        "Walking through an exit loads the adjacent room and places the hero at the matching entrance",
+        "A cleared room stays cleared when revisited"
+      ]
+    },
+    {
+      "id": "boss_fight",
+      "kind": "boss",
+      "description": "forge_warden two-phase fight gated behind the quest-opened door.",
+      "depends_on": ["combat", "quest", "rooms"],
+      "acceptance": [
+        "The boss telegraphs every slam with a vent glow before dealing damage",
+        "At half hp the boss enters enraged and its attack cadence increases",
+        "Defeating the boss relights the forge and triggers the win flow"
+      ]
+    },
+    {
+      "id": "save_load",
+      "kind": "save_load",
+      "description": "Checkpoint save at room entry; load restores the full declared save_state.",
+      "depends_on": ["rooms", "quest"],
+      "acceptance": [
+        "Entering a room writes a checkpoint containing every field in save_state",
+        "Loading after a death restores position, hp, inventory, and quest stage exactly",
+        "Loading never duplicates already-collected pickups"
+      ]
+    }
+  ]
+}

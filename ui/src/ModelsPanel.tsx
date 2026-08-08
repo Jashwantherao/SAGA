@@ -5,11 +5,12 @@ const API = 'http://127.0.0.1:8765/api'
 type Settings = {
   designer_backend: string; designer_model: string; designer_remote_model: string
   director_backend: string; director_model: string; director_remote_model: string
-  coder_backend: string; coder_model: string; coder_remote_model: string; dotmaze_model: string
+  architect_backend: string; architect_model: string; architect_base_url: string
+  coder_backend: string; coder_model: string; coder_remote_model: string; coder_timeout: number; dotmaze_model: string
   vision_backend: string; vision_model: string; vision_remote_model: string
   feedback_backend: string; feedback_model: string
   video_qa_enabled: boolean; video_model: string
-  openai_base_url: string; vision_base_url: string; stop_gpu_services: boolean
+  openai_base_url: string; vision_base_url: string; stop_gpu_services: boolean; incremental_build: boolean; incremental_max_systems: number; experience_memory: boolean
   api_keys: { deepseek: boolean; nvidia: boolean; anthropic: boolean }
   deepseek_api_key?: string; nvidia_api_key?: string; anthropic_api_key?: string
 }
@@ -23,6 +24,13 @@ const backendOptions: Record<string, { value: string; label: string }[]> = {
     { value: 'openai', label: 'Custom OpenAI API' },
     { value: 'claude', label: 'Anthropic Claude' },
   ],
+  director: [
+    { value: 'deterministic', label: 'Deterministic policy' },
+    { value: 'local', label: 'Local Â· Ollama' },
+    { value: 'deepseek', label: 'DeepSeek API' },
+    { value: 'openai', label: 'Custom OpenAI API' },
+    { value: 'claude', label: 'Anthropic Claude' },
+  ],
   coder: [
     { value: 'ollama', label: 'Local · Ollama' },
     { value: 'deepseek', label: 'DeepSeek API' },
@@ -32,6 +40,11 @@ const backendOptions: Record<string, { value: string; label: string }[]> = {
     { value: 'local', label: 'Local · Ollama' },
     { value: 'nvidia', label: 'NVIDIA API' },
     { value: 'openai', label: 'Custom OpenAI API' },
+  ],
+  architect: [
+    { value: 'nvidia', label: 'NVIDIA API' },
+    { value: 'local', label: 'Local · Ollama' },
+    { value: 'deterministic', label: 'Deterministic fallback' },
   ],
 }
 
@@ -86,7 +99,8 @@ export default function ModelsPanel() {
     <section className="agent-settings">
       <div className="settings-section-title"><p className="eyebrow">AGENT ROUTING</p><h2>Choose the right brain for each job</h2><p>Local for cost and privacy; hosted models where quality matters most.</p></div>
       <AgentModel title="Game Designer" description="Design document, mechanics and level arc" backend={settings.designer_backend} options={backendOptions.standard} model={settings.designer_backend === 'local' ? settings.designer_model : settings.designer_remote_model} models={modelsFor(settings.designer_backend)} onBackend={(value) => update('designer_backend', value)} onModel={(value) => update(settings.designer_backend === 'local' ? 'designer_model' : 'designer_remote_model', value)} />
-      <AgentModel title="Studio Director" description="QA triage and repair routing" backend={settings.director_backend} options={backendOptions.standard} model={settings.director_backend === 'local' ? settings.director_model : settings.director_remote_model} models={modelsFor(settings.director_backend)} modelPlaceholder={settings.director_backend === 'local' ? 'Inherit Coder model' : undefined} onBackend={(value) => update('director_backend', value)} onModel={(value) => update(settings.director_backend === 'local' ? 'director_model' : 'director_remote_model', value)} />
+      <AgentModel title="Studio Director" description="QA triage and repair routing" backend={settings.director_backend} options={backendOptions.director} model={settings.director_backend === 'local' ? settings.director_model : settings.director_remote_model} models={modelsFor(settings.director_backend)} modelPlaceholder={settings.director_backend === 'local' ? 'Inherit Coder model' : undefined} onBackend={(value) => update('director_backend', value)} onModel={(value) => update(settings.director_backend === 'local' ? 'director_model' : 'director_remote_model', value)} />
+      <AgentModel title="Systems Architect" description="Blueprint, dependencies and acceptance contracts" backend={settings.architect_backend} options={backendOptions.architect} model={settings.architect_model} models={modelsFor(settings.architect_backend)} onBackend={(value) => update('architect_backend', value)} onModel={(value) => update('architect_model', value)} featured />
       <AgentModel title="Coder" description="Godot gameplay implementation" backend={settings.coder_backend} options={backendOptions.coder} model={settings.coder_backend === 'ollama' ? settings.coder_model : settings.coder_remote_model} models={modelsFor(settings.coder_backend)} onBackend={(value) => update('coder_backend', value)} onModel={(value) => update(settings.coder_backend === 'ollama' ? 'coder_model' : 'coder_remote_model', value)} featured />
       <AgentModel title="Vision QA" description="Screenshot and visual defect review" backend={settings.vision_backend} options={backendOptions.vision} model={settings.vision_backend === 'local' ? settings.vision_model : settings.vision_remote_model} models={modelsFor(settings.vision_backend)} onBackend={(value) => update('vision_backend', value)} onModel={(value) => update(settings.vision_backend === 'local' ? 'vision_model' : 'vision_remote_model', value)} />
       <AgentModel title="Feedback Interpreter" description="Turns playtest notes into revisions" backend={settings.feedback_backend} options={backendOptions.standard} model={settings.feedback_model} models={modelsFor(settings.feedback_backend)} onBackend={(value) => update('feedback_backend', value)} onModel={(value) => update('feedback_model', value)} />
@@ -103,10 +117,15 @@ export default function ModelsPanel() {
       <section className="panel provider-card">
         <p className="eyebrow">SPECIALIZED MODELS</p><h2>QA and heavy templates</h2>
         <label>Dot-maze local model<ModelInput value={settings.dotmaze_model} models={catalog.local} onChange={(value) => update('dotmaze_model', value)} /></label>
+        <label>Hosted Coder timeout (seconds)<input type="number" min="30" max="1800" value={settings.coder_timeout} onChange={(event) => update('coder_timeout', Number(event.target.value))} /></label>
         <label>NVIDIA base URL<input value={settings.vision_base_url} onChange={(event) => update('vision_base_url', event.target.value)} /></label>
+        <label>Systems Architect base URL<input value={settings.architect_base_url} onChange={(event) => update('architect_base_url', event.target.value)} /></label>
         <label>Video QA model<ModelInput value={settings.video_model} models={catalog.nvidia} onChange={(value) => update('video_model', value)} /></label>
         <Toggle label="Require gameplay video QA" detail="Capture and review every generated level" checked={settings.video_qa_enabled} onChange={(value) => update('video_qa_enabled', value)} />
         <Toggle label="Release GPU services for Coder" detail="Stops art/audio services before loading large local code models" checked={settings.stop_gpu_services} onChange={(value) => update('stop_gpu_services', value)} />
+        <Toggle label="Protected incremental build" detail="Refine each blueprint system separately; every candidate must pass the transactional Godot gate" checked={settings.incremental_build} onChange={(value) => update('incremental_build', value)} />
+        <Toggle label="Verified experience memory" detail="Give the Coder one relevant prior script that passed runtime and objective QA" checked={settings.experience_memory} onChange={(value) => update('experience_memory', value)} />
+        <label>Maximum system-builder passes<input type="number" min="1" max="12" value={settings.incremental_max_systems} onChange={(event) => update('incremental_max_systems', Number(event.target.value))} /></label>
       </section>
       <button className="primary settings-save" onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save model configuration'}</button>
       {message && <div className="settings-message">{message}</div>}

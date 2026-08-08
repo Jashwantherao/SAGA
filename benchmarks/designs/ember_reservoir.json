@@ -1,0 +1,22 @@
+{
+  "title": "Ember Reservoir",
+  "genre": "top-down survival resource arcade",
+  "mechanic_template": "survive_and_deplete",
+  "hero_description": "a squat brass walking furnace with white-hot window eyes and vivid orange legs",
+  "core_mechanics": ["held arrow-key movement", "heat drains and accelerates", "finite coal braziers refill heat", "ice wisps cause damage", "survive until rescue"],
+  "story_premise": "A courier furnace must preserve its last living coal while crossing a frozen reservoir.",
+  "theme_thread": "The draining heat is the coal's life, and every refill spends the abandoned stations' final fuel.",
+  "win_condition": "Remain warm and intact until the rescue beacon arrives.",
+  "lose_condition": "Heat reaches zero or all lives are lost.",
+  "levels": [{
+    "name": "The White Crossing",
+    "description": "a vast cyan ice sheet split by black cracks, rusted orange braziers, and blowing snow",
+    "outro_beat": "The rescue lamp finds a heartbeat in the white. The coal opens one small golden eye.",
+    "intensity": 6,
+    "pressure_notes": "Use a rising drain rate, sparse finite refill fuel, three fast hazards, and a nearly refill-less final stretch."
+  }],
+  "art_style": "graphic hand-painted arcade art with cold cyan fields and incandescent orange silhouettes",
+  "audio_mood": "urgent metallic percussion under lonely winter wind",
+  "key_item": {"description": "a jagged translucent ice wisp with a dark blue core and sharp trailing fins", "role": "hazard"},
+  "extra_sprites": [{"name": "coal_brazier", "description": "a rusted iron tripod bowl holding a small geometric orange coal flame"}]
+}

@@ -4,15 +4,12 @@ Two checks, cheapest first: import assets, then an actual bounded headless
 run of the scene. (There used to be a parse-only --check-only pass between
 them, but it cannot see autoload singletons like Sfx, so a correct script
 that calls an autoload fails it - the scene run catches real compile errors
-anyway, since a broken script fails to load.) After both pass, a
-non-blocking windowed pass captures a screenshot (via the harness-owned
-screenshot.gd autoload) so a human - or later, a vision model - can check
-the build's look without launching it. The screenshot is a lens, not a
-gate: its failure never fails QA. If a local vision model is available via
-Ollama, it reviews the screenshot too (is the hero visible? does anything
-look broken?) - also non-gating, since 7B vision verdicts are too noisy to
-burn Coder retries on, but its findings are surfaced as vision_notes for
-the human and the playtest loop.
+anyway, since a broken script fails to load.) After both pass, a fresh
+windowed process captures active gameplay via the harness-owned screenshot.gd
+autoload. Capture infrastructure remains non-blocking. Structured visible
+defects can gate a build, while free-form art criticism stays advisory. When
+video QA is enabled, its temporal evidence reconciles contradictory
+single-frame findings before SAGA spends a Coder retry.
 """
 
 import json
@@ -179,6 +176,31 @@ def _find_errors(output: str) -> list[str]:
             if len(found) >= 10:
                 break
     return found
+
+
+# A probe that refuses a level because its numbers make the mechanic
+# unsolvable reports only a reason code, and the per-template requirement text
+# describes the mechanic rather than the threshold that was violated. A real
+# run spent all six retries on invalid_herd_balance without ever learning which
+# numbers were wrong. These name the rule so one repair can satisfy it.
+PROBE_REASON_HINTS = {
+    "invalid_herd_balance": (
+        " Specifically: panic_radius, goal_radius, speed and flee_speed must all "
+        "be positive, and flee_speed must be less than 0.6 x speed."
+    ),
+    "invalid_depletion_settings": (
+        " Specifically: the maximum resource, drain_rate and survival_time must "
+        "all be positive, and refill_rate must be strictly greater than drain_rate."
+    ),
+    "invalid_survival_settings": (
+        " Specifically: the starting resource must be at least 2 and "
+        "survival_time must be positive."
+    ),
+    "invalid_capture_rates": (
+        " Specifically: capture_required, capture_radius, capture_rate and "
+        "decay_rate must all be positive."
+    ),
+}
 
 
 def _run_objective_probe(
@@ -432,6 +454,7 @@ def _run_objective_probe(
                 f"Objective completion: {template} solver failed "
                 f"({reason}); collected {collected}/{total} with {remaining} remaining. "
                 f"{objective_requirement}"
+                f"{PROBE_REASON_HINTS.get(reason, '')}"
                 f"{position_note}"
             ],
             False,
@@ -749,10 +772,55 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
             "element. Reposition the labels so every one is fully readable."
         )
     if data.get("looks_broken"):
-        gating.append(f"Visual defect: {data['looks_broken']}")
+        # This is free-form model prose from one frame. Structured observations
+        # above can identify a concrete failure, but vague composition or art
+        # criticism must not spend a Coder retry. Temporal video QA can still
+        # gate an actual layering, stability, or disappearance defect.
+        advisory.append(f"Vision (advisory): {data['looks_broken']}")
     if data.get("placeholder_art"):
         advisory.append(f"Vision (advisory): {data['placeholder_art']}")
     return gating, advisory
+
+
+def _reconcile_visual_evidence(
+    screenshot_gating: list[str],
+    screenshot_advisory: list[str],
+    video_result: dict | None,
+) -> tuple[list[str], list[str]]:
+    """Resolve single-frame findings against stronger temporal evidence.
+
+    A gameplay video showing the player or readable HUD directly contradicts
+    a screenshot model claiming the opposite. Those findings remain visible
+    in the ledger as advisories, but cannot trigger code regeneration. Other
+    concrete screenshot defects remain gating.
+    """
+    remaining = []
+    notes = list(screenshot_advisory)
+    for finding in screenshot_gating:
+        lower = finding.lower()
+        contradicted_by = None
+        if (
+            "hero sprite is not visible" in lower
+            and video_result
+            and video_result.get("player_visible") is True
+        ):
+            contradicted_by = "the gameplay video shows the player"
+        elif (
+            "on-screen text is clipped" in lower
+            and video_result
+            and video_result.get("hud_readable") is True
+        ):
+            contradicted_by = "the gameplay video shows a readable HUD"
+
+        if contradicted_by:
+            detail = finding.removeprefix("Visual defect: ").strip()
+            notes.append(
+                f"Vision (advisory, contradicted): {detail} ({contradicted_by})."
+            )
+        else:
+            remaining.append(finding)
+
+    return remaining, remaining + notes
 
 
 def _capture_gameplay_video(
@@ -1301,9 +1369,10 @@ def qa_agent(state: GraphState) -> GraphState:
                 objective_result=objective_result,
             )
 
-    # 5. Non-blocking windowed screenshot pass (a window flashes for ~1.5s).
-    # screenshot.gd saves frame 60 to res://screenshot.png; it no-ops in the
-    # headless runs above.
+    # 5. Active-gameplay screenshot pass (a window flashes for ~1.5s). This is
+    # a fresh process: screenshot.gd dismisses the title screen and captures
+    # frame 60, so the objective solver above cannot leave it on a win screen.
+    # It no-ops in the headless runs above.
     screenshot_path = None
     screenshot_file = Path(project_dir) / f"screenshot_Level{current_level}.png"
     try:
@@ -1311,28 +1380,35 @@ def qa_agent(state: GraphState) -> GraphState:
         _run(["--path", project_dir, scene, "--quit-after", "90"], timeout=30)
         if screenshot_file.exists():
             screenshot_path = str(screenshot_file)
-            print(f"[QA Agent] Screenshot captured -> {screenshot_path}")
+            print(f"[QA Agent] Active gameplay screenshot captured -> {screenshot_path}")
         else:
             print("[QA Agent] Screenshot pass produced no image (non-blocking)")
     except Exception as e:
         print(f"[QA Agent] Screenshot pass failed (non-blocking): {e}")
 
-    # 6. Vision review. Code-fixable defects gate on every attempt; everything
-    # else is advisory. A noisy provider can still be disabled or switched,
-    # but a configured gate cannot leave a known defect behind and call the
-    # level clean.
+    # 6. Vision review. When video QA is enabled, hold single-frame gating
+    # findings until the stronger temporal evidence can confirm or contradict
+    # them. Free-form art/composition criticism is always advisory.
     vision_notes = []
+    vision_gating = []
+    vision_advisory = []
     if screenshot_path:
-        gating, advisory = _vision_review(screenshot_path, state.get("design_doc"))
-        vision_notes = gating + advisory
-        for note in vision_notes:
-            print(f"[QA Agent] {note}")
-        if gating:
-            print(f"[QA Agent] FAILED on {len(gating)} visual defect(s) - requesting a fix")
+        vision_gating, vision_advisory = _vision_review(
+            screenshot_path, state.get("design_doc")
+        )
+        vision_notes = vision_gating + vision_advisory
+        if not VIDEO_QA_ENABLED:
+            for note in vision_notes:
+                print(f"[QA Agent] {note}")
+        if vision_gating and not VIDEO_QA_ENABLED:
+            print(
+                f"[QA Agent] FAILED on {len(vision_gating)} visual defect(s) "
+                "- requesting a fix"
+            )
             return _failed_attempt(
                 state,
                 stage="vision",
-                errors=gating,
+                errors=vision_gating,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
                 balance_notes=balance_notes,
@@ -1404,6 +1480,31 @@ def qa_agent(state: GraphState) -> GraphState:
             f"{video_qa_result['evidence']}"
         )
 
+        vision_gating, vision_notes = _reconcile_visual_evidence(
+            vision_gating,
+            vision_advisory,
+            video_qa_result,
+        )
+        for note in vision_notes:
+            print(f"[QA Agent] {note}")
+        if vision_gating:
+            print(
+                f"[QA Agent] FAILED on {len(vision_gating)} confirmed visual "
+                "defect(s) - requesting a fix"
+            )
+            return _failed_attempt(
+                state,
+                stage="vision",
+                errors=vision_gating,
+                screenshot_path=screenshot_path,
+                vision_notes=vision_notes,
+                balance_notes=balance_notes,
+                objective_result=objective_result,
+                gameplay_video_path=gameplay_video_path,
+                video_qa_result=video_qa_result,
+                video_notes=video_notes,
+            )
+
     # This is the only point in the pipeline where a script is known-good
     # (compiled, ran, satisfied its template contract) - so it's where the
     # training corpus gets its verified pairs.
@@ -1417,6 +1518,18 @@ def qa_agent(state: GraphState) -> GraphState:
         design_doc=state.get("design_doc"),
         vision_notes=vision_notes + video_notes,
     )
+
+    system_build_results = state.get("system_build_results") or []
+    if system_build_results:
+        from saga.protected_builder import attach_qa_evidence
+
+        system_build_results = attach_qa_evidence(
+            system_build_results,
+            level_index=current_level,
+            active_script=script_file.read_text(encoding="utf-8"),
+            objective_result=objective_result,
+            video_qa_result=video_qa_result,
+        )
 
     print("[QA Agent] PASSED - scene ran headlessly with no errors")
     return {
@@ -1442,4 +1555,5 @@ def qa_agent(state: GraphState) -> GraphState:
             video_notes=video_notes,
         ),
         "ship_blocked": False,
+        "system_build_results": system_build_results,
     }

@@ -10,13 +10,48 @@ import sys
 from pathlib import Path
 
 
+# Builder ledger statuses whose script is part of the shipped game. Anything
+# else (rejected, superseded, skipped) contributes no code, so it carries no
+# acceptance claim either.
+LIVE_BUILD_STATUSES = {
+    "baseline_compiles",
+    "baseline_corrected",
+    "integrated",
+    "unchanged",
+}
+
+
+def unconfirmed_systems(result: dict) -> list[str]:
+    """Blueprint systems that shipped code without behavioral proof.
+
+    Per-level QA proves the game still runs; it does not prove that a system
+    did what its acceptance criteria promised. Only some kinds have a probe
+    that can say so today (baseline, movement, the objective kinds, and hud
+    via video QA), so an unconfirmed system is a gap in evidence rather than
+    a known defect - reported as a warning, not a failure. A system whose
+    builder hash no longer matches the script QA actually ran is unproven for
+    the same reason: the evidence describes different code.
+    """
+    unconfirmed = []
+    for item in result.get("system_build_results") or []:
+        if item.get("status") not in LIVE_BUILD_STATUSES:
+            continue
+        system_id = item.get("system_id") or item.get("id") or item.get("kind") or "?"
+        if not item.get("qa_confirmed"):
+            unconfirmed.append(f"{system_id}: no acceptance probe confirmed this system")
+        elif item.get("builder_hash_matches_qa") is False:
+            unconfirmed.append(f"{system_id}: QA evidence describes a different script")
+    return unconfirmed
+
+
 def assess_ship_status(result: dict) -> tuple[str, bool]:
     """Return the truthful aggregate release status for a completed run.
 
     ``qa_passed`` is the current (normally final) level's status. Shipping
     additionally requires one clean ledger entry for every designed level, so
     a later success cannot erase an earlier defect or a skipped level.
-    Advisory-only findings are shippable but explicitly reported as warnings.
+    Advisory-only findings are shippable but explicitly reported as warnings -
+    including blueprint systems that shipped without acceptance evidence.
     """
     if result.get("ship_blocked"):
         return "blocked", False
@@ -39,7 +74,7 @@ def assess_ship_status(result: dict) -> tuple[str, bool]:
     if not result.get("qa_passed") or not all_passed:
         return "failed", False
 
-    has_warnings = any(
+    has_warnings = bool(unconfirmed_systems(result)) or any(
         (item.get("vision_notes") or [])
         or (item.get("balance_notes") or [])
         or (item.get("video_notes") or [])
@@ -92,6 +127,21 @@ def main() -> None:
         metavar="N",
         help="Generate exactly N levels (1-5); default is an authored 3-5 level arc",
     )
+    parser.add_argument(
+        "--design-doc",
+        type=Path,
+        help="Use a fixed design-doc JSON file (for reproducible replay and benchmarking)",
+    )
+    parser.add_argument(
+        "--blueprint",
+        type=Path,
+        help="Use a reviewed Game Blueprint JSON contract instead of invoking the architect",
+    )
+    parser.add_argument(
+        "--asset-pack",
+        type=Path,
+        help="Reuse sprite_paths and bgm_path from an existing SAGA run manifest",
+    )
     args = parser.parse_args()
 
     from saga.doctor import print_report, required_checks_pass, run_checks
@@ -113,6 +163,35 @@ def main() -> None:
             )
             raise SystemExit(2)
 
+    fixed_design = None
+    if args.design_doc:
+        try:
+            fixed_design = json.loads(args.design_doc.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"cannot read --design-doc: {exc}")
+        if not isinstance(fixed_design, dict):
+            parser.error("--design-doc must contain a JSON object")
+
+    fixed_blueprint = None
+    if args.blueprint:
+        try:
+            from saga.blueprint import load_blueprint
+
+            fixed_blueprint = load_blueprint(args.blueprint)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            parser.error(f"cannot read --blueprint: {exc}")
+
+    frozen_assets = {}
+    if args.asset_pack:
+        try:
+            frozen_assets = json.loads(args.asset_pack.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"cannot read --asset-pack: {exc}")
+        sprite_paths = frozen_assets.get("sprite_paths") or []
+        missing = [path for path in [*sprite_paths, frozen_assets.get("bgm_path")] if path and not Path(path).is_file()]
+        if not sprite_paths or missing:
+            parser.error(f"--asset-pack has no sprites or missing files: {missing}")
+
     try:
         from saga.graph import build_graph
 
@@ -121,7 +200,10 @@ def main() -> None:
             {
                 "user_prompt": args.idea,
                 "requested_levels": args.levels,
-                "design_doc": None,
+                "design_doc": fixed_design,
+                "blueprint": fixed_blueprint,
+                "sprite_paths": frozen_assets.get("sprite_paths"),
+                "bgm_path": frozen_assets.get("bgm_path"),
             }
         )
     except Exception as exc:
@@ -137,6 +219,16 @@ def main() -> None:
     output_path.write_text(json.dumps(design_doc, indent=2), encoding="utf-8")
     print(f"\nRun workspace: {result['run_dir']}", file=sys.stderr)
     print(f"Design doc: {output_path}", file=sys.stderr)
+    blueprint_path = Path(result["run_dir"]) / "blueprint.json"
+    if result.get("blueprint"):
+        blueprint_path.write_text(
+            json.dumps(result["blueprint"], indent=2), encoding="utf-8"
+        )
+        print(
+            f"Game Blueprint: {blueprint_path} "
+            f"({result.get('blueprint_status')}, model={result.get('blueprint_model')})",
+            file=sys.stderr,
+        )
 
     for path in result.get("sprite_paths") or []:
         print(f"Sprite/background: {path}", file=sys.stderr)
@@ -177,15 +269,27 @@ def main() -> None:
     # Playtest revisions mutate the same state, so write the final design again
     # and keep a compact machine-readable manifest beside every isolated run.
     output_path.write_text(json.dumps(result["design_doc"], indent=2), encoding="utf-8")
+    if result.get("blueprint"):
+        blueprint_path.write_text(
+            json.dumps(result["blueprint"], indent=2), encoding="utf-8"
+        )
     # Playtest may rebuild selected levels, so calculate the release decision
     # again from the updated durable ledger.
     ship_status, ship_ready = assess_ship_status(result)
     level_results = result.get("level_results") or []
     manifest = {
-        "manifest_version": 11,
+        "manifest_version": 14,
         "run_dir": result["run_dir"],
         "idea": args.idea,
         "title": (result.get("design_doc") or {}).get("title"),
+        "blueprint_version": (result.get("blueprint") or {}).get("blueprint_version"),
+        "blueprint_path": str(blueprint_path) if result.get("blueprint") else None,
+        "blueprint_status": result.get("blueprint_status"),
+        "blueprint_model": result.get("blueprint_model"),
+        "blueprint_errors": result.get("blueprint_errors") or [],
+        "blueprint_build_plan": result.get("blueprint_build_plan") or [],
+        "system_build_results": result.get("system_build_results") or [],
+        "unconfirmed_systems": unconfirmed_systems(result),
         "status": ship_status,
         "ship_ready": ship_ready,
         "current_level": result.get("current_level"),

@@ -51,6 +51,19 @@ export type LevelResult = {
   video_notes?: string[]
 }
 
+export type SystemBuildResult = {
+  level_index: number
+  system_id: string
+  kind: string
+  status: string
+  recommended_model?: string
+  executed_model?: string
+  errors?: string[]
+  qa_confirmed?: boolean
+  qa_evidence?: string[]
+  builder_hash_matches_qa?: boolean
+}
+
 export type SagaRun = {
   id: string
   title?: string
@@ -69,6 +82,7 @@ export type SagaRun = {
   qa_errors?: string[]
   vision_notes?: string[]
   level_results?: LevelResult[]
+  system_build_results?: SystemBuildResult[]
 }
 
 export type RunFileEntry = { path: string; name: string; size: number }

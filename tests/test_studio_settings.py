@@ -9,9 +9,13 @@ def _payload(**overrides):
         "director_backend": "local",
         "director_model": "",
         "director_remote_model": "director-remote",
+        "architect_backend": "nvidia",
+        "architect_model": "nvidia/nemotron-3-super-120b-a12b",
+        "architect_base_url": "https://integrate.api.nvidia.com/v1/",
         "coder_backend": "deepseek",
         "coder_model": "coder-local",
         "coder_remote_model": "coder-remote",
+        "coder_timeout": 240,
         "dotmaze_model": "dotmaze-local",
         "vision_backend": "nvidia",
         "vision_model": "vision-local",
@@ -23,6 +27,10 @@ def _payload(**overrides):
         "openai_base_url": "https://api.example.test/v1/",
         "vision_base_url": "https://vision.example.test/v1/",
         "stop_gpu_services": False,
+        "incremental_build": True,
+        "incremental_max_systems": 4,
+        "incremental_max_attempts": 3,
+        "experience_memory": True,
         "deepseek_api_key": "new-secret",
     }
     return studio_settings.StudioSettingsUpdate(**(data | overrides))
@@ -42,6 +50,10 @@ def test_save_settings_preserves_comments_and_masks_keys(tmp_path, monkeypatch):
     assert "SAGA_CODER_MODEL=coder-local" in content
     assert "DEEPSEEK_API_KEY=new-secret" in content
     assert result["api_keys"]["deepseek"] is True
+    assert result["experience_memory"] is True
+    assert result["coder_timeout"] == 240.0
+    assert "SAGA_CODER_TIMEOUT=240.0" in content
+    assert "SAGA_EXPERIENCE_MEMORY=1" in content
     assert "new-secret" not in str(result)
 
 
@@ -49,3 +61,4 @@ def test_model_urls_are_normalized():
     update = _payload()
     assert update.openai_base_url == "https://api.example.test/v1"
     assert update.vision_base_url == "https://vision.example.test/v1"
+    assert update.architect_base_url == "https://integrate.api.nvidia.com/v1"

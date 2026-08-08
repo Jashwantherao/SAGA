@@ -1,0 +1,22 @@
+{
+  "title": "Signal Orchard",
+  "genre": "top-down collection arcade",
+  "mechanic_template": "collect",
+  "hero_description": "a bright ivory maintenance fox in a cobalt raincoat with a glowing antenna tail",
+  "core_mechanics": ["held arrow-key movement", "touch every signal seed", "restore the orchard relay"],
+  "story_premise": "A storm scattered the orchard's artificial seeds before their migration signal could transmit.",
+  "theme_thread": "Collecting the scattered lights physically rebuilds the orchard's lost message.",
+  "win_condition": "Collect every signal seed.",
+  "lose_condition": "none",
+  "levels": [{
+    "name": "After the Static",
+    "description": "a midnight geometric orchard of indigo trees, wet copper paths, and distant relay towers",
+    "outro_beat": "The final seed joins the chorus. Far beyond the rain, another orchard answers.",
+    "intensity": 5,
+    "pressure_notes": "Spread twelve pickups across opposite map extremes so the closing route is longest."
+  }],
+  "art_style": "clean luminous storybook pixel art with indigo shadows and amber circuitry",
+  "audio_mood": "hopeful electronic rain with a rising pulse",
+  "key_item": {"description": "a tiny amber glass seed containing a sharp radio-wave glyph", "role": "pickup"},
+  "extra_sprites": []
+}

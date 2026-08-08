@@ -1,0 +1,76 @@
+{
+  "id": "experience-memory-ab-v1",
+  "notes": [
+    "Isolates SAGA_EXPERIENCE_MEMORY with one complete same-template QA-passed example.",
+    "The Systems Architect is deterministic and incremental/skill context are disabled in both arms.",
+    "Promote only on first-pass or quality improvement with no ship-rate regression."
+  ],
+  "repetitions": 1,
+  "profiles": [
+    {
+      "id": "nemotron-memory-off",
+      "provider": "NVIDIA NIM",
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_CODER_TIMEOUT": "300",
+        "SAGA_DOTMAZE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "deterministic",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true",
+        "SAGA_INCREMENTAL_BUILD": "0",
+        "SAGA_SKILL_CONTEXT": "0",
+        "SAGA_EXPERIENCE_MEMORY": "0"
+      }
+    },
+    {
+      "id": "nemotron-memory-on",
+      "provider": "NVIDIA NIM",
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_CODER_TIMEOUT": "300",
+        "SAGA_DOTMAZE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "deterministic",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true",
+        "SAGA_INCREMENTAL_BUILD": "0",
+        "SAGA_SKILL_CONTEXT": "0",
+        "SAGA_EXPERIENCE_MEMORY": "1",
+        "SAGA_EXPERIENCE_MEMORY_LIMIT": "1",
+        "SAGA_EXPERIENCE_MEMORY_MAX_CHARS": "12000"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "signal-orchard",
+      "idea": "Restore a storm-dark orchard by collecting escaped signal seeds.",
+      "levels": 1,
+      "design_doc": "designs/signal_orchard.json",
+      "asset_pack": "../output/runs/20260801-213542-48f6b72b/run.json"
+    },
+    {
+      "id": "ember-reservoir",
+      "idea": "Keep a walking furnace alive while crossing a frozen reservoir.",
+      "levels": 1,
+      "design_doc": "designs/ember_reservoir.json",
+      "asset_pack": "../output/runs/20260801-213542-48f6b72b/run.json"
+    },
+    {
+      "id": "clockwork-catacomb",
+      "idea": "Clear every time shard from a clockwork catacomb while wardens hunt you.",
+      "levels": 1,
+      "design_doc": "designs/clockwork_catacomb.json",
+      "asset_pack": "../output/runs/20260801-213542-48f6b72b/run.json"
+    }
+  ]
+}
