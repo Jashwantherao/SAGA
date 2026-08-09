@@ -10,7 +10,7 @@ TEMPLATE_CONTRACTS = {
             r'extends\s+"res://archetypes/run_and_gun/run_and_gun_level\.gd"',
         ),
         ("the compact level-definition adapter", r"func\s+level_definition\s*\("),
-        ("the archetype version pin", r'\\?"pack_version\\?"\s*:\s*4'),
+        ("the archetype version pin", r'\\?"pack_version\\?"\s*:\s*5'),
         ("the validated encounter plan", r'\\?"encounter_plan\\?"\s*:'),
         ("the campaign progression contract", r'\\?"progression\\?"\s*:'),
         ("authored enemy pressure", r'\\?"enemy_count\\?"\s*:'),

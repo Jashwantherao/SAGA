@@ -66,7 +66,7 @@ def test_run_and_gun_is_a_valid_design_and_multi_system_blueprint():
 def test_pack_manifest_names_every_required_capability_file():
     pack = load_pack("run_and_gun")
 
-    assert pack.version == 4
+    assert pack.version == 5
     assert pack.mechanic_template == "run_and_gun"
     assert "checkpoint_respawn" in pack.capabilities
     assert "multi_phase_boss" in pack.capabilities
@@ -75,6 +75,8 @@ def test_pack_manifest_names_every_required_capability_file():
     assert "threat_budgeted_waves" in pack.capabilities
     assert "persistent_campaign_profile" in pack.capabilities
     assert "versioned_atomic_save" in pack.capabilities
+    assert "input_driven_playthrough_gate" in pack.capabilities
+    assert "route_gated_boss_shield" in pack.capabilities
     assert "hazard.gd" in pack.required_files
     assert "pickup.gd" in pack.required_files
     assert "weapon_pickup.gd" in pack.required_files
@@ -88,7 +90,7 @@ def test_scaffolder_copies_only_versioned_pack_files(tmp_path):
     destination = tmp_path / "archetypes" / "run_and_gun"
 
     assert pack is not None
-    assert json.loads((destination / "manifest.json").read_text())["version"] == 4
+    assert json.loads((destination / "manifest.json").read_text())["version"] == 5
     assert {path.name for path in destination.glob("*.gd")} == {
         path for path in pack.required_files
     }
@@ -112,7 +114,7 @@ def test_adapter_is_small_versioned_and_uses_authored_assets():
     assert "run_and_gun_level.gd" in script
     assert "extra_enemy_guard.png" in script
     assert "extra_sector_boss.png" in script
-    assert '\\"pack_version\\": 4' in script
+    assert '\\"pack_version\\": 5' in script
     assert '\\"progression\\"' in script
     assert '\\"encounter_plan\\"' in script
     assert [
@@ -145,7 +147,7 @@ def test_coder_scaffolds_pack_without_a_model_call(tmp_path, monkeypatch):
         "tune_notes": [],
     })
 
-    assert result["coder_model"] == "archetype/run_and_gun@4"
+    assert result["coder_model"] == "archetype/run_and_gun@5"
     assert (project / "Level_0.gd").is_file()
     assert (project / "archetypes" / "run_and_gun" / "boss.gd").is_file()
     assert 'CampaignProfile="*res://archetypes/run_and_gun/progression_profile.gd"' in (
@@ -271,6 +273,64 @@ def test_campaign_probe_requires_real_scene_carryover_metrics(monkeypatch):
     assert result["carried_stats_verified"] is True
     assert result["cross_scene_reload_verified"] is True
     assert result["target_level"] == 1
+
+
+def test_input_playthrough_requires_real_control_milestones(monkeypatch, tmp_path):
+    (tmp_path / "Level_1.tscn").write_text("scene")
+    output = (
+        "[RUN_AND_GUN_PLAYTHROUGH] status=passed entered_level=1 shots=44 "
+        "jumps=12 deaths=1 checkpoint=true weapon=true wave=true frames=3900 reason=none"
+    )
+    monkeypatch.setattr(
+        qa_agent,
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, output, ""),
+    )
+
+    result, errors, blocked = qa_agent._run_run_and_gun_playthrough(str(tmp_path))
+
+    assert errors == []
+    assert blocked is False
+    assert result["entered_level"] == 1
+    assert result["shots"] == 44
+    assert result["checkpoint_reached"] is True
+    assert result["wave_cleared"] is True
+
+
+def test_input_playthrough_rejects_shortcut_without_route_milestones(monkeypatch, tmp_path):
+    output = (
+        "[RUN_AND_GUN_PLAYTHROUGH] status=passed entered_level=0 shots=1 "
+        "jumps=1 deaths=0 checkpoint=false weapon=false wave=false frames=10 reason=none"
+    )
+    monkeypatch.setattr(
+        qa_agent,
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, output, ""),
+    )
+
+    result, errors, blocked = qa_agent._run_run_and_gun_playthrough(str(tmp_path))
+
+    assert blocked is False
+    assert errors
+    assert result["status"] == "passed"
+    assert result["checkpoint_reached"] is False
+
+
+def test_run_and_gun_production_gate_rejects_fallback_art(tmp_path):
+    (tmp_path / "Level_0.gd").write_text("extends Node2D", encoding="utf-8")
+    state = {
+        "godot_project_path": str(tmp_path),
+        "design_doc": {"mechanic_template": "run_and_gun", "levels": [{"name": "L1"}]},
+        "sprite_paths": [],
+        "current_level": 0,
+        "retry_count": 0,
+    }
+
+    result = qa_agent.qa_agent(state)
+
+    attempt = result["level_results"][0]["attempts"][-1]
+    assert attempt["stage"] == "production_assets"
+    assert "Fallback geometry" in " ".join(attempt["errors"])
 
 
 def test_pack_script_failure_is_a_harness_block_not_a_model_repair():

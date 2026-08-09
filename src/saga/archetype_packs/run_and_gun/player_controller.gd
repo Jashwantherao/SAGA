@@ -33,6 +33,12 @@ var weapon_inventory: Dictionary = {"pulse": -1}
 var base_move_speed := 250.0
 var base_max_health := 5
 var progression_damage_bonus := 0
+var coyote_time := 0.0
+var jump_buffer_time := 0.0
+var invulnerability_time := 0.0
+const COYOTE_WINDOW := 0.12
+const JUMP_BUFFER_WINDOW := 0.12
+const DAMAGE_INVULNERABILITY := 0.72
 
 func _ready() -> void:
 	add_to_group("run_and_gun_player")
@@ -60,14 +66,26 @@ func configure(options: Dictionary) -> void:
 
 func _physics_process(delta: float) -> void:
 	fire_cooldown = maxf(0.0, fire_cooldown - delta)
+	invulnerability_time = maxf(0.0, invulnerability_time - delta)
+	if is_on_floor():
+		coyote_time = COYOTE_WINDOW
+	else:
+		coyote_time = maxf(0.0, coyote_time - delta)
+	jump_buffer_time = maxf(0.0, jump_buffer_time - delta)
 	if not is_on_floor():
 		velocity.y += gravity * delta
 	var axis := Input.get_axis("ui_left", "ui_right") if can_control else 0.0
 	velocity.x = move_toward(velocity.x, axis * move_speed, move_speed * 8.0 * delta)
 	if axis != 0.0:
 		facing = sign(axis)
-	if can_control and Input.is_action_just_pressed("ui_up") and is_on_floor():
+	if can_control and Input.is_action_just_pressed("ui_up"):
+		jump_buffer_time = JUMP_BUFFER_WINDOW
+	if can_control and jump_buffer_time > 0.0 and coyote_time > 0.0:
 		velocity.y = jump_velocity
+		jump_buffer_time = 0.0
+		coyote_time = 0.0
+	if can_control and Input.is_action_just_released("ui_up") and velocity.y < jump_velocity * 0.45:
+		velocity.y = jump_velocity * 0.45
 	if can_control and Input.is_action_just_pressed("ui_focus_next"):
 		cycle_weapon()
 	# Autoplay's first ui_accept dismisses title screens in classic templates.
@@ -176,9 +194,10 @@ func clear_arena_lock() -> void:
 	arena_max_x = world_limit
 
 func take_damage(amount: int) -> void:
-	if not can_control or amount <= 0:
+	if not can_control or amount <= 0 or invulnerability_time > 0.0:
 		return
 	health = maxi(0, health - amount)
+	invulnerability_time = DAMAGE_INVULNERABILITY
 	health_changed.emit(health, max_health)
 	if is_instance_valid(player_sprite):
 		Anim.flash(player_sprite)
@@ -187,6 +206,9 @@ func take_damage(amount: int) -> void:
 		can_control = false
 		velocity = Vector2.ZERO
 		died.emit()
+	else:
+		velocity.x = -facing * 185.0
+		velocity.y = -190.0
 
 func heal(amount: int) -> void:
 	if amount <= 0 or health <= 0:
@@ -202,5 +224,8 @@ func reset_at_checkpoint() -> void:
 	health = max_health
 	velocity = Vector2.ZERO
 	can_control = true
+	invulnerability_time = 0.0
+	coyote_time = 0.0
+	jump_buffer_time = 0.0
 	reset_loadout()
 	health_changed.emit(health, max_health)

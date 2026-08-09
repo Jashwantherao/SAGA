@@ -9,6 +9,10 @@ var save_path := "user://saga_campaign_profile.json"
 var last_load_status := "new"
 
 func _ready() -> void:
+	if "--run-and-gun-playthrough" in OS.get_cmdline_user_args():
+		save_path = "user://saga_campaign_profile.playthrough.json"
+		reset_profile(true)
+		return
 	if "--objective-probe" in OS.get_cmdline_user_args() or "--campaign-probe" in OS.get_cmdline_user_args():
 		save_path = "user://saga_campaign_profile.qa.json"
 	reset_profile(false)

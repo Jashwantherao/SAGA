@@ -127,6 +127,11 @@ CAMPAIGN_METRICS = re.compile(
     r"weapon=(true|false) reload=(true|false) corrupt=(true|false) "
     r"level=(-?\d+) reason=([a-z0-9_]+)"
 )
+RUN_AND_GUN_PLAYTHROUGH = re.compile(
+    r"\[RUN_AND_GUN_PLAYTHROUGH\] status=(passed|failed) entered_level=(-?\d+) "
+    r"shots=(\d+) jumps=(\d+) deaths=(\d+) checkpoint=(true|false) "
+    r"weapon=(true|false) wave=(true|false) frames=(\d+) reason=([a-z0-9_]+)"
+)
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
 MAX_SURVIVAL_SOLVER_SECONDS = 30.0
@@ -148,7 +153,7 @@ BENIGN_EXIT_NOISE = re.compile(
 
 HARNESS_SCRIPT_ERROR = re.compile(
     r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|capture_probe|herd_probe|screenshot|sfx|music|ambience|anim|game|"
-    r"run_and_gun_probe|campaign_probe|interlude|victory)\.gd|"
+    r"run_and_gun_probe|run_and_gun_playthrough|campaign_probe|interlude|victory)\.gd|"
     r"res://archetypes/run_and_gun/[^\s)]+\.gd",
     re.IGNORECASE,
 )
@@ -845,6 +850,69 @@ def _run_campaign_probe(project_dir: str, scene: str) -> tuple[dict | None, list
     return result, [], False
 
 
+def _run_run_and_gun_playthrough(
+    project_dir: str,
+) -> tuple[dict | None, list[str], bool]:
+    """Complete the shipped campaign using only Godot input actions."""
+    scene = "res://Level_0.tscn"
+    probe = _run(
+        [
+            "--headless",
+            "--path",
+            project_dir,
+            scene,
+            "--quit-after",
+            "12000",
+            "--",
+            "--run-and-gun-playthrough",
+        ],
+        timeout=180,
+    )
+    output = probe.stdout + probe.stderr
+    process_errors = _find_errors(output)
+    if probe.returncode != 0 or process_errors:
+        errors = process_errors or [f"Input playthrough exited with code {probe.returncode}"]
+        return None, errors, _has_harness_error(errors)
+    match = RUN_AND_GUN_PLAYTHROUGH.search(output)
+    if not match:
+        return None, ["QA infrastructure: input playthrough produced no verdict."], True
+    status, entered, shots, jumps, deaths, checkpoint, weapon, wave, frames, reason = match.groups()
+    expected_level = 1 if (Path(project_dir) / "Level_1.tscn").is_file() else 0
+    result = {
+        "status": status,
+        "entered_level": int(entered),
+        "expected_level": expected_level,
+        "shots": int(shots),
+        "jumps": int(jumps),
+        "deaths": int(deaths),
+        "checkpoint_reached": checkpoint == "true",
+        "weapon_collected": weapon == "true",
+        "wave_cleared": wave == "true",
+        "frames": int(frames),
+        "reason": reason,
+    }
+    missing = [
+        name for name in ("checkpoint_reached", "weapon_collected", "wave_cleared")
+        if not result[name]
+    ]
+    if (
+        status != "passed"
+        or int(entered) < expected_level
+        or int(shots) < 1
+        or int(jumps) < 1
+        or int(deaths) > 3
+        or missing
+    ):
+        detail = f"reason={reason}, entered={entered}/{expected_level}, deaths={deaths}/3"
+        if missing:
+            detail += ", missing=" + ",".join(missing)
+        return result, [
+            "Input-driven run-and-gun playthrough could not clear the campaign "
+            f"through normal controls ({detail})."
+        ], False
+    return result, [], False
+
+
 def _run_maze_objective_probe(
     project_dir: str,
     scene: str,
@@ -1373,6 +1441,24 @@ def qa_agent(state: GraphState) -> GraphState:
         print(f"[QA Agent] BLOCKED unsafe or unreadable generated script: {exc}")
         return _failed_attempt(state, stage="safety", errors=[str(exc)])
 
+    template = (state.get("design_doc") or {}).get("mechanic_template", "")
+    if template == "run_and_gun":
+        asset_names = [Path(path).name.lower() for path in (state.get("sprite_paths") or [])]
+        has_hero = any("hero_sprite" in name or name.startswith("hero") for name in asset_names)
+        has_background = any(name.startswith(f"level_{current_level}_") for name in asset_names)
+        missing_assets = []
+        if not has_hero:
+            missing_assets.append("authored hero sprite")
+        if not has_background:
+            missing_assets.append(f"level {current_level + 1} background")
+        if missing_assets:
+            errors = [
+                "Production art gate: missing " + ", ".join(missing_assets)
+                + ". Fallback geometry is a mechanics harness and cannot be shipped."
+            ]
+            print(f"[QA Agent] FAILED production art gate: {errors}")
+            return _failed_attempt(state, stage="production_assets", errors=errors)
+
     # 1. Import assets
     import_result = _run(["--headless", "--path", project_dir, "--import", "--quit"])
     import_errors = _find_errors(import_result.stdout + import_result.stderr)
@@ -1484,7 +1570,6 @@ def qa_agent(state: GraphState) -> GraphState:
     # 3. Mechanic-specific objective completion. Generic autoplay proves the
     # player responds; for deterministic mechanics we also require the actual
     # objective to be reachable and its real win state to fire.
-    template = (state.get("design_doc") or {}).get("mechanic_template", "")
     objective_result = None
     if template in {
         "collect",
@@ -1528,9 +1613,10 @@ def qa_agent(state: GraphState) -> GraphState:
             f"(score={objective_result['completion_score']}, "
             f"max_stall={objective_result['max_stall_frames']} frames)"
         )
-        if template == "run_and_gun" and current_level == 0:
+        total_levels = len((state.get("design_doc") or {}).get("levels") or [{}])
+        if template == "run_and_gun" and current_level == total_levels - 1:
             campaign_result, campaign_errors, campaign_blocked = _run_campaign_probe(
-                project_dir, scene
+                project_dir, "res://Level_0.tscn"
             )
             if campaign_errors:
                 label = "BLOCKED" if campaign_blocked else "FAILED"
@@ -1547,6 +1633,27 @@ def qa_agent(state: GraphState) -> GraphState:
                 "[QA Agent] Campaign: profile survived a real scene change to "
                 f"level {campaign_result['target_level'] + 1} with stats, weapon, "
                 "reload and corruption fallback verified"
+            )
+            playthrough_result, playthrough_errors, playthrough_blocked = (
+                _run_run_and_gun_playthrough(project_dir)
+            )
+            if playthrough_errors:
+                label = "BLOCKED" if playthrough_blocked else "FAILED"
+                print(f"[QA Agent] {label} input-driven campaign: {playthrough_errors}")
+                objective_result["input_playthrough"] = playthrough_result
+                return _failed_attempt(
+                    state,
+                    stage="playthrough_probe" if playthrough_blocked else "input_playthrough",
+                    errors=playthrough_errors,
+                    objective_result=objective_result,
+                    blocked=playthrough_blocked,
+                )
+            objective_result["input_playthrough"] = playthrough_result
+            print(
+                "[QA Agent] Playthrough: normal inputs cleared level 1 and reached "
+                f"level {playthrough_result['entered_level'] + 1} in "
+                f"{playthrough_result['frames']} frames with "
+                f"{playthrough_result['deaths']} deaths"
             )
 
     # 4. Balance check. The script runs, but that says nothing about whether

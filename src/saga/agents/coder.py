@@ -68,6 +68,7 @@ HybridProbe="*res://hybrid_probe.gd"
 CaptureProbe="*res://capture_probe.gd"
 HerdProbe="*res://herd_probe.gd"
 RunAndGunProbe="*res://run_and_gun_probe.gd"
+RunAndGunPlaythrough="*res://run_and_gun_playthrough.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -2332,7 +2333,7 @@ func _run() -> void:
 	flags[4] = int(enemy_state.get("kills", 0)) == kills_before + 1
 	var boss_before := int(enemy_state.get("boss_health", 0))
 	if level.get("boss") != null:
-		level.get("boss").take_damage(1)
+		level.get("boss").qa_force_damage(1)
 	var damaged: Dictionary = level.qa_snapshot()
 	flags[5] = int(damaged.get("boss_health", boss_before)) == boss_before - 1
 	level.qa_set_boss_phase(2)
@@ -2362,6 +2363,174 @@ func _run() -> void:
 	print("[RUN_AND_GUN_METRICS] fire=true checkpoint=true lose=true restart=true enemy=true boss_damage=true win=true")
 	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=7 max_stall_frames=1 stuck=false restart=passed deaths=1")
 	print("[OBJECTIVE] status=passed template=run_and_gun reason=none collected=7 total=7 remaining=0 frames=12")
+	get_tree().quit()
+"""
+
+RUN_AND_GUN_PLAYTHROUGH_GD = """extends Node
+
+const FRAME_LIMIT := 10800
+const MAX_DEATHS := 3
+var _active := false
+var _frame := 0
+var _deaths := 0
+var _shots := 0
+var _jumps := 0
+var _checkpoint := false
+var _weapon := false
+var _wave := false
+var _last_x := 0.0
+var _stalled_frames := 0
+var _upgrade_sent := false
+var _over_counted := false
+
+func _ready() -> void:
+	_active = "--run-and-gun-playthrough" in OS.get_cmdline_user_args()
+	if _active:
+		process_priority = 720
+
+func _physics_process(_delta: float) -> void:
+	if not _active:
+		return
+	_frame += 1
+	if _frame >= FRAME_LIMIT:
+		_fail("timeout")
+		return
+	var scene_path := get_tree().current_scene.scene_file_path if get_tree().current_scene else ""
+	if scene_path.ends_with("Level_1.tscn"):
+		_pass(1)
+		return
+	if scene_path.ends_with("Victory.tscn"):
+		_pass(0)
+		return
+	var levels := get_tree().get_nodes_in_group("saga_run_and_gun_level")
+	if levels.is_empty():
+		_release_gameplay()
+		_pulse("ui_accept", 20)
+		return
+	var level: Node = levels[0]
+	if not level.has_method("qa_snapshot"):
+		_fail("level_interface_missing")
+		return
+	var snapshot: Dictionary = level.qa_snapshot()
+	_checkpoint = _checkpoint or bool(snapshot.get("checkpoint_active", false))
+	_weapon = _weapon or int(snapshot.get("weapon_inventory_size", 1)) > 1
+	_wave = _wave or int(snapshot.get("completed_waves", 0)) > 0
+	var state := str(snapshot.get("state", "unknown"))
+	if state == "over":
+		_release_gameplay()
+		if not _over_counted:
+			_over_counted = true
+			_deaths += 1
+			if _deaths > MAX_DEATHS:
+				_fail("death_budget_exceeded")
+				return
+		_pulse("ui_accept", 8)
+		return
+	if state == "upgrade":
+		_release_gameplay()
+		if not _upgrade_sent:
+			_upgrade_sent = true
+			var event := InputEventKey.new()
+			event.keycode = KEY_1
+			event.pressed = true
+			Input.parse_input_event(event)
+		return
+	if state != "playing":
+		_release_gameplay()
+		return
+	_over_counted = false
+	_upgrade_sent = false
+	var player := level.get("player") as Node2D
+	if not is_instance_valid(player):
+		_fail("player_missing")
+		return
+	var moved := absf(player.global_position.x - _last_x)
+	_stalled_frames = _stalled_frames + 1 if moved < 0.35 else 0
+	_last_x = player.global_position.x
+	var target := _nearest_target(player)
+	if is_instance_valid(target):
+		var dx := target.global_position.x - player.global_position.x
+		if absf(dx) > 225.0:
+			_move(signf(dx))
+		elif absf(dx) < 105.0:
+			_move(-signf(dx))
+		else:
+			_face(signf(dx))
+		_fire()
+	else:
+		_move(1.0)
+	if _frame % 84 < 7 or _stalled_frames > 75:
+		Input.action_press("ui_up")
+		if _frame % 84 == 0 or _stalled_frames == 76:
+			_jumps += 1
+	else:
+		Input.action_release("ui_up")
+
+func _nearest_target(player: Node2D) -> Node2D:
+	var nearest: Node2D = null
+	var distance := INF
+	for candidate in get_tree().get_nodes_in_group("run_and_gun_enemies"):
+		if not is_instance_valid(candidate) or int(candidate.get("health")) <= 0:
+			continue
+		var next_distance := absf(candidate.global_position.x - player.global_position.x)
+		if next_distance < distance:
+			distance = next_distance
+			nearest = candidate
+	if nearest != null:
+		return nearest
+	for candidate in get_tree().get_nodes_in_group("run_and_gun_boss"):
+		if is_instance_valid(candidate) and not bool(candidate.get("shielded")) and int(candidate.get("health")) > 0:
+			return candidate
+	return null
+
+func _move(direction: float) -> void:
+	Input.action_release("ui_left")
+	Input.action_release("ui_right")
+	Input.action_press("ui_right" if direction >= 0.0 else "ui_left")
+
+func _face(direction: float) -> void:
+	# A brief directional tap changes facing through the same path as a player.
+	if _frame % 12 < 2:
+		_move(direction)
+	else:
+		Input.action_release("ui_left")
+		Input.action_release("ui_right")
+
+func _fire() -> void:
+	if _frame % 12 < 2:
+		Input.action_press("ui_accept")
+		if _frame % 12 == 0:
+			_shots += 1
+	else:
+		Input.action_release("ui_accept")
+
+func _pulse(action: String, period: int) -> void:
+	if _frame % period < 2:
+		Input.action_press(action)
+	else:
+		Input.action_release(action)
+
+func _release_gameplay() -> void:
+	for action in ["ui_left", "ui_right", "ui_up", "ui_accept"]:
+		Input.action_release(action)
+
+func _metrics(status: String, entered_level: int, reason: String) -> void:
+	print("[RUN_AND_GUN_PLAYTHROUGH] status=%s entered_level=%d shots=%d jumps=%d deaths=%d checkpoint=%s weapon=%s wave=%s frames=%d reason=%s" % [status, entered_level, _shots, _jumps, _deaths, str(_checkpoint).to_lower(), str(_weapon).to_lower(), str(_wave).to_lower(), _frame, reason])
+
+func _pass(entered_level: int) -> void:
+	if not _active:
+		return
+	_active = false
+	_release_gameplay()
+	_metrics("passed", entered_level, "none")
+	get_tree().quit()
+
+func _fail(reason: String) -> void:
+	if not _active:
+		return
+	_active = false
+	_release_gameplay()
+	_metrics("failed", -1, reason)
 	get_tree().quit()
 """
 
@@ -2506,6 +2675,7 @@ def _write_harness_project(
         "capture_probe.gd": CAPTURE_PROBE_GD,
         "herd_probe.gd": HERD_PROBE_GD,
         "run_and_gun_probe.gd": RUN_AND_GUN_PROBE_GD,
+        "run_and_gun_playthrough.gd": RUN_AND_GUN_PLAYTHROUGH_GD,
         "campaign_probe.gd": CAMPAIGN_PROBE_GD,
         "music.gd": _build_music_gd(bgm_filename),
         "game.gd": _build_game_gd(

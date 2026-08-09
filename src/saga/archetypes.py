@@ -260,6 +260,9 @@ def build_run_and_gun_encounter_plan(design_doc: dict, level_index: int) -> dict
             "amount": 1,
         })
 
+    # Simultaneous bodies are capped deliberately. Filling a numeric budget to
+    # the last point produced crowded, unfair arenas even though the accounting
+    # looked valid in QA.
     threat_limit = 10 + intensity * 2
     wave_members = [
         [{"role": "scout"}, {"role": "turret"}, {"role": "scout"}],
@@ -269,41 +272,29 @@ def build_run_and_gun_encounter_plan(design_doc: dict, level_index: int) -> dict
         RUN_AND_GUN_ROLE_COSTS[member["role"]]
         for members in wave_members for member in members
     )
-    expansion_roles = ("scout", "hunter", "turret", "flyer", "bruiser")
-    expansion_index = digest[10] % len(expansion_roles)
-    wave_index = 0
-    while True:
-        role = expansion_roles[expansion_index % len(expansion_roles)]
-        cost = RUN_AND_GUN_ROLE_COSTS[role]
-        if threat_spent + cost > threat_limit:
-            affordable = next(
-                (candidate for candidate in expansion_roles
-                 if threat_spent + RUN_AND_GUN_ROLE_COSTS[candidate] <= threat_limit),
-                None,
-            )
-            if affordable is None:
-                break
-            role = affordable
+    if intensity >= 8:
+        expansion_roles = ("scout", "hunter", "turret", "flyer")
+        for wave_index in range(2):
+            role = expansion_roles[(digest[10] + wave_index) % len(expansion_roles)]
             cost = RUN_AND_GUN_ROLE_COSTS[role]
-        wave_members[wave_index % len(wave_members)].append({"role": role})
-        threat_spent += cost
-        wave_index += 1
-        expansion_index += 1
+            if threat_spent + cost <= threat_limit:
+                wave_members[wave_index].append({"role": role})
+                threat_spent += cost
 
     waves = []
     wave_specs = (
-        ("bridge_lock", world_width * 0.36, world_width * 0.30, world_width * 0.48),
-        ("final_gauntlet", checkpoint_x + 230.0, checkpoint_x + 120.0, boss_start - 50.0),
+        ("bridge_lock", world_width * 0.32, world_width * 0.24, world_width * 0.53),
+        ("final_gauntlet", checkpoint_x + 190.0, checkpoint_x + 80.0, boss_start - 30.0),
     )
     for index, (wave_id, trigger_x, lock_start, lock_end) in enumerate(wave_specs):
         members = wave_members[index]
-        member_spacing = min(105.0, (lock_end - lock_start - 100.0) / max(len(members), 1))
+        member_spacing = min(95.0, (lock_end - trigger_x - 240.0) / max(len(members) - 1, 1))
         rendered_members = []
         for member_index, member in enumerate(members):
             rendered_members.append({
                 "id": f"{wave_id}_{member_index + 1}",
                 "role": member["role"],
-                "x": round(lock_start + 70.0 + member_index * member_spacing, 1),
+                "x": round(min(lock_end - 70.0, trigger_x + 210.0 + member_index * member_spacing), 1),
                 "y": 430.0 if member["role"] == "flyer" else 500.0,
             })
         waves.append({
@@ -392,7 +383,7 @@ def build_run_and_gun_adapter(
     checkpoint = _asset_with(asset_filenames, "key_item", "checkpoint", "beacon")
     encounter_plan = build_run_and_gun_encounter_plan(design_doc, level_index)
     definition = {
-        "pack_version": 4,
+        "pack_version": 5,
         "title": str(design_doc.get("title") or "Run and Gun"),
         "level_name": str(level.get("name") or f"Level {level_index + 1}"),
         "level_index": level_index,

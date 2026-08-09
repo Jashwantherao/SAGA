@@ -4,6 +4,7 @@ extends SagaRunAndGunEnemy
 signal phase_changed(phase: int)
 
 var phase := 1
+var shielded := true
 
 func _ready() -> void:
 	super._ready()
@@ -52,6 +53,22 @@ func _fire_pattern() -> void:
 			"faction": faction,
 			"weapon_id": "boss_phase_%d" % phase,
 		})
+
+func set_shielded(value: bool) -> void:
+	shielded = value
+	if is_instance_valid(actor_sprite):
+		actor_sprite.modulate = Color("7d8aa8") if shielded else Color.WHITE
+
+func take_damage(amount: int) -> void:
+	if shielded:
+		return
+	super.take_damage(amount)
+
+func qa_force_damage(amount: int) -> void:
+	var was_shielded := shielded
+	shielded = false
+	super.take_damage(amount)
+	shielded = was_shielded and health > 0
 
 func qa_set_phase(next_phase: int) -> void:
 	phase = clampi(next_phase, 1, 3)

@@ -43,6 +43,9 @@ func _ready() -> void:
 
 func _process(_delta: float) -> void:
 	_maybe_trigger_wave()
+	var route_clear := kills >= total_enemies and completed_waves >= wave_definitions.size()
+	if is_instance_valid(boss):
+		boss.set_shielded(not route_clear)
 	if not is_instance_valid(status_label):
 		return
 	var weapon := player.weapon_snapshot()
@@ -53,8 +56,10 @@ func _process(_delta: float) -> void:
 		int(campaign.get("currency", 0)),
 		"ACTIVE" if checkpoint_active else "--"
 	]
-	objective_label.text = "TARGETS %d/%d   WAVES %d/%d   BOSS %d/%d" % [
-		kills, total_enemies, completed_waves, wave_definitions.size(), boss.health if is_instance_valid(boss) else 0,
+	objective_label.text = "TARGETS %d/%d   WAVES %d/%d   BOSS %s %d/%d" % [
+		kills, total_enemies, completed_waves, wave_definitions.size(),
+		"SHIELDED" if not route_clear else "OPEN",
+		boss.health if is_instance_valid(boss) else 0,
 		boss.max_health if is_instance_valid(boss) else int(_definition.get("boss_health", 1))
 	]
 	if state == "over" and Input.is_action_just_pressed("ui_accept"):
@@ -76,18 +81,41 @@ func _build_background() -> void:
 	var path := _asset("background")
 	if path == "":
 		RenderingServer.set_default_clear_color(Color("101827"))
+		_build_fallback_background()
 		return
 	var texture := load(path) as Texture2D
 	if texture == null:
 		return
-	var sprite := Sprite2D.new()
-	sprite.texture = texture
-	sprite.centered = true
-	sprite.position = Vector2(512, 288)
 	var size := texture.get_size()
-	sprite.scale = Vector2(1024.0 / maxf(size.x, 1.0), 576.0 / maxf(size.y, 1.0))
-	sprite.z_index = -100
-	add_child(sprite)
+	var world_width := float(_definition.get("world_width", 2000.0))
+	var tile_count := ceili(world_width / 1024.0) + 1
+	for index in tile_count:
+		var sprite := Sprite2D.new()
+		sprite.texture = texture
+		sprite.centered = true
+		sprite.position = Vector2(512.0 + index * 1024.0, 288)
+		sprite.scale = Vector2(1025.0 / maxf(size.x, 1.0), 576.0 / maxf(size.y, 1.0))
+		sprite.z_index = -100
+		add_child(sprite)
+
+func _build_fallback_background() -> void:
+	var width := float(_definition.get("world_width", 2000.0))
+	var sky := Polygon2D.new()
+	sky.polygon = PackedVector2Array([Vector2(0, 0), Vector2(width, 0), Vector2(width, 576), Vector2(0, 576)])
+	sky.color = Color("101827")
+	sky.z_index = -110
+	add_child(sky)
+	for layer in 3:
+		var ridge := Polygon2D.new()
+		var points := PackedVector2Array([Vector2(0, 576)])
+		var base_y := 360.0 + layer * 58.0
+		for x in range(0, int(width) + 180, 180):
+			points.append(Vector2(x, base_y - float((x / 180 + layer) % 3) * 34.0))
+		points.append(Vector2(width, 576))
+		ridge.polygon = points
+		ridge.color = [Color("18283a"), Color("1d3145"), Color("22394d")][layer]
+		ridge.z_index = -105 + layer
+		add_child(ridge)
 
 func _solid_rect(position: Vector2, size: Vector2, color: Color) -> StaticBody2D:
 	var body := StaticBody2D.new()
@@ -250,8 +278,16 @@ func _spawn_wave(wave: Dictionary) -> void:
 	active_wave_definition = wave
 	active_wave_enemies.clear()
 	player.set_arena_lock(float(wave.get("lock_start", 24.0)), float(wave.get("lock_end", _definition.get("world_width", 2000.0))))
+	var safe_gap := 210.0
+	var lock_start := float(wave.get("lock_start", 24.0))
+	var lock_end := float(wave.get("lock_end", _definition.get("world_width", 2000.0)))
 	for member_value in wave.get("members", []) as Array:
-		_spawn_enemy(member_value as Dictionary, true)
+		var member := (member_value as Dictionary).duplicate()
+		var spawn_x := float(member.get("x", lock_end - 100.0))
+		if absf(spawn_x - player.global_position.x) < safe_gap:
+			spawn_x = clampf(player.global_position.x + safe_gap, lock_start + 70.0, lock_end - 70.0)
+		member["x"] = spawn_x
+		_spawn_enemy(member, true)
 
 func _maybe_trigger_wave(force: bool = false) -> void:
 	if state != "playing" or not active_wave_definition.is_empty() or pending_wave_index >= wave_definitions.size():
@@ -294,20 +330,23 @@ func _build_hud() -> void:
 	add_child(canvas)
 	var panel := ColorRect.new()
 	panel.position = Vector2(14, 12)
-	panel.size = Vector2(620, 76)
+	panel.size = Vector2(670, 76)
 	panel.color = Color(0.02, 0.04, 0.08, 0.84)
 	canvas.add_child(panel)
 	status_label = Label.new()
 	status_label.position = Vector2(28, 22)
-	status_label.add_theme_font_size_override("font_size", 18)
+	status_label.add_theme_font_size_override("font_size", 16)
 	canvas.add_child(status_label)
 	objective_label = Label.new()
 	objective_label.position = Vector2(28, 50)
-	objective_label.add_theme_font_size_override("font_size", 17)
+	objective_label.add_theme_font_size_override("font_size", 15)
 	canvas.add_child(objective_label)
 	var controls := Label.new()
-	controls.position = Vector2(700, 22)
-	controls.text = "%s   ARROWS move/jump   ENTER fire   TAB switch" % str(_encounter_plan().get("layout_id", "route")).to_upper()
+	controls.position = Vector2(690, 22)
+	controls.size = Vector2(320, 48)
+	controls.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	controls.add_theme_font_size_override("font_size", 13)
+	controls.text = "%s\nARROWS move/jump  ENTER fire  TAB gun" % str(_encounter_plan().get("layout_id", "route")).to_upper()
 	canvas.add_child(controls)
 
 func _on_player_died() -> void:
@@ -533,4 +572,4 @@ func qa_defeat_enemy() -> void:
 
 func qa_defeat_boss() -> void:
 	if is_instance_valid(boss):
-		boss.take_damage(boss.health)
+		boss.qa_force_damage(boss.health)
