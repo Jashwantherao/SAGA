@@ -17,6 +17,7 @@ var checkpoint: SagaRunAndGunCheckpoint
 var player_sprite: Sprite2D
 var status_label: Label
 var objective_label: Label
+var upgrade_layer: CanvasLayer
 var kills := 0
 var total_enemies := 0
 var checkpoint_active := false
@@ -29,6 +30,7 @@ func level_definition() -> Dictionary:
 func _ready() -> void:
 	add_to_group("saga_run_and_gun_level")
 	_definition = level_definition()
+	CampaignProfile.begin_level(int(_definition.get("level_index", 0)))
 	_build_background()
 	_build_world()
 	_build_player()
@@ -45,8 +47,10 @@ func _process(_delta: float) -> void:
 		return
 	var weapon := player.weapon_snapshot()
 	var ammo_text := "INF" if int(weapon.get("ammo", -1)) < 0 else str(weapon.get("ammo", 0))
-	status_label.text = "HP %d/%d   %s %s   CHECKPOINT %s" % [
+	var campaign := CampaignProfile.snapshot()
+	status_label.text = "HP %d/%d   %s %s   CREDITS %d   CHECKPOINT %s" % [
 		player.health, player.max_health, str(weapon.get("id", "pulse")).to_upper(), ammo_text,
+		int(campaign.get("currency", 0)),
 		"ACTIVE" if checkpoint_active else "--"
 	]
 	objective_label.text = "TARGETS %d/%d   WAVES %d/%d   BOSS %d/%d" % [
@@ -64,6 +68,9 @@ func _encounter_plan() -> Dictionary:
 
 func _combat_plan() -> Dictionary:
 	return _encounter_plan().get("combat_plan", {}) as Dictionary
+
+func _progression_plan() -> Dictionary:
+	return _definition.get("progression", {}) as Dictionary
 
 func _build_background() -> void:
 	var path := _asset("background")
@@ -147,6 +154,7 @@ func _build_player() -> void:
 		"health": _definition.get("player_health", 5),
 		"world_limit": _definition.get("world_width", 2000.0),
 	})
+	CampaignProfile.apply_to_player(player)
 	player.died.connect(_on_player_died)
 	var camera := Camera2D.new()
 	camera.position = Vector2(180, -80)
@@ -313,17 +321,82 @@ func _on_enemy_died(enemy: Node) -> void:
 	Sfx.play("hit")
 
 func _on_boss_died(_enemy: Node) -> void:
-	state = "won"
 	player.can_control = false
-	objective_label.text = "SECTOR CLEAR"
+	var progression := _progression_plan()
+	CampaignProfile.award_level(
+		str(progression.get("reward_id", "level_reward")),
+		int(progression.get("currency_reward", 20)),
+		int(progression.get("xp_reward", 30))
+	)
 	Sfx.play("win")
+	if bool(_definition.get("has_next_level", false)):
+		state = "upgrade"
+		objective_label.text = "SECTOR CLEAR — CHOOSE AN UPGRADE"
+		_show_upgrade_choices()
+	else:
+		state = "won"
+		objective_label.text = "SECTOR CLEAR"
+		_complete_level()
+
+func _complete_level() -> void:
 	if not _completion_sent:
 		_completion_sent = true
 		Game.level_complete()
 
+func _show_upgrade_choices() -> void:
+	if is_instance_valid(upgrade_layer):
+		upgrade_layer.queue_free()
+	upgrade_layer = CanvasLayer.new()
+	upgrade_layer.layer = 20
+	add_child(upgrade_layer)
+	var backdrop := ColorRect.new()
+	backdrop.position = Vector2(170, 165)
+	backdrop.size = Vector2(684, 235)
+	backdrop.color = Color(0.02, 0.03, 0.08, 0.96)
+	upgrade_layer.add_child(backdrop)
+	var title := Label.new()
+	title.position = Vector2(235, 205)
+	title.text = "CHOOSE YOUR CAMPAIGN UPGRADE"
+	title.add_theme_font_size_override("font_size", 25)
+	upgrade_layer.add_child(title)
+	var cost := int(_progression_plan().get("upgrade_cost", 10))
+	var choices := Label.new()
+	choices.position = Vector2(225, 265)
+	choices.text = "[1] FIREPOWER  +1 damage\n[2] MOBILITY   +8%% speed\n[3] VITALITY   +2 max health\n\nCost: %d credits" % cost
+	choices.add_theme_font_size_override("font_size", 19)
+	upgrade_layer.add_child(choices)
+
+func _choose_upgrade(track: String) -> bool:
+	if state != "upgrade":
+		return false
+	var cost := int(_progression_plan().get("upgrade_cost", 10))
+	if not CampaignProfile.purchase_upgrade(track, cost):
+		return false
+	CampaignProfile.apply_to_player(player)
+	if is_instance_valid(upgrade_layer):
+		upgrade_layer.queue_free()
+	state = "won"
+	objective_label.text = "%s UPGRADED — DEPLOYING" % track.to_upper()
+	_complete_level()
+	return true
+
+func _unhandled_input(event: InputEvent) -> void:
+	if state != "upgrade" or not event is InputEventKey:
+		return
+	var key_event := event as InputEventKey
+	if not key_event.pressed or key_event.echo:
+		return
+	if key_event.keycode == KEY_1:
+		_choose_upgrade("firepower")
+	elif key_event.keycode == KEY_2:
+		_choose_upgrade("mobility")
+	elif key_event.keycode == KEY_3:
+		_choose_upgrade("vitality")
+
 func restart_from_checkpoint() -> void:
 	state = "playing"
 	player.reset_at_checkpoint()
+	CampaignProfile.apply_to_player(player)
 	if not active_wave_definition.is_empty():
 		var wave := active_wave_definition.duplicate(true)
 		for enemy in active_wave_enemies:
@@ -338,6 +411,8 @@ func qa_snapshot() -> Dictionary:
 	var plan := _encounter_plan()
 	var combat := _combat_plan()
 	var weapon := player.weapon_snapshot()
+	var campaign := CampaignProfile.snapshot()
+	var upgrades := campaign.get("upgrades", {}) as Dictionary
 	return {
 		"state": state,
 		"player_health": player.health,
@@ -370,6 +445,15 @@ func qa_snapshot() -> Dictionary:
 		"threat_budget_spent": int(combat.get("threat_budget_spent", 0)),
 		"boss_phase": boss.phase if is_instance_valid(boss) else 0,
 		"boss_pattern_projectiles": boss.attack_pattern_projectiles() if is_instance_valid(boss) else 0,
+		"profile_schema_version": int(campaign.get("schema_version", -1)),
+		"campaign_currency": int(campaign.get("currency", 0)),
+		"campaign_xp": int(campaign.get("xp", 0)),
+		"claimed_rewards": (campaign.get("claimed_rewards", []) as Array).size(),
+		"firepower_level": int(upgrades.get("firepower", 0)),
+		"mobility_level": int(upgrades.get("mobility", 0)),
+		"vitality_level": int(upgrades.get("vitality", 0)),
+		"campaign_last_level": int(campaign.get("last_level", -1)),
+		"campaign_load_status": str(campaign.get("last_load_status", "")),
 	}
 
 func qa_fire() -> void:
@@ -395,6 +479,42 @@ func qa_clear_wave() -> void:
 func qa_set_boss_phase(phase: int) -> void:
 	if is_instance_valid(boss):
 		boss.qa_set_phase(phase)
+
+func qa_progression_reset() -> void:
+	CampaignProfile.reset_profile(false)
+	CampaignProfile.begin_level(int(_definition.get("level_index", 0)))
+	CampaignProfile.apply_to_player(player)
+
+func qa_progression_award() -> void:
+	var progression := _progression_plan()
+	CampaignProfile.award_level(
+		str(progression.get("reward_id", "level_reward")),
+		int(progression.get("currency_reward", 20)),
+		int(progression.get("xp_reward", 30))
+	)
+
+func qa_progression_buy(track: String) -> void:
+	CampaignProfile.purchase_upgrade(track, int(_progression_plan().get("upgrade_cost", 10)))
+	CampaignProfile.apply_to_player(player)
+
+func qa_progression_save() -> void:
+	CampaignProfile.save_profile()
+
+func qa_progression_zero_memory() -> void:
+	CampaignProfile.qa_zero_memory()
+
+func qa_progression_load() -> void:
+	CampaignProfile.load_profile()
+	CampaignProfile.apply_to_player(player)
+
+func qa_progression_begin_next_level() -> void:
+	CampaignProfile.begin_level(int(_definition.get("level_index", 0)) + 1)
+
+func qa_progression_corrupt() -> void:
+	CampaignProfile.qa_corrupt_save()
+
+func qa_select_upgrade(track: String) -> void:
+	_choose_upgrade(track)
 
 func qa_activate_checkpoint() -> void:
 	checkpoint.activate(player)

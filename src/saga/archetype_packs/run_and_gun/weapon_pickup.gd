@@ -33,6 +33,7 @@ func collect(body: Node) -> void:
 		return
 	if not body.equip_weapon(weapon_id, ammo):
 		return
+	CampaignProfile.unlock_weapon(weapon_id)
 	consumed = true
 	Sfx.play("pickup")
 	queue_free()

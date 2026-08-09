@@ -1,6 +1,6 @@
 {
   "id": "run_and_gun",
-  "version": 3,
+  "version": 4,
   "mechanic_template": "run_and_gun",
   "capabilities": [
     "side_view_movement",
@@ -18,6 +18,10 @@
     "role_specific_enemy_behavior",
     "threat_budgeted_waves",
     "distinct_boss_attack_phases",
+    "persistent_campaign_profile",
+    "earned_upgrade_choice",
+    "versioned_atomic_save",
+    "duplicate_reward_protection",
     "level_completion"
   ],
   "required_files": [
@@ -29,6 +33,7 @@
     "hazard.gd",
     "pickup.gd",
     "weapon_pickup.gd",
+    "progression_profile.gd",
     "run_and_gun_level.gd"
   ]
 }

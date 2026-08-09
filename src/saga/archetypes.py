@@ -392,9 +392,12 @@ def build_run_and_gun_adapter(
     checkpoint = _asset_with(asset_filenames, "key_item", "checkpoint", "beacon")
     encounter_plan = build_run_and_gun_encounter_plan(design_doc, level_index)
     definition = {
-        "pack_version": 3,
+        "pack_version": 4,
         "title": str(design_doc.get("title") or "Run and Gun"),
         "level_name": str(level.get("name") or f"Level {level_index + 1}"),
+        "level_index": level_index,
+        "total_levels": len(levels),
+        "has_next_level": level_index + 1 < len(levels),
         "intensity": intensity,
         "world_width": encounter_plan["world_width"],
         "enemy_count": len(encounter_plan["enemy_spawns"]),
@@ -404,6 +407,12 @@ def build_run_and_gun_adapter(
         "move_speed": 230.0 + intensity * 4.0,
         "enemy_speed": 65.0 + intensity * 7.0,
         "projectile_speed": 620.0 + intensity * 18.0,
+        "progression": {
+            "reward_id": f"level_{level_index}_boss",
+            "currency_reward": 14 + intensity * 2,
+            "xp_reward": 20 + intensity * 4,
+            "upgrade_cost": 10 + level_index * 2,
+        },
         "encounter_plan": encounter_plan,
         "assets": {
             "hero": f"res://assets/{hero}" if hero else "",

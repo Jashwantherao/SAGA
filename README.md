@@ -90,7 +90,7 @@ are intentionally locked while a generation is active.
 | Asset Maker | local GPU, ComfyUI + Flux.1 schnell + rembg | The hero in a resting **and** a walking pose (sharing one seed, so they render the same character), the key-item icon, up to four `extra_sprites` the design doc asked for by name, and one background per level. Icons generate at 512x512 for reliable full-body framing, are background-removed via rembg since Flux can't emit alpha, then cropped to the alpha bounding box and downscaled to 128x128. Without `extra_sprites`, anything that isn't a hero, icon or background - platforms, enemies, walls - had no image and the Coder drew it as an untextured rectangle |
 | Audio Agent | local GPU, MusicGen (`transformers`) | Background music from the design doc's audio mood; loops continuously across level changes via a harness-owned autoload |
 | Coder | local GPU, hosted API, or deterministic archetype pack | Classic templates write one `Level_N.gd` from a template-matched few-shot. `run_and_gun` instead scaffolds a versioned multi-file Godot capability pack and writes only a compact level definition: the model cannot silently reimplement movement, projectiles, enemy AI, checkpoints or boss state. The harness also writes `project.godot`, scenes, procedural SFX, ambience, narrative interludes and Victory flow |
-| QA Agent | Godot 4.7, headless + optional NVIDIA video QA | Imports assets and runs each level, then **plays it**. Autoplay proves input-driven movement; ten deterministic mechanic probes cover the nine classic templates plus run-and-gun firing, checkpoint activation, loss, clean respawn, enemy defeat, boss damage and victory. Structured results and every artifact remain in the truthful per-level ledger |
+| QA Agent | Godot 4.7, headless + optional NVIDIA video QA | Imports assets and runs each level, then **plays it**. Autoplay proves input-driven movement; ten deterministic mechanic probes cover the nine classic templates plus run-and-gun structure, weapons, waves, progression/save integrity, combat transitions and victory. Structured results and every artifact remain in the truthful per-level ledger |
 
 Coder repairs are transactional. SAGA preserves the previous gameplay script,
 rechecks corrected output for contracts, asset references, and unsafe APIs, then
@@ -123,11 +123,11 @@ The nine classic templates each have a worked few-shot example in `coder.py`, si
 ### Archetype packs
 
 `run_and_gun` is SAGA's first OpenGame-style capability family. Its versioned
-manifest and nine reusable Godot modules live under
+manifest and ten reusable Godot modules live under
 `src/saga/archetype_packs/run_and_gun/`. The level script is a small adapter;
 stable engine code owns player physics, firing, projectile collision, enemy
 patrol/chase, health and loss, checkpoint respawn, camera/HUD, boss phases and
-level completion. Pack v3 compiles each brief into a reproducible encounter
+level completion. Pack v4 compiles each brief into a reproducible encounter
 plan: one of three stage topologies, traversal platforms, five paced encounter
 beats, differentiated enemy roles, hazards, recovery pickups, checkpoint
 placement and a separate boss arena. The plan is validated before Godot runs.
@@ -135,10 +135,16 @@ Its Combat Director adds pulse, spread and explosive weapon patterns, collectibl
 loadouts with switching, five behaviorally distinct enemy roles, arena locks,
 two threat-budgeted waves and boss phases with 1/3/5-projectile attacks. Loss
 restores the default loadout and restarts an active wave from its authored plan.
+Its Campaign Progression layer awards currency and XP exactly once per boss,
+offers firepower/mobility/vitality choices between levels, carries upgrades and
+unlocked weapons forward, and stores a schema-versioned profile through an
+atomic temporary/backup save path. Malformed or incompatible saves recover to
+a valid default profile rather than breaking startup.
 The deterministic blueprint exposes the runtime capabilities as separate,
 dependency-ordered systems. QA calls a stable pack interface and refuses to
-ship unless all seven core transitions, the encounter-structure contract and
-ten combat-depth assertions pass. This is the pattern future action RPG and creature-collection packs
+ship unless all seven core transitions, the encounter-structure contract, ten
+combat-depth assertions and seven progression/persistence assertions pass.
+This is the pattern future action RPG and creature-collection packs
 should extend instead of adding larger monolithic few-shots.
 
 ### Retrieval strategy

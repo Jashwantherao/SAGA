@@ -117,6 +117,16 @@ RUN_AND_GUN_COMBAT = re.compile(
     r"restart=(true|false) boss_phases=(true|false) "
     r"threat_spent=(\d+) threat_limit=(\d+)"
 )
+RUN_AND_GUN_PROGRESSION = re.compile(
+    r"\[RUN_AND_GUN_PROGRESSION\] reward=(true|false) duplicate=(true|false) "
+    r"upgrade=(true|false) save_reload=(true|false) carryover=(true|false) "
+    r"corrupt_fallback=(true|false) schema=(true|false) currency=(\d+) xp=(\d+)"
+)
+CAMPAIGN_METRICS = re.compile(
+    r"\[CAMPAIGN_METRICS\] scene=(true|false) stats=(true|false) "
+    r"weapon=(true|false) reload=(true|false) corrupt=(true|false) "
+    r"level=(-?\d+) reason=([a-z0-9_]+)"
+)
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
 MAX_SURVIVAL_SOLVER_SECONDS = 30.0
@@ -138,7 +148,7 @@ BENIGN_EXIT_NOISE = re.compile(
 
 HARNESS_SCRIPT_ERROR = re.compile(
     r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|capture_probe|herd_probe|screenshot|sfx|music|ambience|anim|game|"
-    r"run_and_gun_probe|interlude|victory)\.gd|"
+    r"run_and_gun_probe|campaign_probe|interlude|victory)\.gd|"
     r"res://archetypes/run_and_gun/[^\s)]+\.gd",
     re.IGNORECASE,
 )
@@ -481,6 +491,30 @@ def _run_objective_probe(
             return result, [
                 "Run-and-gun combat depth: weapon patterns, pickup acquisition, bounded waves, role behavior, restart, or boss phases failed."
             ], False
+        progression = RUN_AND_GUN_PROGRESSION.search(output)
+        if not progression:
+            return result, ["QA infrastructure: run-and-gun probe produced no progression metrics."], True
+        (
+            reward, duplicate, upgrade, save_reload, carryover,
+            corrupt_fallback, schema, currency, xp,
+        ) = progression.groups()
+        result.update(
+            {
+                "campaign_reward_verified": reward == "true",
+                "duplicate_reward_blocked": duplicate == "true",
+                "upgrade_application_verified": upgrade == "true",
+                "save_reload_verified": save_reload == "true",
+                "cross_level_carryover_verified": carryover == "true",
+                "corrupt_save_fallback_verified": corrupt_fallback == "true",
+                "profile_schema_verified": schema == "true",
+                "campaign_currency_after_upgrade": int(currency),
+                "campaign_xp": int(xp),
+            }
+        )
+        if "false" in progression.groups()[:7]:
+            return result, [
+                "Run-and-gun progression: reward, duplicate protection, upgrade, persistence, carryover, corruption fallback, or schema verification failed."
+            ], False
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -762,6 +796,52 @@ def _run_objective_probe(
             return result, ["Objective completion: run-and-gun pass omitted: " + ", ".join(missing) + "."], True
         if result["restart_status"] != "passed" or result["deaths"] != 1:
             return result, ["Objective completion: run-and-gun loss/restart accounting is inconsistent."], True
+    return result, [], False
+
+
+def _run_campaign_probe(project_dir: str, scene: str) -> tuple[dict | None, list[str], bool]:
+    """Prove campaign state across an actual Godot scene replacement."""
+    probe = _run(
+        [
+            "--headless",
+            "--path",
+            project_dir,
+            scene,
+            "--quit-after",
+            "1200",
+            "--",
+            "--campaign-probe",
+        ],
+        timeout=45,
+    )
+    output = probe.stdout + probe.stderr
+    process_errors = _find_errors(output)
+    if probe.returncode != 0 or process_errors:
+        errors = process_errors or [f"Campaign probe exited with code {probe.returncode}"]
+        return None, errors, _has_harness_error(errors)
+    match = CAMPAIGN_METRICS.search(output)
+    if not match:
+        return None, ["QA infrastructure: campaign probe produced no verdict."], True
+    scene_ok, stats, weapon, reload, corrupt, level, reason = match.groups()
+    result = {
+        "scene_transition_verified": scene_ok == "true",
+        "carried_stats_verified": stats == "true",
+        "carried_weapon_verified": weapon == "true",
+        "cross_scene_reload_verified": reload == "true",
+        "cross_scene_corrupt_fallback_verified": corrupt == "true",
+        "target_level": int(level),
+        "reason": reason,
+    }
+    missing = [
+        name for name, passed in result.items()
+        if name.endswith("_verified") and passed is not True
+    ]
+    if missing:
+        return result, [
+            "Campaign persistence failed across a real scene change: "
+            + ", ".join(missing)
+            + f" (reason={reason})."
+        ], False
     return result, [], False
 
 
@@ -1448,6 +1528,26 @@ def qa_agent(state: GraphState) -> GraphState:
             f"(score={objective_result['completion_score']}, "
             f"max_stall={objective_result['max_stall_frames']} frames)"
         )
+        if template == "run_and_gun" and current_level == 0:
+            campaign_result, campaign_errors, campaign_blocked = _run_campaign_probe(
+                project_dir, scene
+            )
+            if campaign_errors:
+                label = "BLOCKED" if campaign_blocked else "FAILED"
+                print(f"[QA Agent] {label} campaign persistence: {campaign_errors}")
+                return _failed_attempt(
+                    state,
+                    stage="campaign_probe" if campaign_blocked else "campaign_persistence",
+                    errors=campaign_errors,
+                    objective_result=objective_result,
+                    blocked=campaign_blocked,
+                )
+            objective_result["campaign_scene_probe"] = campaign_result
+            print(
+                "[QA Agent] Campaign: profile survived a real scene change to "
+                f"level {campaign_result['target_level'] + 1} with stats, weapon, "
+                "reload and corruption fallback verified"
+            )
 
     # 4. Balance check. The script runs, but that says nothing about whether
     # its challenge is survivable - a drain that outpaces every refill, or a

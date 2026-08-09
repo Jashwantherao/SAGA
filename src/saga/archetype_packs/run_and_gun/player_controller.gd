@@ -30,6 +30,9 @@ var world_limit := 4900.0
 var arena_min_x := 24.0
 var arena_max_x := 4900.0
 var weapon_inventory: Dictionary = {"pulse": -1}
+var base_move_speed := 250.0
+var base_max_health := 5
+var progression_damage_bonus := 0
 
 func _ready() -> void:
 	add_to_group("run_and_gun_player")
@@ -46,6 +49,8 @@ func configure(options: Dictionary) -> void:
 	move_speed = float(options.get("move_speed", move_speed))
 	projectile_speed = float(options.get("projectile_speed", projectile_speed))
 	max_health = int(options.get("health", max_health))
+	base_move_speed = move_speed
+	base_max_health = max_health
 	world_limit = float(options.get("world_limit", world_limit))
 	arena_max_x = world_limit
 	health = max_health
@@ -92,7 +97,7 @@ func fire() -> Node:
 		projectile.configure({
 			"direction": Vector2(facing, 0).rotated(deg_to_rad(offset * spread)),
 			"speed": projectile_speed * float(definition.get("speed_scale", 1.0)),
-			"damage": int(definition.get("damage", 1)),
+			"damage": int(definition.get("damage", 1)) + progression_damage_bonus,
 			"blast_radius": float(definition.get("blast_radius", 0.0)),
 			"weapon_id": weapon_id,
 			"faction": faction,
@@ -140,10 +145,27 @@ func weapon_snapshot() -> Dictionary:
 		"id": weapon_id,
 		"ammo": weapon_ammo,
 		"projectiles": int(definition.get("projectiles", 1)),
-		"damage": int(definition.get("damage", 1)),
+		"damage": int(definition.get("damage", 1)) + progression_damage_bonus,
 		"blast_radius": float(definition.get("blast_radius", 0.0)),
 		"inventory_size": weapon_inventory.size(),
+		"progression_damage_bonus": progression_damage_bonus,
 	}
+
+func apply_progression(upgrades: Dictionary, unlocked_weapons: Array) -> void:
+	var firepower := clampi(int(upgrades.get("firepower", 0)), 0, 3)
+	var mobility := clampi(int(upgrades.get("mobility", 0)), 0, 3)
+	var vitality := clampi(int(upgrades.get("vitality", 0)), 0, 3)
+	progression_damage_bonus = firepower
+	move_speed = base_move_speed * (1.0 + float(mobility) * 0.08)
+	max_health = base_max_health + vitality * 2
+	health = mini(max_health, maxi(1, health))
+	for unlocked in unlocked_weapons:
+		var weapon := str(unlocked)
+		if weapon == "spread" and not weapon_inventory.has(weapon):
+			weapon_inventory[weapon] = 18
+		elif weapon == "launcher" and not weapon_inventory.has(weapon):
+			weapon_inventory[weapon] = 6
+	health_changed.emit(health, max_health)
 
 func set_arena_lock(minimum_x: float, maximum_x: float) -> void:
 	arena_min_x = maxf(24.0, minimum_x)

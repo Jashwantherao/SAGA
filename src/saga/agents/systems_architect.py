@@ -145,7 +145,7 @@ TEMPLATE_SYSTEM_KINDS = {
     "survive_and_deplete": {"resource", "hazard", "enemy_ai", "zone_control", "objective"},
     "maze_chase": {"maze", "pickup", "hazard", "enemy_ai", "objective"},
     "dot_maze": {"maze", "pickup", "hazard", "enemy_ai", "objective"},
-    "run_and_gun": {"combat", "enemy_ai", "checkpoint", "boss", "objective"},
+    "run_and_gun": {"combat", "enemy_ai", "checkpoint", "boss", "progression", "save_load", "objective"},
     "herd_to_goal": {"herding", "objective"},
     "capture_zones": {"zone_control", "hazard", "enemy_ai", "objective"},
 }
@@ -221,9 +221,9 @@ def _apply_scope_firewall(bp: dict, design: dict) -> None:
     """Prevent an architect from turning a compact template into scope creep.
 
     The current Coder and deterministic probes implement one of the nine
-    arcade templates. Persistence, quests, inventory, dialogue, bosses and
-    progression belong to the future complex-game pipeline and must not be
-    smuggled into a one-level dot maze as mandatory acceptance criteria.
+    arcade templates. Quests, inventory and dialogue still belong to the
+    future complex-game pipeline; run_and_gun is the explicit exception for
+    its verified campaign progression and save contract.
     """
     template = design.get("mechanic_template") or "collect"
     allowed = _allowed_kinds(design)
@@ -461,10 +461,22 @@ def deterministic_blueprint(design: dict) -> dict:
                     ],
                 ),
                 _system(
+                    "campaign_progression",
+                    "progression",
+                    "Boss rewards fund one of three persistent upgrade tracks through a versioned campaign profile.",
+                    ["checkpoint_respawn", "boss_encounter"],
+                    [
+                        "A boss reward is granted at most once for its level id",
+                        "Firepower, mobility or vitality purchases deduct the declared cost and change player capability",
+                        "The versioned profile survives level transition and reload",
+                        "Malformed save data falls back to a valid default profile",
+                    ],
+                ),
+                _system(
                     "sector_objective",
                     "objective",
                     "Defeating the boss completes the sector after ordinary combat and checkpoint play.",
-                    ["checkpoint_respawn", "boss_encounter"],
+                    ["campaign_progression"],
                     [
                         "The HUD reports health, checkpoint, enemy and boss state",
                         "The level cannot win while the boss remains alive",
@@ -504,7 +516,7 @@ def deterministic_blueprint(design: dict) -> dict:
                 else ["held arrow keys: move in four directions"]
             ),
             "abilities": (
-                ["run", "jump", "collect and switch weapons", "fire projectiles", "activate checkpoints"]
+                ["run", "jump", "collect and switch weapons", "fire projectiles", "activate checkpoints", "purchase persistent upgrades"]
                 if run_and_gun
                 else ["touch-based interaction with gameplay objects"]
             ),

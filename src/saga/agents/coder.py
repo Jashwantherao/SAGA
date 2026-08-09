@@ -2193,6 +2193,8 @@ RUN_AND_GUN_PROBE_GD = """extends Node
 var _active := false
 var _combat_flags: Array[bool] = [false, false, false, false, false, false, false, false, false, false]
 var _combat_snapshot: Dictionary = {}
+var _progression_flags: Array[bool] = [false, false, false, false, false, false, false]
+var _progression_snapshot: Dictionary = {}
 
 func _ready() -> void:
 	var arguments := OS.get_cmdline_user_args()
@@ -2224,8 +2226,16 @@ func _report_combat() -> bool:
 			return false
 	return true
 
+func _report_progression() -> bool:
+	print("[RUN_AND_GUN_PROGRESSION] reward=%s duplicate=%s upgrade=%s save_reload=%s carryover=%s corrupt_fallback=%s schema=%s currency=%d xp=%d" % [_bool(_progression_flags[0]), _bool(_progression_flags[1]), _bool(_progression_flags[2]), _bool(_progression_flags[3]), _bool(_progression_flags[4]), _bool(_progression_flags[5]), _bool(_progression_flags[6]), int(_progression_snapshot.get("campaign_currency", 0)), int(_progression_snapshot.get("campaign_xp", 0))])
+	for flag in _progression_flags:
+		if not flag:
+			return false
+	return true
+
 func _report_failed(reason: String, completed: int, flags: Array[bool]) -> void:
 	_report_combat()
+	_report_progression()
 	print("[RUN_AND_GUN_METRICS] fire=%s checkpoint=%s lose=%s restart=%s enemy=%s boss_damage=%s win=%s" % [_bool(flags[0]), _bool(flags[1]), _bool(flags[2]), _bool(flags[3]), _bool(flags[4]), _bool(flags[5]), _bool(flags[6])])
 	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=%d max_stall_frames=1 stuck=false restart=%s deaths=%d" % [completed, "passed" if flags[3] else "failed", 1 if flags[2] else 0])
 	print("[OBJECTIVE] status=failed template=run_and_gun reason=%s collected=%d total=7 remaining=%d frames=12" % [reason, completed, 7 - completed])
@@ -2240,7 +2250,7 @@ func _run() -> void:
 		_report_failed("pack_interface_missing", 0, [false, false, false, false, false, false, false])
 		return
 	var level: Node = levels[0]
-	for method in ["qa_snapshot", "qa_fire", "qa_equip_weapon", "qa_collect_weapon", "qa_trigger_wave", "qa_clear_wave", "qa_set_boss_phase", "qa_activate_checkpoint", "qa_damage_player", "qa_restart", "qa_defeat_enemy", "qa_defeat_boss"]:
+	for method in ["qa_snapshot", "qa_fire", "qa_equip_weapon", "qa_collect_weapon", "qa_trigger_wave", "qa_clear_wave", "qa_set_boss_phase", "qa_activate_checkpoint", "qa_damage_player", "qa_restart", "qa_defeat_enemy", "qa_defeat_boss", "qa_progression_reset", "qa_progression_award", "qa_progression_buy", "qa_progression_save", "qa_progression_zero_memory", "qa_progression_load", "qa_progression_begin_next_level", "qa_progression_corrupt", "qa_select_upgrade"]:
 		if not level.has_method(method):
 			_report_structure({})
 			_report_failed("pack_interface_missing", 0, [false, false, false, false, false, false, false])
@@ -2251,6 +2261,34 @@ func _run() -> void:
 	if not _report_structure(before):
 		_report_failed("structure_failed", 0, flags)
 		return
+	level.qa_progression_reset()
+	var profile_base: Dictionary = level.qa_snapshot()
+	_progression_flags[6] = int(profile_base.get("profile_schema_version", -1)) == 1
+	level.qa_progression_award()
+	var rewarded: Dictionary = level.qa_snapshot()
+	_progression_flags[0] = int(rewarded.get("campaign_currency", 0)) > 0 and int(rewarded.get("campaign_xp", 0)) > 0 and int(rewarded.get("claimed_rewards", 0)) == 1
+	level.qa_progression_award()
+	var duplicate: Dictionary = level.qa_snapshot()
+	_progression_flags[1] = int(duplicate.get("campaign_currency", -1)) == int(rewarded.get("campaign_currency", -2)) and int(duplicate.get("campaign_xp", -1)) == int(rewarded.get("campaign_xp", -2)) and int(duplicate.get("claimed_rewards", 0)) == 1
+	var damage_before := int(duplicate.get("weapon_damage", 0))
+	level.qa_progression_buy("firepower")
+	var upgraded: Dictionary = level.qa_snapshot()
+	_progression_flags[2] = int(upgraded.get("firepower_level", 0)) == 1 and int(upgraded.get("weapon_damage", 0)) == damage_before + 1 and int(upgraded.get("campaign_currency", 999)) < int(duplicate.get("campaign_currency", 0))
+	level.qa_progression_save()
+	var persisted: Dictionary = level.qa_snapshot()
+	level.qa_progression_zero_memory()
+	level.qa_progression_load()
+	var reloaded: Dictionary = level.qa_snapshot()
+	_progression_flags[3] = reloaded.get("campaign_load_status") == "loaded" and int(reloaded.get("campaign_currency", -1)) == int(persisted.get("campaign_currency", -2)) and int(reloaded.get("firepower_level", 0)) == 1
+	level.qa_progression_begin_next_level()
+	var carried: Dictionary = level.qa_snapshot()
+	_progression_flags[4] = int(carried.get("campaign_last_level", -1)) == int(profile_base.get("campaign_last_level", 0)) + 1 and int(carried.get("firepower_level", 0)) == 1
+	_progression_snapshot = carried
+	level.qa_progression_corrupt()
+	level.qa_progression_load()
+	var recovered: Dictionary = level.qa_snapshot()
+	_progression_flags[5] = recovered.get("campaign_load_status") == "reset_corrupt" and int(recovered.get("campaign_currency", -1)) == 0 and int(recovered.get("firepower_level", -1)) == 0 and int(recovered.get("profile_schema_version", -1)) == 1
+	level.qa_progression_reset()
 	level.qa_fire()
 	var fired: Dictionary = level.qa_snapshot()
 	flags[0] = int(fired.get("projectiles", 0)) > int(before.get("projectiles", 0))
@@ -2304,6 +2342,9 @@ func _run() -> void:
 	_combat_flags[9] = int(boss_two.get("boss_phase", 0)) == 2 and int(boss_two.get("boss_pattern_projectiles", 0)) == 3 and int(boss_three.get("boss_phase", 0)) == 3 and int(boss_three.get("boss_pattern_projectiles", 0)) == 5
 	level.qa_defeat_boss()
 	var won: Dictionary = level.qa_snapshot()
+	if won.get("state") == "upgrade":
+		level.qa_select_upgrade("firepower")
+		won = level.qa_snapshot()
 	flags[6] = won.get("state") == "won" and int(won.get("boss_health", 1)) == 0
 	var completed := 0
 	for flag in flags:
@@ -2315,9 +2356,68 @@ func _run() -> void:
 	if not _report_combat():
 		_report_failed("combat_depth_failed", completed, flags)
 		return
+	if not _report_progression():
+		_report_failed("progression_failed", completed, flags)
+		return
 	print("[RUN_AND_GUN_METRICS] fire=true checkpoint=true lose=true restart=true enemy=true boss_damage=true win=true")
 	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=7 max_stall_frames=1 stuck=false restart=passed deaths=1")
 	print("[OBJECTIVE] status=passed template=run_and_gun reason=none collected=7 total=7 remaining=0 frames=12")
+	get_tree().quit()
+"""
+
+CAMPAIGN_PROBE_GD = """extends Node
+
+var _active := false
+
+func _ready() -> void:
+	_active = "--campaign-probe" in OS.get_cmdline_user_args()
+	if _active:
+		process_priority = 710
+		call_deferred("_run")
+
+func _bool(value: bool) -> String:
+	return str(value).to_lower()
+
+func _failed(reason: String) -> void:
+	print("[CAMPAIGN_METRICS] scene=false stats=false weapon=false reload=false corrupt=false level=-1 reason=%s" % reason)
+	get_tree().quit()
+
+func _run() -> void:
+	CampaignProfile.reset_profile(false)
+	if not CampaignProfile.award_level("campaign_probe_seed", 30, 50):
+		_failed("reward_failed")
+		return
+	if not CampaignProfile.purchase_upgrade("firepower", 10):
+		_failed("upgrade_failed")
+		return
+	CampaignProfile.unlock_weapon("spread")
+	CampaignProfile.save_profile()
+	var target := "res://Level_1.tscn" if ResourceLoader.exists("res://Level_1.tscn") else "res://Level_0.tscn"
+	var expected_level := 1 if target.ends_with("Level_1.tscn") else 0
+	if get_tree().change_scene_to_file(target) != OK:
+		_failed("scene_change_failed")
+		return
+	await get_tree().process_frame
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var levels := get_tree().get_nodes_in_group("saga_run_and_gun_level")
+	if levels.is_empty() or not levels[0].has_method("qa_snapshot"):
+		_failed("level_interface_missing")
+		return
+	var level: Node = levels[0]
+	var carried: Dictionary = level.qa_snapshot()
+	var scene_ok: bool = int(carried.get("campaign_last_level", -1)) == expected_level
+	var stats_ok: bool = int(carried.get("firepower_level", 0)) == 1 and int(carried.get("weapon_damage", 0)) == 2 and int(carried.get("campaign_currency", -1)) == 20 and int(carried.get("campaign_xp", -1)) == 50
+	var weapon_ok: bool = int(carried.get("weapon_inventory_size", 0)) >= 2
+	CampaignProfile.qa_zero_memory()
+	var reload_ok: bool = CampaignProfile.load_profile()
+	var reloaded := CampaignProfile.snapshot()
+	reload_ok = reload_ok and int(reloaded.get("currency", -1)) == 20 and int((reloaded.get("upgrades", {}) as Dictionary).get("firepower", 0)) == 1
+	CampaignProfile.qa_corrupt_save()
+	CampaignProfile.load_profile()
+	var recovered := CampaignProfile.snapshot()
+	var corrupt_ok: bool = str(recovered.get("last_load_status", "")) == "reset_corrupt" and int(recovered.get("currency", -1)) == 0 and int(recovered.get("schema_version", -1)) == 1
+	print("[CAMPAIGN_METRICS] scene=%s stats=%s weapon=%s reload=%s corrupt=%s level=%d reason=none" % [_bool(scene_ok), _bool(stats_ok), _bool(weapon_ok), _bool(reload_ok), _bool(corrupt_ok), expected_level])
 	get_tree().quit()
 """
 
@@ -2383,9 +2483,15 @@ def _write_harness_project(
 ) -> None:
     """Write engine-owned project plumbing for classic and packed levels."""
     levels = design_doc["levels"]
-    (project_dir / "project.godot").write_text(
-        PROJECT_GODOT_TEMPLATE.format(title=design_doc["title"]), encoding="utf-8"
-    )
+    project_config = PROJECT_GODOT_TEMPLATE.format(title=design_doc["title"])
+    if design_doc.get("mechanic_template") == "run_and_gun":
+        project_config = project_config.replace(
+            'Music="*res://music.gd"',
+            'CampaignProfile="*res://archetypes/run_and_gun/progression_profile.gd"\n'
+            'CampaignProbe="*res://campaign_probe.gd"\n'
+            'Music="*res://music.gd"',
+        )
+    (project_dir / "project.godot").write_text(project_config, encoding="utf-8")
     harness_files = {
         "screenshot.gd": SCREENSHOT_GD,
         "sfx.gd": SFX_GD,
@@ -2400,6 +2506,7 @@ def _write_harness_project(
         "capture_probe.gd": CAPTURE_PROBE_GD,
         "herd_probe.gd": HERD_PROBE_GD,
         "run_and_gun_probe.gd": RUN_AND_GUN_PROBE_GD,
+        "campaign_probe.gd": CAMPAIGN_PROBE_GD,
         "music.gd": _build_music_gd(bgm_filename),
         "game.gd": _build_game_gd(
             len(levels), [level.get("outro_beat", "") for level in levels]
