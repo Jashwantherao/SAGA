@@ -67,6 +67,7 @@ DepletionProbe="*res://depletion_probe.gd"
 HybridProbe="*res://hybrid_probe.gd"
 CaptureProbe="*res://capture_probe.gd"
 HerdProbe="*res://herd_probe.gd"
+RunAndGunProbe="*res://run_and_gun_probe.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -2187,6 +2188,93 @@ func _fail(reason: String):
 	print("[OBJECTIVE] status=failed template=herd_to_goal reason=%s collected=%d total=5 remaining=%d frames=%d" % [reason, _milestones, maxi(0, 5 - _milestones), _frame]); get_tree().quit()
 """
 
+RUN_AND_GUN_PROBE_GD = """extends Node
+
+var _active := false
+
+func _ready() -> void:
+	var arguments := OS.get_cmdline_user_args()
+	_active = "--objective-probe" in arguments and "--objective-template=run_and_gun" in arguments
+	if _active:
+		process_priority = 700
+		call_deferred("_run")
+
+func _bool(value: bool) -> String:
+	return str(value).to_lower()
+
+func _report_structure(snapshot: Dictionary) -> bool:
+	var layout := str(snapshot.get("layout_id", "missing"))
+	var platforms := int(snapshot.get("platform_count", 0))
+	var encounters := int(snapshot.get("encounter_count", 0))
+	var hazards := int(snapshot.get("hazard_count", 0))
+	var pickups := int(snapshot.get("pickup_count", 0))
+	var roles := int(snapshot.get("enemy_role_count", 0))
+	var valid := layout != "" and layout != "missing" and platforms >= 3 and encounters >= 5 and hazards >= 1 and pickups >= 1 and roles >= 2
+	print("[RUN_AND_GUN_STRUCTURE] layout=%s platforms=%d encounters=%d hazards=%d pickups=%d roles=%d valid=%s" % [layout, platforms, encounters, hazards, pickups, roles, _bool(valid)])
+	return valid
+
+func _report_failed(reason: String, completed: int, flags: Array[bool]) -> void:
+	print("[RUN_AND_GUN_METRICS] fire=%s checkpoint=%s lose=%s restart=%s enemy=%s boss_damage=%s win=%s" % [_bool(flags[0]), _bool(flags[1]), _bool(flags[2]), _bool(flags[3]), _bool(flags[4]), _bool(flags[5]), _bool(flags[6])])
+	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=%d max_stall_frames=1 stuck=false restart=%s deaths=%d" % [completed, "passed" if flags[3] else "failed", 1 if flags[2] else 0])
+	print("[OBJECTIVE] status=failed template=run_and_gun reason=%s collected=%d total=7 remaining=%d frames=12" % [reason, completed, 7 - completed])
+	get_tree().quit()
+
+func _run() -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var levels := get_tree().get_nodes_in_group("saga_run_and_gun_level")
+	if levels.is_empty():
+		_report_structure({})
+		_report_failed("pack_interface_missing", 0, [false, false, false, false, false, false, false])
+		return
+	var level: Node = levels[0]
+	for method in ["qa_snapshot", "qa_fire", "qa_activate_checkpoint", "qa_damage_player", "qa_restart", "qa_defeat_enemy", "qa_defeat_boss"]:
+		if not level.has_method(method):
+			_report_structure({})
+			_report_failed("pack_interface_missing", 0, [false, false, false, false, false, false, false])
+			return
+	var flags: Array[bool] = [false, false, false, false, false, false, false]
+	var before: Dictionary = level.qa_snapshot()
+	if not _report_structure(before):
+		_report_failed("structure_failed", 0, flags)
+		return
+	level.qa_fire()
+	var fired: Dictionary = level.qa_snapshot()
+	flags[0] = int(fired.get("projectiles", 0)) > int(before.get("projectiles", 0))
+	level.qa_activate_checkpoint()
+	var checkpoint_state: Dictionary = level.qa_snapshot()
+	flags[1] = bool(checkpoint_state.get("checkpoint_active", false)) and checkpoint_state.get("spawn_point") != before.get("spawn_point")
+	level.qa_damage_player(999)
+	var lost: Dictionary = level.qa_snapshot()
+	flags[2] = lost.get("state") == "over" and int(lost.get("player_health", 1)) == 0
+	level.qa_restart()
+	var restarted: Dictionary = level.qa_snapshot()
+	flags[3] = restarted.get("state") == "playing" and int(restarted.get("player_health", 0)) == int(restarted.get("player_max_health", -1)) and restarted.get("player_position") == restarted.get("spawn_point")
+	var kills_before := int(restarted.get("kills", 0))
+	level.qa_defeat_enemy()
+	var enemy_state: Dictionary = level.qa_snapshot()
+	flags[4] = int(enemy_state.get("kills", 0)) == kills_before + 1
+	var boss_before := int(enemy_state.get("boss_health", 0))
+	if level.get("boss") != null:
+		level.get("boss").take_damage(1)
+	var damaged: Dictionary = level.qa_snapshot()
+	flags[5] = int(damaged.get("boss_health", boss_before)) == boss_before - 1
+	level.qa_defeat_boss()
+	var won: Dictionary = level.qa_snapshot()
+	flags[6] = won.get("state") == "won" and int(won.get("boss_health", 1)) == 0
+	var completed := 0
+	for flag in flags:
+		if flag:
+			completed += 1
+	if completed != flags.size():
+		_report_failed("capability_failed", completed, flags)
+		return
+	print("[RUN_AND_GUN_METRICS] fire=true checkpoint=true lose=true restart=true enemy=true boss_damage=true win=true")
+	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=7 max_stall_frames=1 stuck=false restart=passed deaths=1")
+	print("[OBJECTIVE] status=passed template=run_and_gun reason=none collected=7 total=7 remaining=0 frames=12")
+	get_tree().quit()
+"""
+
 AMBIENCE_GD = """extends Node
 
 func _ready():
@@ -2239,6 +2327,45 @@ def _build_level_tscn(index: int) -> str:
 [node name="Level{index}" type="Node2D"]
 script = ExtResource("1")
 """
+
+
+def _write_harness_project(
+    project_dir: Path,
+    design_doc: dict,
+    current_level: int,
+    bgm_filename: str | None,
+) -> None:
+    """Write engine-owned project plumbing for classic and packed levels."""
+    levels = design_doc["levels"]
+    (project_dir / "project.godot").write_text(
+        PROJECT_GODOT_TEMPLATE.format(title=design_doc["title"]), encoding="utf-8"
+    )
+    harness_files = {
+        "screenshot.gd": SCREENSHOT_GD,
+        "sfx.gd": SFX_GD,
+        "ambience.gd": AMBIENCE_GD,
+        "anim.gd": ANIM_GD,
+        "autoplay.gd": AUTOPLAY_GD,
+        "objective_probe.gd": OBJECTIVE_PROBE_GD,
+        "switch_probe.gd": SWITCH_PROBE_GD,
+        "survival_probe.gd": SURVIVAL_PROBE_GD,
+        "depletion_probe.gd": DEPLETION_PROBE_GD,
+        "hybrid_probe.gd": HYBRID_PROBE_GD,
+        "capture_probe.gd": CAPTURE_PROBE_GD,
+        "herd_probe.gd": HERD_PROBE_GD,
+        "run_and_gun_probe.gd": RUN_AND_GUN_PROBE_GD,
+        "music.gd": _build_music_gd(bgm_filename),
+        "game.gd": _build_game_gd(
+            len(levels), [level.get("outro_beat", "") for level in levels]
+        ),
+        "interlude.gd": INTERLUDE_GD,
+        "Interlude.tscn": INTERLUDE_TSCN,
+        "victory.gd": VICTORY_GD,
+        "Victory.tscn": VICTORY_TSCN,
+        f"Level_{current_level}.tscn": _build_level_tscn(current_level),
+    }
+    for filename, content in harness_files.items():
+        (project_dir / filename).write_text(content, encoding="utf-8")
 
 
 # Godot 3 -> 4 renames the models reach for most. Every one of these was
@@ -4329,6 +4456,7 @@ PROBED_TEMPLATES = {
     "herd_to_goal",
     "dot_maze",
     "maze_chase",
+    "run_and_gun",
 }
 
 
@@ -4391,6 +4519,32 @@ def coder(state: GraphState) -> GraphState:
     assets_manifest = _asset_manifest(listed_assets, design_doc)
 
     template = design_doc.get("mechanic_template") or "collect"
+    if template == "run_and_gun":
+        from saga.archetypes import scaffold_run_and_gun_level
+
+        _write_harness_project(project_dir, design_doc, current_level, bgm_filename)
+        pack = scaffold_run_and_gun_level(
+            project_dir, design_doc, current_level, asset_filenames
+        )
+        print(
+            f"[Coder] Scaffolded level {current_level + 1}/{total_levels} from "
+            f"{pack.id}@{pack.version} ({len(pack.capabilities)} capabilities) "
+            f"-> {project_dir}"
+        )
+        result = {
+            "godot_project_path": str(project_dir),
+            "tune_notes": None,
+            "coder_model": f"archetype/{pack.id}@{pack.version}",
+            "repair_rejected": False,
+            "repair_validation_errors": [],
+        }
+        if not state.get("qa_errors") and not state.get("tune_notes"):
+            result["coder_prompt"] = (
+                f"Archetype {pack.id}@{pack.version}; level "
+                f"{current_level + 1}; capabilities: {', '.join(pack.capabilities)}"
+            )
+        return result
+
     example_user, example_response = FEW_SHOTS[TEMPLATE_TO_FEW_SHOT.get(template, "collect")]
 
     script_file = project_dir / f"Level_{current_level}.gd"
@@ -4598,31 +4752,7 @@ def coder(state: GraphState) -> GraphState:
         )
     assert_safe_gdscript(gdscript)
 
-    (project_dir / "project.godot").write_text(
-        PROJECT_GODOT_TEMPLATE.format(title=design_doc["title"]), encoding="utf-8"
-    )
-    (project_dir / "screenshot.gd").write_text(SCREENSHOT_GD, encoding="utf-8")
-    (project_dir / "sfx.gd").write_text(SFX_GD, encoding="utf-8")
-    (project_dir / "ambience.gd").write_text(AMBIENCE_GD, encoding="utf-8")
-    (project_dir / "anim.gd").write_text(ANIM_GD, encoding="utf-8")
-    (project_dir / "autoplay.gd").write_text(AUTOPLAY_GD, encoding="utf-8")
-    (project_dir / "objective_probe.gd").write_text(OBJECTIVE_PROBE_GD, encoding="utf-8")
-    (project_dir / "switch_probe.gd").write_text(SWITCH_PROBE_GD, encoding="utf-8")
-    (project_dir / "survival_probe.gd").write_text(SURVIVAL_PROBE_GD, encoding="utf-8")
-    (project_dir / "depletion_probe.gd").write_text(DEPLETION_PROBE_GD, encoding="utf-8")
-    (project_dir / "hybrid_probe.gd").write_text(HYBRID_PROBE_GD, encoding="utf-8")
-    (project_dir / "capture_probe.gd").write_text(CAPTURE_PROBE_GD, encoding="utf-8")
-    (project_dir / "herd_probe.gd").write_text(HERD_PROBE_GD, encoding="utf-8")
-    beats = [lvl.get("outro_beat", "") for lvl in levels]
-    (project_dir / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
-    (project_dir / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")
-    (project_dir / "interlude.gd").write_text(INTERLUDE_GD, encoding="utf-8")
-    (project_dir / "Interlude.tscn").write_text(INTERLUDE_TSCN, encoding="utf-8")
-    (project_dir / "victory.gd").write_text(VICTORY_GD, encoding="utf-8")
-    (project_dir / "Victory.tscn").write_text(VICTORY_TSCN, encoding="utf-8")
-    (project_dir / f"Level_{current_level}.tscn").write_text(
-        _build_level_tscn(current_level), encoding="utf-8"
-    )
+    _write_harness_project(project_dir, design_doc, current_level, bgm_filename)
     if is_repair:
         validation = validate_and_promote_repair(
             script_file,

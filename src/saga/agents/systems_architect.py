@@ -101,8 +101,8 @@ Rules:
 - Write 3-8 systems for an arcade game; add systems only when the design needs them.
 - Acceptance criteria must be observable and testable, with exact state changes.
 - Include movement and HUD. Represent the selected mechanic as its own system.
-- Current productions use held arrow movement and touch interactions; do not invent
-  mandatory action buttons that contradict the supplied design.
+- Classic templates use held arrow movement and touch interactions. run_and_gun
+  deliberately adds up-to-jump and ui_accept-to-fire; do not invent other actions.
 - Do not prescribe visual assets as gameplay systems.
 - Return only one JSON object matching the supplied schema.
 """
@@ -145,6 +145,7 @@ TEMPLATE_SYSTEM_KINDS = {
     "survive_and_deplete": {"resource", "hazard", "enemy_ai", "zone_control", "objective"},
     "maze_chase": {"maze", "pickup", "hazard", "enemy_ai", "objective"},
     "dot_maze": {"maze", "pickup", "hazard", "enemy_ai", "objective"},
+    "run_and_gun": {"combat", "enemy_ai", "checkpoint", "boss", "objective"},
     "herd_to_goal": {"herding", "objective"},
     "capture_zones": {"zone_control", "hazard", "enemy_ai", "objective"},
 }
@@ -276,17 +277,30 @@ def _system(
 def deterministic_blueprint(design: dict) -> dict:
     """Template-aware safety net used when the architect service is offline."""
     template = design.get("mechanic_template") or "collect"
+    run_and_gun = template == "run_and_gun"
     systems = [
         _system(
             "movement",
             "movement",
-            "Responsive four-directional player movement constrained to the playfield.",
+            (
+                "Responsive side-view running and jumping with gravity and solid platforms."
+                if run_and_gun
+                else "Responsive four-directional player movement constrained to the playfield."
+            ),
             [],
-            [
-                "Holding an arrow key moves the hero in that direction every frame",
-                "Releasing all arrows stops player-controlled movement",
-                "The hero cannot leave the visible playfield",
-            ],
+            (
+                [
+                    "Holding left or right accelerates the hero horizontally",
+                    "Pressing up while grounded produces exactly one jump",
+                    "Gravity returns the hero to solid platforms without falling through them",
+                ]
+                if run_and_gun
+                else [
+                    "Holding an arrow key moves the hero in that direction every frame",
+                    "Releasing all arrows stops player-controlled movement",
+                    "The hero cannot leave the visible playfield",
+                ]
+            ),
         ),
         _system(
             "hud",
@@ -372,6 +386,16 @@ def deterministic_blueprint(design: dict) -> dict:
                 "Power pickup state expires deterministically and all dots collected triggers win",
             ],
         ),
+        "run_and_gun": (
+            "ranged_combat",
+            "combat",
+            "A reusable projectile weapon, health, damage and defeat loop.",
+            [
+                "Pressing ui_accept spawns a projectile in the facing direction",
+                "Player projectiles damage enemies without damaging the player",
+                "Enemy attacks reduce health and zero health enters the loss state",
+            ],
+        ),
         "herd_to_goal": (
             "herding_objective",
             "herding",
@@ -398,13 +422,65 @@ def deterministic_blueprint(design: dict) -> dict:
     )
     systems.append(_system(sid, kind, description, ["movement", "hud"], acceptance))
 
+    completion_system_id = sid
+    if run_and_gun:
+        systems.extend(
+            [
+                _system(
+                    "enemy_behaviour",
+                    "enemy_ai",
+                    "Enemies patrol authored ranges, chase nearby players and deal bounded contact damage.",
+                    ["movement", "ranged_combat"],
+                    [
+                        "Enemies patrol when the player is distant",
+                        "Enemies chase only inside their detection range",
+                        "Defeated enemies stop dealing damage and increment progress once",
+                    ],
+                ),
+                _system(
+                    "checkpoint_respawn",
+                    "checkpoint",
+                    "Touching a checkpoint changes the clean respawn position.",
+                    ["movement", "hud"],
+                    [
+                        "A checkpoint activates exactly once on player contact",
+                        "A loss can restart with full health at the last checkpoint",
+                        "Restart preserves active gameplay without duplicating actors",
+                    ],
+                ),
+                _system(
+                    "boss_encounter",
+                    "boss",
+                    "A durable ranged boss escalates movement and fire cadence across health phases.",
+                    ["ranged_combat", "enemy_behaviour"],
+                    [
+                        "Boss health decreases from player projectile damage",
+                        "Crossing health thresholds changes the boss phase",
+                        "Zero boss health disables combat and emits one defeat event",
+                    ],
+                ),
+                _system(
+                    "sector_objective",
+                    "objective",
+                    "Defeating the boss completes the sector after ordinary combat and checkpoint play.",
+                    ["checkpoint_respawn", "boss_encounter"],
+                    [
+                        "The HUD reports health, checkpoint, enemy and boss state",
+                        "The level cannot win while the boss remains alive",
+                        "Boss defeat sets won and advances through the authored level flow exactly once",
+                    ],
+                ),
+            ]
+        )
+        completion_system_id = "sector_objective"
+
     if len(design.get("levels") or []) > 1:
         systems.append(
             _system(
                 "level_flow",
                 "level_transition",
                 "Advance only after a verified win and preserve the authored level order.",
-                [sid],
+                [completion_system_id],
                 [
                     "A level win shows its authored outro before advancing",
                     "Advancing loads exactly the next authored level",
@@ -421,8 +497,16 @@ def deterministic_blueprint(design: dict) -> dict:
         "win_condition": design["win_condition"],
         "lose_condition": design["lose_condition"],
         "player": {
-            "controls": ["held arrow keys: move in four directions"],
-            "abilities": ["touch-based interaction with gameplay objects"],
+            "controls": (
+                ["left/right arrows: run", "up arrow: jump", "ui_accept: fire"]
+                if run_and_gun
+                else ["held arrow keys: move in four directions"]
+            ),
+            "abilities": (
+                ["run", "jump", "fire projectiles", "activate checkpoints"]
+                if run_and_gun
+                else ["touch-based interaction with gameplay objects"]
+            ),
         },
         "entities": [],
         "save_state": [],

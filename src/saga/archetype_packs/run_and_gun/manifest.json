@@ -1,0 +1,29 @@
+{
+  "id": "run_and_gun",
+  "version": 2,
+  "mechanic_template": "run_and_gun",
+  "capabilities": [
+    "side_view_movement",
+    "jump",
+    "ranged_combat",
+    "enemy_patrol_and_chase",
+    "damage_and_lives",
+    "checkpoint_respawn",
+    "multi_phase_boss",
+    "camera_follow",
+    "combat_hud",
+    "encounter_layout_grammar",
+    "hazards_and_recovery",
+    "level_completion"
+  ],
+  "required_files": [
+    "projectile.gd",
+    "player_controller.gd",
+    "enemy.gd",
+    "boss.gd",
+    "checkpoint.gd",
+    "hazard.gd",
+    "pickup.gd",
+    "run_and_gun_level.gd"
+  ]
+}

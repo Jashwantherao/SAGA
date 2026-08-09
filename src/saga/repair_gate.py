@@ -71,6 +71,11 @@ def _godot_environment() -> dict[str, str]:
     return environment
 
 
+def godot_environment() -> dict[str, str]:
+    """Public D:-local Godot profile used by every engine subprocess."""
+    return _godot_environment()
+
+
 def _script_errors(output: str) -> list[str]:
     errors = []
     lines = output.splitlines()
@@ -109,7 +114,7 @@ def _run_scene(
             capture_output=True,
             text=True,
             timeout=30,
-            env=_godot_environment(),
+            env=godot_environment(),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except subprocess.TimeoutExpired as exc:

@@ -4,6 +4,17 @@ import re
 
 
 TEMPLATE_CONTRACTS = {
+    "run_and_gun": [
+        (
+            "the versioned run-and-gun base level",
+            r'extends\s+"res://archetypes/run_and_gun/run_and_gun_level\.gd"',
+        ),
+        ("the compact level-definition adapter", r"func\s+level_definition\s*\("),
+        ("the archetype version pin", r'\\?"pack_version\\?"\s*:\s*2'),
+        ("the validated encounter plan", r'\\?"encounter_plan\\?"\s*:'),
+        ("authored enemy pressure", r'\\?"enemy_count\\?"\s*:'),
+        ("authored boss durability", r'\\?"boss_health\\?"\s*:'),
+    ],
     "capture_zones": [
         ("the stable player handle required by objective QA", r"var\s+player(?:\s*:\s*Area2D)?\b"),
         ("the stable zone array required by objective QA", r"var\s+zones(?:\s*:\s*Array(?:\[Area2D\])?)?\b"),

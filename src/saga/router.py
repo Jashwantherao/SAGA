@@ -102,6 +102,7 @@ ROUTES = {
     # Rule- and resource-heavy simulation.
     "combat": [DEEPSEEK, NEMOTRON],
     "progression": [DEEPSEEK, LAGUNA],
+    "checkpoint": [QWEN_LOCAL, LAGUNA],
     "save_load": [DEEPSEEK, LAGUNA],
     "resource": [DEEPSEEK, LAGUNA],
     # Small, well-trodden fixes should not spend cloud money.

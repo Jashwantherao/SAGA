@@ -38,6 +38,7 @@ MECHANIC_TEMPLATES = [
     "survive_and_deplete",
     "maze_chase",
     "dot_maze",
+    "run_and_gun",
 ]
 
 KEY_ITEM_ROLES = ["pickup", "hazard", "switch", "creature", "zone_marker"]
@@ -132,7 +133,10 @@ SYSTEM_PROMPT = (
     "whenever the fantasy supports both a fading resource and an active threat), "
     "dot_maze (eat every dot in a dense maze while ghosts patrol and one hunts "
     "you, with rare power pickups that briefly turn the tables - prefer it for "
-    "classic chase-and-chomp arcade fantasies), maze_chase (navigate walled "
+    "classic chase-and-chomp arcade fantasies), run_and_gun (a side-view action "
+    "game built around jumping, ranged combat, enemy patrols, checkpoints and a "
+    "multi-phase boss - prefer it for commando, blaster, siege or action-platform "
+    "fantasies), maze_chase (navigate walled "
     "corridors collecting items while dodging a "
     "patroller - prefer it when the fantasy is about tight spaces, stealth, or "
     "labyrinths), survive_hazards (outlast moving dangers), ordered_switches "
@@ -146,7 +150,9 @@ SYSTEM_PROMPT = (
     "spacing, survival time. survive_and_deplete: all of those plus drain ramp "
     "and zone fuel. maze_chase: patroller speed and route coverage, pickup "
     "placement depth, lives. dot_maze: ghost speeds (patrollers and hunter), "
-    "power-pickup duration, dot count, lives. collect: pickup count and how "
+    "power-pickup duration, dot count, lives. run_and_gun: enemy count and "
+    "speed, player health, projectile speed, checkpoint spacing and boss health. "
+    "collect: pickup count and how "
     "far apart they sit. "
     "ordered_switches: sequence length and switch spacing. herd_to_goal: flee "
     "speed and goal-zone size. capture_zones: patroller speed, zone count and "
@@ -179,7 +185,8 @@ SYSTEM_PROMPT = (
     "the last pickup deep in a dead-end the patroller's route covers; "
     "collect and ordered_switches place the final objectives at the map's "
     "far extremes so the closing route is the longest and most exposed; "
-    "herd_to_goal shrinks the goal and quickens the creature. The climax "
+    "herd_to_goal shrinks the goal and quickens the creature; run_and_gun "
+    "introduces the boss arena after the last checkpoint and escalates its phases. The climax "
     "should take away something earlier levels let the player rely on.\n"
     "- outro_beat: 1-2 sentences of story shown full-screen after the level "
     "is won, before the next loads. Write what JUST happened and what it "
@@ -189,11 +196,13 @@ SYSTEM_PROMPT = (
     "beat IS the ending - resolve what the hero wanted in the premise, in "
     "the same emotional register as audio_mood. The player reads these one "
     "at a time on an otherwise empty screen: make each one earn it.\n\n"
-    "Hard constraints: playable entirely with HELD arrow-key movement - never "
-    "require a discrete button press to win. All interactions are touch-based "
-    "(moving into things). Losing must freeze play and update the on-screen "
+    "Hard constraints: every classic mechanic template is playable entirely with "
+    "HELD arrow-key movement and touch interactions. run_and_gun is the explicit "
+    "exception: left/right move, up jumps, and ui_accept (Enter/Space) fires. "
+    "Losing must freeze play and update the on-screen "
     "label - never remove the player from the scene. Keep each level's scope "
-    "achievable for ~100 lines of GDScript.\n\n"
+    "achievable for a compact game-specific adapter; reusable archetype code owns "
+    "movement, combat, AI, checkpoints and bosses.\n\n"
     "Art the game needs: a hero sprite and one background per level are always "
     f"generated, plus the key_item icon. Use extra_sprites to ask for up to "
     f"{MAX_EXTRA_SPRITES} MORE things this specific game needs drawn - the "

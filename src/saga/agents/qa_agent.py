@@ -20,6 +20,7 @@ from pathlib import Path
 from saga.balance import check_level
 from saga.config import settings
 from saga.corpus import record_level
+from saga.repair_gate import godot_environment
 from saga.safety import UnsafeGeneratedCodeError, assert_safe_gdscript
 from saga.state import GraphState
 
@@ -100,6 +101,15 @@ HERD_METRICS = re.compile(
     r"goal_gain=([\d.]+) settled=(\d+) creatures=(\d+) still=(true|false) "
     r"flee=(true|false) settle=(true|false) persistent=(true|false) win=(true|false)"
 )
+RUN_AND_GUN_METRICS = re.compile(
+    r"\[RUN_AND_GUN_METRICS\] fire=(true|false) checkpoint=(true|false) "
+    r"lose=(true|false) restart=(true|false) enemy=(true|false) "
+    r"boss_damage=(true|false) win=(true|false)"
+)
+RUN_AND_GUN_STRUCTURE = re.compile(
+    r"\[RUN_AND_GUN_STRUCTURE\] layout=([a-z0-9_]+) platforms=(\d+) "
+    r"encounters=(\d+) hazards=(\d+) pickups=(\d+) roles=(\d+) valid=(true|false)"
+)
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
 MAX_SURVIVAL_SOLVER_SECONDS = 30.0
@@ -114,13 +124,15 @@ MAX_HERD_SOLVER_SECONDS = 60.0
 # never produce this specific shutdown-order noise, so it's safe to ignore.
 BENIGN_EXIT_NOISE = re.compile(
     r"resources? still in use at exit|Leaked instance:|ObjectDB instances were leaked at exit|"
-    r"Orphan StringName|unclaimed string names at exit|RID allocations of type",
+    r"Orphan StringName|unclaimed string names at exit|RID allocations of type|"
+    r"Failed to read the root certificate store",
     re.IGNORECASE,
 )
 
 HARNESS_SCRIPT_ERROR = re.compile(
     r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|capture_probe|herd_probe|screenshot|sfx|music|ambience|anim|game|"
-    r"interlude|victory)\.gd",
+    r"run_and_gun_probe|interlude|victory)\.gd|"
+    r"res://archetypes/run_and_gun/[^\s)]+\.gd",
     re.IGNORECASE,
 )
 
@@ -139,6 +151,7 @@ def _run(args: list[str], cwd: str | None = None, timeout: float = 60) -> subpro
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=godot_environment(),
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
@@ -399,6 +412,41 @@ def _run_objective_probe(
                 "herd_win_verified": won == "true",
             }
         )
+    if template == "run_and_gun":
+        combat = RUN_AND_GUN_METRICS.search(output)
+        if not combat:
+            return result, ["QA infrastructure: run-and-gun probe produced no capability metrics."], True
+        fire, checkpoint, lose, restart, enemy, boss_damage, win = combat.groups()
+        result.update(
+            {
+                "fire_verified": fire == "true",
+                "checkpoint_verified": checkpoint == "true",
+                "lose_verified": lose == "true",
+                "clean_restart": restart == "true",
+                "enemy_defeat_verified": enemy == "true",
+                "boss_damage_verified": boss_damage == "true",
+                "boss_win_verified": win == "true",
+            }
+        )
+        structure = RUN_AND_GUN_STRUCTURE.search(output)
+        if not structure:
+            return result, ["QA infrastructure: run-and-gun probe produced no structure metrics."], True
+        layout, platforms, encounters, hazards, pickups, roles, valid = structure.groups()
+        result.update(
+            {
+                "layout_id": layout,
+                "platform_count": int(platforms),
+                "encounter_count": int(encounters),
+                "hazard_count": int(hazards),
+                "pickup_count": int(pickups),
+                "enemy_role_count": int(roles),
+                "structure_verified": valid == "true",
+            }
+        )
+        if valid != "true":
+            return result, [
+                "QA infrastructure: the studio-owned run-and-gun encounter plan failed its structure contract."
+            ], True
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -438,10 +486,14 @@ def _run_objective_probe(
                             "them and reset ownership, and owning every zone must win."
                             if template == "capture_zones"
                             else (
+                                "Firing, checkpoint activation, player loss/restart, enemy defeat, boss damage and boss victory must all use the stable archetype interface."
+                                if template == "run_and_gun"
+                                else (
                                 "Creatures must stay calm outside panic range, flee toward the "
                                 "goal when approached, settle permanently, and all settled must win."
                                 if template == "herd_to_goal"
                                 else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                                )
                             )
                         )
                     )
@@ -468,7 +520,7 @@ def _run_objective_probe(
     if int(remaining) != 0 or int(collected) < int(total):
         item = (
             "milestones"
-            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal"}
+            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal", "run_and_gun"}
             else "objective items"
         )
         return (
@@ -661,6 +713,21 @@ def _run_objective_probe(
             return result, ["Objective completion: herd terminal accounting is inconsistent."], True
         if result["completion_seconds"] > MAX_HERD_SOLVER_SECONDS:
             return result, [f"Objective completion: herd solver exceeded {MAX_HERD_SOLVER_SECONDS:.0f}s QA ceiling."], False
+    if template == "run_and_gun":
+        flags = [
+            "fire_verified",
+            "checkpoint_verified",
+            "lose_verified",
+            "clean_restart",
+            "enemy_defeat_verified",
+            "boss_damage_verified",
+            "boss_win_verified",
+        ]
+        missing = [name for name in flags if not result[name]]
+        if missing:
+            return result, ["Objective completion: run-and-gun pass omitted: " + ", ".join(missing) + "."], True
+        if result["restart_status"] != "passed" or result["deaths"] != 1:
+            return result, ["Objective completion: run-and-gun loss/restart accounting is inconsistent."], True
     return result, [], False
 
 
@@ -1315,6 +1382,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "herd_to_goal",
         "dot_maze",
         "maze_chase",
+        "run_and_gun",
     }:
         objective_result, objective_errors, objective_blocked = _run_objective_probe(
             project_dir,

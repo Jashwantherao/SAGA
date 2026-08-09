@@ -37,6 +37,7 @@ SYSTEM_KINDS = [
     "progression",
     "save_load",
     "level_transition",
+    "checkpoint",
     "boss",
     "hud",
     # Current arcade templates need first-class system names too. Treating a

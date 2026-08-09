@@ -39,6 +39,7 @@ SKILL_ROUTES: dict[str, list[str]] = {
     "progression": ["genres/rpg", "disciplines/save-systems"],
     "save_load": ["disciplines/save-systems", "godot/godot-resources"],
     "level_transition": ["godot/godot-nodes-scenes", "disciplines/level-design"],
+    "checkpoint": ["disciplines/save-systems", "godot/godot-signals-groups"],
     "boss": ["disciplines/game-ai", "disciplines/game-feel"],
     "hud": ["godot/godot-ui-control", "disciplines/game-ui-ux"],
     "objective": ["godot/godot-signals-groups", "disciplines/level-design"],
