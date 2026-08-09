@@ -1,6 +1,6 @@
 {
   "id": "run_and_gun",
-  "version": 2,
+  "version": 3,
   "mechanic_template": "run_and_gun",
   "capabilities": [
     "side_view_movement",
@@ -14,6 +14,10 @@
     "combat_hud",
     "encounter_layout_grammar",
     "hazards_and_recovery",
+    "three_weapon_arsenal",
+    "role_specific_enemy_behavior",
+    "threat_budgeted_waves",
+    "distinct_boss_attack_phases",
     "level_completion"
   ],
   "required_files": [
@@ -24,6 +28,7 @@
     "checkpoint.gd",
     "hazard.gd",
     "pickup.gd",
+    "weapon_pickup.gd",
     "run_and_gun_level.gd"
   ]
 }

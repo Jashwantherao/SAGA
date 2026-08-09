@@ -102,7 +102,7 @@ Rules:
 - Acceptance criteria must be observable and testable, with exact state changes.
 - Include movement and HUD. Represent the selected mechanic as its own system.
 - Classic templates use held arrow movement and touch interactions. run_and_gun
-  deliberately adds up-to-jump and ui_accept-to-fire; do not invent other actions.
+  deliberately adds up-to-jump, ui_accept-to-fire and Tab weapon cycling; do not invent other actions.
 - Do not prescribe visual assets as gameplay systems.
 - Return only one JSON object matching the supplied schema.
 """
@@ -389,9 +389,10 @@ def deterministic_blueprint(design: dict) -> dict:
         "run_and_gun": (
             "ranged_combat",
             "combat",
-            "A reusable projectile weapon, health, damage and defeat loop.",
+            "Three collectible projectile weapons with distinct patterns, health, damage and defeat.",
             [
-                "Pressing ui_accept spawns a projectile in the facing direction",
+                "Pulse, spread and launcher weapons emit observably different projectile patterns",
+                "Weapon pickups add finite-ammo loadouts and Tab cycles acquired weapons",
                 "Player projectiles damage enemies without damaging the player",
                 "Enemy attacks reduce health and zero health enters the loss state",
             ],
@@ -429,11 +430,11 @@ def deterministic_blueprint(design: dict) -> dict:
                 _system(
                     "enemy_behaviour",
                     "enemy_ai",
-                    "Enemies patrol authored ranges, chase nearby players and deal bounded contact damage.",
+                    "Five enemy roles create bounded patrol, armor, ranged, turret and flying pressure inside threat-budgeted waves.",
                     ["movement", "ranged_combat"],
                     [
-                        "Enemies patrol when the player is distant",
-                        "Enemies chase only inside their detection range",
+                        "Scout, bruiser, hunter, turret and flyer roles expose distinct movement or attack behavior",
+                        "Triggered arena waves never exceed their declared threat budget",
                         "Defeated enemies stop dealing damage and increment progress once",
                     ],
                 ),
@@ -445,17 +446,17 @@ def deterministic_blueprint(design: dict) -> dict:
                     [
                         "A checkpoint activates exactly once on player contact",
                         "A loss can restart with full health at the last checkpoint",
-                        "Restart preserves active gameplay without duplicating actors",
+                        "Restart restores the pulse loadout and rebuilds an active wave without losing its arena contract",
                     ],
                 ),
                 _system(
                     "boss_encounter",
                     "boss",
-                    "A durable ranged boss escalates movement and fire cadence across health phases.",
+                    "A durable ranged boss escalates from one-shot to three-shot and five-shot attack patterns.",
                     ["ranged_combat", "enemy_behaviour"],
                     [
                         "Boss health decreases from player projectile damage",
-                        "Crossing health thresholds changes the boss phase",
+                        "Crossing health thresholds changes the boss phase and projectile pattern",
                         "Zero boss health disables combat and emits one defeat event",
                     ],
                 ),
@@ -498,12 +499,12 @@ def deterministic_blueprint(design: dict) -> dict:
         "lose_condition": design["lose_condition"],
         "player": {
             "controls": (
-                ["left/right arrows: run", "up arrow: jump", "ui_accept: fire"]
+                ["left/right arrows: run", "up arrow: jump", "ui_accept: fire", "Tab: cycle acquired weapons"]
                 if run_and_gun
                 else ["held arrow keys: move in four directions"]
             ),
             "abilities": (
-                ["run", "jump", "fire projectiles", "activate checkpoints"]
+                ["run", "jump", "collect and switch weapons", "fire projectiles", "activate checkpoints"]
                 if run_and_gun
                 else ["touch-based interaction with gameplay objects"]
             ),

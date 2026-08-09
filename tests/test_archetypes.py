@@ -59,19 +59,23 @@ def test_run_and_gun_is_a_valid_design_and_multi_system_blueprint():
         "left/right arrows: run",
         "up arrow: jump",
         "ui_accept: fire",
+        "Tab: cycle acquired weapons",
     ]
 
 
 def test_pack_manifest_names_every_required_capability_file():
     pack = load_pack("run_and_gun")
 
-    assert pack.version == 2
+    assert pack.version == 3
     assert pack.mechanic_template == "run_and_gun"
     assert "checkpoint_respawn" in pack.capabilities
     assert "multi_phase_boss" in pack.capabilities
     assert "encounter_layout_grammar" in pack.capabilities
+    assert "three_weapon_arsenal" in pack.capabilities
+    assert "threat_budgeted_waves" in pack.capabilities
     assert "hazard.gd" in pack.required_files
     assert "pickup.gd" in pack.required_files
+    assert "weapon_pickup.gd" in pack.required_files
     assert "run_and_gun_level.gd" in pack.required_files
     assert pack_for_template("collect") is None
 
@@ -81,7 +85,7 @@ def test_scaffolder_copies_only_versioned_pack_files(tmp_path):
     destination = tmp_path / "archetypes" / "run_and_gun"
 
     assert pack is not None
-    assert json.loads((destination / "manifest.json").read_text())["version"] == 2
+    assert json.loads((destination / "manifest.json").read_text())["version"] == 3
     assert {path.name for path in destination.glob("*.gd")} == {
         path for path in pack.required_files
     }
@@ -105,7 +109,7 @@ def test_adapter_is_small_versioned_and_uses_authored_assets():
     assert "run_and_gun_level.gd" in script
     assert "extra_enemy_guard.png" in script
     assert "extra_sector_boss.png" in script
-    assert '\\"pack_version\\": 2' in script
+    assert '\\"pack_version\\": 3' in script
     assert '\\"encounter_plan\\"' in script
     assert [
         description
@@ -137,7 +141,7 @@ def test_coder_scaffolds_pack_without_a_model_call(tmp_path, monkeypatch):
         "tune_notes": [],
     })
 
-    assert result["coder_model"] == "archetype/run_and_gun@2"
+    assert result["coder_model"] == "archetype/run_and_gun@3"
     assert (project / "Level_0.gd").is_file()
     assert (project / "archetypes" / "run_and_gun" / "boss.gd").is_file()
     assert "capabilities:" in result["coder_prompt"]
@@ -157,6 +161,18 @@ def test_encounter_plan_is_deterministic_varied_and_structurally_valid():
     assert len(first["platforms"]) >= 3
     assert len(first["encounter_beats"]) == 5
     assert len({item["role"] for item in first["enemy_spawns"]}) >= 2
+    combat = first["combat_plan"]
+    assert {item["weapon"] for item in combat["weapon_pickups"]} == {
+        "spread", "launcher"
+    }
+    assert len(combat["waves"]) == 2
+    assert {"scout", "bruiser", "hunter", "turret", "flyer"} <= set(
+        combat["enemy_roles"]
+    )
+    assert combat["threat_budget_spent"] == sum(
+        wave["threat_budget"] for wave in combat["waves"]
+    )
+    assert combat["threat_budget_spent"] <= combat["threat_budget_limit"]
     assert first["seed"] != alternate["seed"]
     assert (first["layout_id"], first["platforms"]) != (
         alternate["layout_id"], alternate["platforms"]
@@ -180,10 +196,20 @@ def test_encounter_plan_validator_rejects_a_cosmetic_corridor():
     assert "at least two enemy roles are required" in errors
 
 
+def test_encounter_plan_validator_rejects_unbounded_combat_wave():
+    plan = build_run_and_gun_encounter_plan(_design(), 0)
+    plan["combat_plan"]["waves"][0]["members"].append({"role": "bruiser"})
+
+    errors = validate_run_and_gun_encounter_plan(plan)
+
+    assert "wave threat budget must equal the cost of its members" in errors
+
+
 def test_qa_parser_requires_all_run_and_gun_capabilities(monkeypatch):
     output = "\n".join([
         "[RUN_AND_GUN_METRICS] fire=true checkpoint=true lose=true restart=true enemy=true boss_damage=true win=true",
-        "[RUN_AND_GUN_STRUCTURE] layout=switchbacks platforms=6 encounters=5 hazards=2 pickups=1 roles=3 valid=true",
+        "[RUN_AND_GUN_STRUCTURE] layout=switchbacks platforms=6 encounters=5 hazards=2 pickups=1 roles=5 valid=true",
+        "[RUN_AND_GUN_COMBAT] pulse=true spread=true launcher=true pickup=true wave_spawn=true wave_clear=true roles=true budget=true restart=true boss_phases=true threat_spent=22 threat_limit=22",
         "[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=7 max_stall_frames=1 stuck=false restart=passed deaths=1",
         "[OBJECTIVE] status=passed template=run_and_gun reason=none collected=7 total=7 remaining=0 frames=12",
     ])
@@ -204,7 +230,11 @@ def test_qa_parser_requires_all_run_and_gun_capabilities(monkeypatch):
     assert result["boss_win_verified"] is True
     assert result["structure_verified"] is True
     assert result["layout_id"] == "switchbacks"
-    assert result["enemy_role_count"] == 3
+    assert result["enemy_role_count"] == 5
+    assert result["launcher_weapon_verified"] is True
+    assert result["wave_clear_verified"] is True
+    assert result["boss_phases_verified"] is True
+    assert result["threat_budget_spent"] == 22
 
 
 def test_pack_script_failure_is_a_harness_block_not_a_model_repair():

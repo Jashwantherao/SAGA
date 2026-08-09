@@ -6,6 +6,12 @@ var player: SagaRunAndGunPlayer
 var enemies: Array[Node] = []
 var hazards: Array[Node] = []
 var pickups: Array[Node] = []
+var weapon_pickups: Array[Node] = []
+var wave_definitions: Array = []
+var active_wave_enemies: Array[Node] = []
+var active_wave_definition: Dictionary = {}
+var pending_wave_index := 0
+var completed_waves := 0
 var boss: SagaRunAndGunBoss
 var checkpoint: SagaRunAndGunCheckpoint
 var player_sprite: Sprite2D
@@ -28,17 +34,23 @@ func _ready() -> void:
 	_build_player()
 	_build_checkpoint()
 	_build_hazards_and_pickups()
+	_build_weapon_pickups()
+	_prepare_waves()
 	_build_enemies()
 	_build_hud()
 
 func _process(_delta: float) -> void:
+	_maybe_trigger_wave()
 	if not is_instance_valid(status_label):
 		return
-	status_label.text = "HP %d/%d   CHECKPOINT %s" % [
-		player.health, player.max_health, "ACTIVE" if checkpoint_active else "--"
+	var weapon := player.weapon_snapshot()
+	var ammo_text := "INF" if int(weapon.get("ammo", -1)) < 0 else str(weapon.get("ammo", 0))
+	status_label.text = "HP %d/%d   %s %s   CHECKPOINT %s" % [
+		player.health, player.max_health, str(weapon.get("id", "pulse")).to_upper(), ammo_text,
+		"ACTIVE" if checkpoint_active else "--"
 	]
-	objective_label.text = "TARGETS %d/%d   BOSS %d/%d" % [
-		kills, total_enemies, boss.health if is_instance_valid(boss) else 0,
+	objective_label.text = "TARGETS %d/%d   WAVES %d/%d   BOSS %d/%d" % [
+		kills, total_enemies, completed_waves, wave_definitions.size(), boss.health if is_instance_valid(boss) else 0,
 		boss.max_health if is_instance_valid(boss) else int(_definition.get("boss_health", 1))
 	]
 	if state == "over" and Input.is_action_just_pressed("ui_accept"):
@@ -49,6 +61,9 @@ func _asset(name: String) -> String:
 
 func _encounter_plan() -> Dictionary:
 	return _definition.get("encounter_plan", {}) as Dictionary
+
+func _combat_plan() -> Dictionary:
+	return _encounter_plan().get("combat_plan", {}) as Dictionary
 
 func _build_background() -> void:
 	var path := _asset("background")
@@ -130,6 +145,7 @@ func _build_player() -> void:
 		"move_speed": _definition.get("move_speed", 250.0),
 		"projectile_speed": _definition.get("projectile_speed", 700.0),
 		"health": _definition.get("player_health", 5),
+		"world_limit": _definition.get("world_width", 2000.0),
 	})
 	player.died.connect(_on_player_died)
 	var camera := Camera2D.new()
@@ -170,29 +186,88 @@ func _build_hazards_and_pickups() -> void:
 		pickup.configure(item)
 		pickups.append(pickup)
 
+func _build_weapon_pickups() -> void:
+	for item_value in _combat_plan().get("weapon_pickups", []) as Array:
+		var item := item_value as Dictionary
+		var pickup := SagaRunAndGunWeaponPickup.new()
+		pickup.position = Vector2(float(item.get("x", 620.0)), float(item.get("y", 465.0)))
+		add_child(pickup)
+		pickup.configure(item)
+		weapon_pickups.append(pickup)
+
+func _prepare_waves() -> void:
+	wave_definitions = _combat_plan().get("waves", []) as Array
+	var wave_members := 0
+	for wave_value in wave_definitions:
+		var wave := wave_value as Dictionary
+		wave_members += (wave.get("members", []) as Array).size()
+	total_enemies = (_encounter_plan().get("enemy_spawns", []) as Array).size() + wave_members
+
+func _role_color(role: String) -> Color:
+	if role == "bruiser":
+		return Color("ffad5c")
+	if role == "hunter":
+		return Color("ef6bff")
+	if role == "turret":
+		return Color("ffdf6b")
+	if role == "flyer":
+		return Color("6ba8ff")
+	return Color("ff786b")
+
+func _spawn_enemy(spawn: Dictionary, wave_member: bool = false) -> SagaRunAndGunEnemy:
+	var role := str(spawn.get("role", "scout"))
+	var enemy := SagaRunAndGunEnemy.new()
+	enemy.position = Vector2(float(spawn.get("x", 420.0)), float(spawn.get("y", 500.0)))
+	add_child(enemy)
+	var role_size := Vector2(64, 64) if role == "bruiser" else (Vector2(48, 42) if role == "flyer" else Vector2(52, 52))
+	var role_asset := _asset("enemy_%s" % role)
+	if role_asset == "":
+		role_asset = _asset("enemy")
+	enemy.actor_sprite = _make_sprite(enemy, role_asset, _role_color(role), role_size)
+	enemy.configure({
+		"target": player,
+		"role": role,
+		"move_speed": float(_definition.get("enemy_speed", 90.0)),
+		"health": int(_definition.get("enemy_health", 2)),
+		"projectile_speed": float(_definition.get("projectile_speed", 700.0)) * 0.62,
+		"patrol_distance": 105.0,
+	})
+	enemy.died.connect(_on_enemy_died)
+	enemies.append(enemy)
+	if wave_member:
+		active_wave_enemies.append(enemy)
+	return enemy
+
+func _spawn_wave(wave: Dictionary) -> void:
+	active_wave_definition = wave
+	active_wave_enemies.clear()
+	player.set_arena_lock(float(wave.get("lock_start", 24.0)), float(wave.get("lock_end", _definition.get("world_width", 2000.0))))
+	for member_value in wave.get("members", []) as Array:
+		_spawn_enemy(member_value as Dictionary, true)
+
+func _maybe_trigger_wave(force: bool = false) -> void:
+	if state != "playing" or not active_wave_definition.is_empty() or pending_wave_index >= wave_definitions.size():
+		return
+	var wave := wave_definitions[pending_wave_index] as Dictionary
+	if not force and player.global_position.x < float(wave.get("trigger_x", 99999.0)):
+		return
+	pending_wave_index += 1
+	_spawn_wave(wave)
+
+func _finish_active_wave() -> void:
+	if active_wave_definition.is_empty() or not active_wave_enemies.is_empty():
+		return
+	completed_waves += 1
+	active_wave_definition = {}
+	player.clear_arena_lock()
+	Sfx.play("win")
+
 func _build_enemies() -> void:
 	var width := float(_definition.get("world_width", 2000.0))
 	var spawns: Array = _encounter_plan().get("enemy_spawns", []) as Array
-	total_enemies = spawns.size()
-	for index in total_enemies:
+	for index in spawns.size():
 		var spawn := spawns[index] as Dictionary
-		var role := str(spawn.get("role", "scout"))
-		var speed_scale := 1.35 if role == "scout" else (0.72 if role == "bruiser" else 1.0)
-		var health_bonus := 2 if role == "bruiser" else (1 if role == "hunter" else 0)
-		var enemy := SagaRunAndGunEnemy.new()
-		enemy.position = Vector2(float(spawn.get("x", 420.0)), float(spawn.get("y", 500.0)))
-		add_child(enemy)
-		var role_color := Color("ff786b") if role == "scout" else (Color("ffad5c") if role == "bruiser" else Color("ef6bff"))
-		var role_size := Vector2(64, 64) if role == "bruiser" else Vector2(52, 52)
-		enemy.actor_sprite = _make_sprite(enemy, _asset("enemy"), role_color, role_size)
-		enemy.configure({
-			"target": player,
-			"move_speed": float(_definition.get("enemy_speed", 90.0)) * speed_scale,
-			"health": int(_definition.get("enemy_health", 2)) + health_bonus,
-			"patrol_distance": 90.0 + index * 12.0,
-		})
-		enemy.died.connect(_on_enemy_died)
-		enemies.append(enemy)
+		_spawn_enemy(spawn)
 	boss = SagaRunAndGunBoss.new()
 	var boss_arena := _encounter_plan().get("boss_arena", {}) as Dictionary
 	boss.position = Vector2(float(boss_arena.get("spawn_x", width - 180.0)), 495)
@@ -224,15 +299,17 @@ func _build_hud() -> void:
 	canvas.add_child(objective_label)
 	var controls := Label.new()
 	controls.position = Vector2(700, 22)
-	controls.text = "%s   ARROWS move/jump   ENTER fire" % str(_encounter_plan().get("layout_id", "route")).to_upper()
+	controls.text = "%s   ARROWS move/jump   ENTER fire   TAB switch" % str(_encounter_plan().get("layout_id", "route")).to_upper()
 	canvas.add_child(controls)
 
 func _on_player_died() -> void:
 	state = "over"
 	status_label.text = "SYSTEM DOWN — ENTER TO RESPAWN"
 
-func _on_enemy_died(_enemy: Node) -> void:
+func _on_enemy_died(enemy: Node) -> void:
 	kills += 1
+	active_wave_enemies.erase(enemy)
+	_finish_active_wave()
 	Sfx.play("hit")
 
 func _on_boss_died(_enemy: Node) -> void:
@@ -247,15 +324,20 @@ func _on_boss_died(_enemy: Node) -> void:
 func restart_from_checkpoint() -> void:
 	state = "playing"
 	player.reset_at_checkpoint()
+	if not active_wave_definition.is_empty():
+		var wave := active_wave_definition.duplicate(true)
+		for enemy in active_wave_enemies:
+			if is_instance_valid(enemy):
+				enemy.queue_free()
+		active_wave_enemies.clear()
+		_spawn_wave(wave)
 
 # Stable QA adapter: the harness exercises real pack state instead of parsing
 # game-specific labels or depending on a model-invented node path.
 func qa_snapshot() -> Dictionary:
 	var plan := _encounter_plan()
-	var roles := {}
-	for spawn_value in plan.get("enemy_spawns", []) as Array:
-		var spawn := spawn_value as Dictionary
-		roles[str(spawn.get("role", "unknown"))] = true
+	var combat := _combat_plan()
+	var weapon := player.weapon_snapshot()
 	return {
 		"state": state,
 		"player_health": player.health,
@@ -273,11 +355,46 @@ func qa_snapshot() -> Dictionary:
 		"encounter_count": (plan.get("encounter_beats", []) as Array).size(),
 		"hazard_count": (plan.get("hazards", []) as Array).size(),
 		"pickup_count": (plan.get("pickups", []) as Array).size(),
-		"enemy_role_count": roles.size(),
+		"enemy_role_count": (combat.get("enemy_roles", []) as Array).size(),
+		"weapon_id": str(weapon.get("id", "pulse")),
+		"weapon_ammo": int(weapon.get("ammo", -1)),
+		"weapon_projectiles": int(weapon.get("projectiles", 1)),
+		"weapon_damage": int(weapon.get("damage", 1)),
+		"weapon_blast_radius": float(weapon.get("blast_radius", 0.0)),
+		"weapon_inventory_size": int(weapon.get("inventory_size", 1)),
+		"wave_count": wave_definitions.size(),
+		"wave_active": not active_wave_definition.is_empty(),
+		"wave_active_enemies": active_wave_enemies.size(),
+		"completed_waves": completed_waves,
+		"threat_budget_limit": int(combat.get("threat_budget_limit", 0)),
+		"threat_budget_spent": int(combat.get("threat_budget_spent", 0)),
+		"boss_phase": boss.phase if is_instance_valid(boss) else 0,
+		"boss_pattern_projectiles": boss.attack_pattern_projectiles() if is_instance_valid(boss) else 0,
 	}
 
 func qa_fire() -> void:
 	player.fire()
+
+func qa_equip_weapon(weapon_id: String) -> void:
+	player.equip_weapon(weapon_id, 12 if weapon_id == "spread" else 5)
+
+func qa_collect_weapon() -> void:
+	for pickup in weapon_pickups:
+		if is_instance_valid(pickup):
+			pickup.collect(player)
+			return
+
+func qa_trigger_wave() -> void:
+	_maybe_trigger_wave(true)
+
+func qa_clear_wave() -> void:
+	for enemy in active_wave_enemies.duplicate():
+		if is_instance_valid(enemy):
+			enemy.take_damage(enemy.health)
+
+func qa_set_boss_phase(phase: int) -> void:
+	if is_instance_valid(boss):
+		boss.qa_set_phase(phase)
 
 func qa_activate_checkpoint() -> void:
 	checkpoint.activate(player)

@@ -2191,6 +2191,8 @@ func _fail(reason: String):
 RUN_AND_GUN_PROBE_GD = """extends Node
 
 var _active := false
+var _combat_flags: Array[bool] = [false, false, false, false, false, false, false, false, false, false]
+var _combat_snapshot: Dictionary = {}
 
 func _ready() -> void:
 	var arguments := OS.get_cmdline_user_args()
@@ -2209,11 +2211,21 @@ func _report_structure(snapshot: Dictionary) -> bool:
 	var hazards := int(snapshot.get("hazard_count", 0))
 	var pickups := int(snapshot.get("pickup_count", 0))
 	var roles := int(snapshot.get("enemy_role_count", 0))
-	var valid := layout != "" and layout != "missing" and platforms >= 3 and encounters >= 5 and hazards >= 1 and pickups >= 1 and roles >= 2
+	var valid := layout != "" and layout != "missing" and platforms >= 3 and encounters >= 5 and hazards >= 1 and pickups >= 1 and roles >= 4
 	print("[RUN_AND_GUN_STRUCTURE] layout=%s platforms=%d encounters=%d hazards=%d pickups=%d roles=%d valid=%s" % [layout, platforms, encounters, hazards, pickups, roles, _bool(valid)])
 	return valid
 
+func _report_combat() -> bool:
+	var threat_spent := int(_combat_snapshot.get("threat_budget_spent", 0))
+	var threat_limit := int(_combat_snapshot.get("threat_budget_limit", 0))
+	print("[RUN_AND_GUN_COMBAT] pulse=%s spread=%s launcher=%s pickup=%s wave_spawn=%s wave_clear=%s roles=%s budget=%s restart=%s boss_phases=%s threat_spent=%d threat_limit=%d" % [_bool(_combat_flags[0]), _bool(_combat_flags[1]), _bool(_combat_flags[2]), _bool(_combat_flags[3]), _bool(_combat_flags[4]), _bool(_combat_flags[5]), _bool(_combat_flags[6]), _bool(_combat_flags[7]), _bool(_combat_flags[8]), _bool(_combat_flags[9]), threat_spent, threat_limit])
+	for flag in _combat_flags:
+		if not flag:
+			return false
+	return true
+
 func _report_failed(reason: String, completed: int, flags: Array[bool]) -> void:
+	_report_combat()
 	print("[RUN_AND_GUN_METRICS] fire=%s checkpoint=%s lose=%s restart=%s enemy=%s boss_damage=%s win=%s" % [_bool(flags[0]), _bool(flags[1]), _bool(flags[2]), _bool(flags[3]), _bool(flags[4]), _bool(flags[5]), _bool(flags[6])])
 	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=%d max_stall_frames=1 stuck=false restart=%s deaths=%d" % [completed, "passed" if flags[3] else "failed", 1 if flags[2] else 0])
 	print("[OBJECTIVE] status=failed template=run_and_gun reason=%s collected=%d total=7 remaining=%d frames=12" % [reason, completed, 7 - completed])
@@ -2228,29 +2240,55 @@ func _run() -> void:
 		_report_failed("pack_interface_missing", 0, [false, false, false, false, false, false, false])
 		return
 	var level: Node = levels[0]
-	for method in ["qa_snapshot", "qa_fire", "qa_activate_checkpoint", "qa_damage_player", "qa_restart", "qa_defeat_enemy", "qa_defeat_boss"]:
+	for method in ["qa_snapshot", "qa_fire", "qa_equip_weapon", "qa_collect_weapon", "qa_trigger_wave", "qa_clear_wave", "qa_set_boss_phase", "qa_activate_checkpoint", "qa_damage_player", "qa_restart", "qa_defeat_enemy", "qa_defeat_boss"]:
 		if not level.has_method(method):
 			_report_structure({})
 			_report_failed("pack_interface_missing", 0, [false, false, false, false, false, false, false])
 			return
 	var flags: Array[bool] = [false, false, false, false, false, false, false]
 	var before: Dictionary = level.qa_snapshot()
+	_combat_snapshot = before
 	if not _report_structure(before):
 		_report_failed("structure_failed", 0, flags)
 		return
 	level.qa_fire()
 	var fired: Dictionary = level.qa_snapshot()
 	flags[0] = int(fired.get("projectiles", 0)) > int(before.get("projectiles", 0))
+	_combat_flags[0] = flags[0] and fired.get("weapon_id") == "pulse" and int(fired.get("weapon_projectiles", 0)) == 1
+	level.qa_equip_weapon("spread")
+	var spread_before: Dictionary = level.qa_snapshot()
+	level.qa_fire()
+	var spread_after: Dictionary = level.qa_snapshot()
+	_combat_flags[1] = spread_after.get("weapon_id") == "spread" and int(spread_after.get("projectiles", 0)) >= int(spread_before.get("projectiles", 0)) + 3 and int(spread_after.get("weapon_projectiles", 0)) == 3
+	level.qa_equip_weapon("launcher")
+	var launcher_before: Dictionary = level.qa_snapshot()
+	level.qa_fire()
+	var launcher_after: Dictionary = level.qa_snapshot()
+	_combat_flags[2] = launcher_after.get("weapon_id") == "launcher" and int(launcher_after.get("weapon_damage", 0)) >= 3 and float(launcher_after.get("weapon_blast_radius", 0.0)) > 0.0 and int(launcher_after.get("projectiles", 0)) > int(launcher_before.get("projectiles", 0))
+	level.qa_collect_weapon()
+	var pickup_state: Dictionary = level.qa_snapshot()
+	_combat_flags[3] = pickup_state.get("weapon_id") == "spread" and int(pickup_state.get("weapon_inventory_size", 0)) >= 3
 	level.qa_activate_checkpoint()
 	var checkpoint_state: Dictionary = level.qa_snapshot()
 	flags[1] = bool(checkpoint_state.get("checkpoint_active", false)) and checkpoint_state.get("spawn_point") != before.get("spawn_point")
+	level.qa_trigger_wave()
+	var wave_started: Dictionary = level.qa_snapshot()
+	_combat_flags[4] = bool(wave_started.get("wave_active", false)) and int(wave_started.get("wave_active_enemies", 0)) > 0 and int(wave_started.get("wave_count", 0)) >= 2
+	_combat_flags[6] = int(wave_started.get("enemy_role_count", 0)) >= 4
+	_combat_flags[7] = int(wave_started.get("threat_budget_spent", 0)) > 0 and int(wave_started.get("threat_budget_spent", 0)) <= int(wave_started.get("threat_budget_limit", 0))
+	_combat_snapshot = wave_started
 	level.qa_damage_player(999)
 	var lost: Dictionary = level.qa_snapshot()
 	flags[2] = lost.get("state") == "over" and int(lost.get("player_health", 1)) == 0
 	level.qa_restart()
 	var restarted: Dictionary = level.qa_snapshot()
 	flags[3] = restarted.get("state") == "playing" and int(restarted.get("player_health", 0)) == int(restarted.get("player_max_health", -1)) and restarted.get("player_position") == restarted.get("spawn_point")
-	var kills_before := int(restarted.get("kills", 0))
+	_combat_flags[8] = flags[3] and restarted.get("weapon_id") == "pulse" and bool(restarted.get("wave_active", false)) and int(restarted.get("wave_active_enemies", 0)) > 0
+	var waves_before := int(restarted.get("completed_waves", 0))
+	level.qa_clear_wave()
+	var wave_cleared: Dictionary = level.qa_snapshot()
+	_combat_flags[5] = int(wave_cleared.get("completed_waves", 0)) == waves_before + 1 and not bool(wave_cleared.get("wave_active", true))
+	var kills_before := int(wave_cleared.get("kills", 0))
 	level.qa_defeat_enemy()
 	var enemy_state: Dictionary = level.qa_snapshot()
 	flags[4] = int(enemy_state.get("kills", 0)) == kills_before + 1
@@ -2259,6 +2297,11 @@ func _run() -> void:
 		level.get("boss").take_damage(1)
 	var damaged: Dictionary = level.qa_snapshot()
 	flags[5] = int(damaged.get("boss_health", boss_before)) == boss_before - 1
+	level.qa_set_boss_phase(2)
+	var boss_two: Dictionary = level.qa_snapshot()
+	level.qa_set_boss_phase(3)
+	var boss_three: Dictionary = level.qa_snapshot()
+	_combat_flags[9] = int(boss_two.get("boss_phase", 0)) == 2 and int(boss_two.get("boss_pattern_projectiles", 0)) == 3 and int(boss_three.get("boss_phase", 0)) == 3 and int(boss_three.get("boss_pattern_projectiles", 0)) == 5
 	level.qa_defeat_boss()
 	var won: Dictionary = level.qa_snapshot()
 	flags[6] = won.get("state") == "won" and int(won.get("boss_health", 1)) == 0
@@ -2268,6 +2311,9 @@ func _run() -> void:
 			completed += 1
 	if completed != flags.size():
 		_report_failed("capability_failed", completed, flags)
+		return
+	if not _report_combat():
+		_report_failed("combat_depth_failed", completed, flags)
 		return
 	print("[RUN_AND_GUN_METRICS] fire=true checkpoint=true lose=true restart=true enemy=true boss_damage=true win=true")
 	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=7 max_stall_frames=1 stuck=false restart=passed deaths=1")

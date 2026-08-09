@@ -123,18 +123,22 @@ The nine classic templates each have a worked few-shot example in `coder.py`, si
 ### Archetype packs
 
 `run_and_gun` is SAGA's first OpenGame-style capability family. Its versioned
-manifest and eight reusable Godot modules live under
+manifest and nine reusable Godot modules live under
 `src/saga/archetype_packs/run_and_gun/`. The level script is a small adapter;
 stable engine code owns player physics, firing, projectile collision, enemy
 patrol/chase, health and loss, checkpoint respawn, camera/HUD, boss phases and
-level completion. Pack v2 also compiles each brief into a reproducible encounter
+level completion. Pack v3 compiles each brief into a reproducible encounter
 plan: one of three stage topologies, traversal platforms, five paced encounter
 beats, differentiated enemy roles, hazards, recovery pickups, checkpoint
 placement and a separate boss arena. The plan is validated before Godot runs.
+Its Combat Director adds pulse, spread and explosive weapon patterns, collectible
+loadouts with switching, five behaviorally distinct enemy roles, arena locks,
+two threat-budgeted waves and boss phases with 1/3/5-projectile attacks. Loss
+restores the default loadout and restarts an active wave from its authored plan.
 The deterministic blueprint exposes the runtime capabilities as separate,
 dependency-ordered systems. QA calls a stable pack interface and refuses to
-ship unless all seven core transitions and the encounter-structure contract
-pass. This is the pattern future action RPG and creature-collection packs
+ship unless all seven core transitions, the encounter-structure contract and
+ten combat-depth assertions pass. This is the pattern future action RPG and creature-collection packs
 should extend instead of adding larger monolithic few-shots.
 
 ### Retrieval strategy

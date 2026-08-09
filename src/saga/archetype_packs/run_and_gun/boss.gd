@@ -4,8 +4,6 @@ extends SagaRunAndGunEnemy
 signal phase_changed(phase: int)
 
 var phase := 1
-var shot_cooldown := 1.2
-var projectile_speed := 460.0
 
 func _ready() -> void:
 	super._ready()
@@ -15,7 +13,9 @@ func _ready() -> void:
 	chase_range = 520.0
 
 func configure(options: Dictionary) -> void:
-	super.configure(options)
+	var boss_options := options.duplicate()
+	boss_options["role"] = "boss"
+	super.configure(boss_options)
 	projectile_speed = float(options.get("projectile_speed", projectile_speed))
 
 func _physics_process(delta: float) -> void:
@@ -31,16 +31,30 @@ func _physics_process(delta: float) -> void:
 		phase_changed.emit(phase)
 	shot_cooldown -= delta
 	if shot_cooldown <= 0.0:
-		_fire_at_target()
+		_fire_pattern()
 		shot_cooldown = maxf(0.35, 1.35 - phase * 0.25)
 
-func _fire_at_target() -> void:
-	var projectile := SagaRunAndGunProjectile.new()
-	get_parent().add_child(projectile)
-	projectile.global_position = global_position + Vector2(0, -8)
-	projectile.configure({
-		"direction": global_position.direction_to(target.global_position),
-		"speed": projectile_speed,
-		"damage": 1,
-		"faction": faction,
-	})
+func _fire_pattern() -> void:
+	var angles: Array[float] = [0.0]
+	if phase == 2:
+		angles = [-13.0, 0.0, 13.0]
+	elif phase == 3:
+		angles = [-26.0, -13.0, 0.0, 13.0, 26.0]
+	var base_direction := global_position.direction_to(target.global_position)
+	for angle in angles:
+		var projectile := SagaRunAndGunProjectile.new()
+		get_parent().add_child(projectile)
+		projectile.global_position = global_position + Vector2(0, -8)
+		projectile.configure({
+			"direction": base_direction.rotated(deg_to_rad(angle)),
+			"speed": projectile_speed * (1.0 + float(phase - 1) * 0.08),
+			"damage": 1,
+			"faction": faction,
+			"weapon_id": "boss_phase_%d" % phase,
+		})
+
+func qa_set_phase(next_phase: int) -> void:
+	phase = clampi(next_phase, 1, 3)
+
+func attack_pattern_projectiles() -> int:
+	return 1 if phase == 1 else (3 if phase == 2 else 5)

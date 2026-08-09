@@ -110,6 +110,13 @@ RUN_AND_GUN_STRUCTURE = re.compile(
     r"\[RUN_AND_GUN_STRUCTURE\] layout=([a-z0-9_]+) platforms=(\d+) "
     r"encounters=(\d+) hazards=(\d+) pickups=(\d+) roles=(\d+) valid=(true|false)"
 )
+RUN_AND_GUN_COMBAT = re.compile(
+    r"\[RUN_AND_GUN_COMBAT\] pulse=(true|false) spread=(true|false) "
+    r"launcher=(true|false) pickup=(true|false) wave_spawn=(true|false) "
+    r"wave_clear=(true|false) roles=(true|false) budget=(true|false) "
+    r"restart=(true|false) boss_phases=(true|false) "
+    r"threat_spent=(\d+) threat_limit=(\d+)"
+)
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
 MAX_SURVIVAL_SOLVER_SECONDS = 30.0
@@ -447,6 +454,33 @@ def _run_objective_probe(
             return result, [
                 "QA infrastructure: the studio-owned run-and-gun encounter plan failed its structure contract."
             ], True
+        combat_depth = RUN_AND_GUN_COMBAT.search(output)
+        if not combat_depth:
+            return result, ["QA infrastructure: run-and-gun probe produced no combat-depth metrics."], True
+        (
+            pulse, spread, launcher, weapon_pickup, wave_spawn, wave_clear,
+            roles, budget, combat_restart, boss_phases, threat_spent, threat_limit,
+        ) = combat_depth.groups()
+        result.update(
+            {
+                "pulse_weapon_verified": pulse == "true",
+                "spread_weapon_verified": spread == "true",
+                "launcher_weapon_verified": launcher == "true",
+                "weapon_pickup_verified": weapon_pickup == "true",
+                "wave_spawn_verified": wave_spawn == "true",
+                "wave_clear_verified": wave_clear == "true",
+                "enemy_roles_verified": roles == "true",
+                "threat_budget_verified": budget == "true",
+                "combat_restart_verified": combat_restart == "true",
+                "boss_phases_verified": boss_phases == "true",
+                "threat_budget_spent": int(threat_spent),
+                "threat_budget_limit": int(threat_limit),
+            }
+        )
+        if "false" in combat_depth.groups()[:10]:
+            return result, [
+                "Run-and-gun combat depth: weapon patterns, pickup acquisition, bounded waves, role behavior, restart, or boss phases failed."
+            ], False
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
