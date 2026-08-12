@@ -1,6 +1,6 @@
 {
   "id": "run_and_gun",
-  "version": 5,
+  "version": 6,
   "mechanic_template": "run_and_gun",
   "capabilities": [
     "side_view_movement",
@@ -13,6 +13,7 @@
     "checkpoint_respawn",
     "multi_phase_boss",
     "camera_follow",
+    "styled_environment_geometry",
     "combat_hud",
     "encounter_layout_grammar",
     "hazards_and_recovery",

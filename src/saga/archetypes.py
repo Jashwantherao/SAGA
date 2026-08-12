@@ -383,7 +383,7 @@ def build_run_and_gun_adapter(
     checkpoint = _asset_with(asset_filenames, "key_item", "checkpoint", "beacon")
     encounter_plan = build_run_and_gun_encounter_plan(design_doc, level_index)
     definition = {
-        "pack_version": 5,
+        "pack_version": 6,
         "title": str(design_doc.get("title") or "Run and Gun"),
         "level_name": str(level.get("name") or f"Level {level_index + 1}"),
         "level_index": level_index,

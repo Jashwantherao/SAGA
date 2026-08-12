@@ -66,7 +66,7 @@ def test_run_and_gun_is_a_valid_design_and_multi_system_blueprint():
 def test_pack_manifest_names_every_required_capability_file():
     pack = load_pack("run_and_gun")
 
-    assert pack.version == 5
+    assert pack.version == 6
     assert pack.mechanic_template == "run_and_gun"
     assert "checkpoint_respawn" in pack.capabilities
     assert "multi_phase_boss" in pack.capabilities
@@ -77,6 +77,7 @@ def test_pack_manifest_names_every_required_capability_file():
     assert "versioned_atomic_save" in pack.capabilities
     assert "input_driven_playthrough_gate" in pack.capabilities
     assert "route_gated_boss_shield" in pack.capabilities
+    assert "styled_environment_geometry" in pack.capabilities
     assert "hazard.gd" in pack.required_files
     assert "pickup.gd" in pack.required_files
     assert "weapon_pickup.gd" in pack.required_files
@@ -90,7 +91,7 @@ def test_scaffolder_copies_only_versioned_pack_files(tmp_path):
     destination = tmp_path / "archetypes" / "run_and_gun"
 
     assert pack is not None
-    assert json.loads((destination / "manifest.json").read_text())["version"] == 5
+    assert json.loads((destination / "manifest.json").read_text())["version"] == 6
     assert {path.name for path in destination.glob("*.gd")} == {
         path for path in pack.required_files
     }
@@ -114,7 +115,7 @@ def test_adapter_is_small_versioned_and_uses_authored_assets():
     assert "run_and_gun_level.gd" in script
     assert "extra_enemy_guard.png" in script
     assert "extra_sector_boss.png" in script
-    assert '\\"pack_version\\": 5' in script
+    assert '\\"pack_version\\": 6' in script
     assert '\\"progression\\"' in script
     assert '\\"encounter_plan\\"' in script
     assert [
@@ -147,7 +148,7 @@ def test_coder_scaffolds_pack_without_a_model_call(tmp_path, monkeypatch):
         "tune_notes": [],
     })
 
-    assert result["coder_model"] == "archetype/run_and_gun@5"
+    assert result["coder_model"] == "archetype/run_and_gun@6"
     assert (project / "Level_0.gd").is_file()
     assert (project / "archetypes" / "run_and_gun" / "boss.gd").is_file()
     assert 'CampaignProfile="*res://archetypes/run_and_gun/progression_profile.gd"' in (

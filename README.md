@@ -181,6 +181,7 @@ Every model is swappable via environment variable without touching code:
 | `SAGA_EXPERIENCE_MEMORY_LIMIT` | `1` | Maximum verified prior scripts injected into one fresh-generation prompt |
 | `SAGA_EXPERIENCE_MEMORY_MAX_CHARS` | `12000` | Hard prompt budget for complete memory examples; partial scripts are never included |
 | `SAGA_DESIGNER_MODEL` | `hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q3_K_S` | Game Designer's local model |
+| `SAGA_DESIGNER_TIMEOUT` | `180` | Maximum seconds for one hosted Designer attempt; SDK auto-retries are disabled so a stalled design call fails visibly |
 | `SAGA_CODER_MODEL` | `qwen2.5-coder:14b` | Coder's model |
 | `SAGA_DOTMAZE_MODEL` | `batiai/qwen3.6-35b:q3` | Coder's model specifically for `dot_maze` (its few-shot exceeds the 14B's reliable imitation length) |
 | `SAGA_VISION_MODEL` | `gemma4:12b` | QA's screenshot reviewer (local backend) |

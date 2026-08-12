@@ -6,6 +6,7 @@ def _payload(**overrides):
         "designer_backend": "local",
         "designer_model": "designer-local",
         "designer_remote_model": "designer-remote",
+        "designer_timeout": 90,
         "director_backend": "local",
         "director_model": "",
         "director_remote_model": "director-remote",
@@ -52,7 +53,9 @@ def test_save_settings_preserves_comments_and_masks_keys(tmp_path, monkeypatch):
     assert result["api_keys"]["deepseek"] is True
     assert result["experience_memory"] is True
     assert result["coder_timeout"] == 240.0
+    assert result["designer_timeout"] == 90.0
     assert "SAGA_CODER_TIMEOUT=240.0" in content
+    assert "SAGA_DESIGNER_TIMEOUT=90.0" in content
     assert "SAGA_EXPERIENCE_MEMORY=1" in content
     assert "new-secret" not in str(result)
 

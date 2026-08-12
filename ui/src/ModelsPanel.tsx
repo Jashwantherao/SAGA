@@ -3,7 +3,7 @@ import { useEffect, useId, useState } from 'react'
 const API = 'http://127.0.0.1:8765/api'
 
 type Settings = {
-  designer_backend: string; designer_model: string; designer_remote_model: string
+  designer_backend: string; designer_model: string; designer_remote_model: string; designer_timeout: number
   director_backend: string; director_model: string; director_remote_model: string
   architect_backend: string; architect_model: string; architect_base_url: string
   coder_backend: string; coder_model: string; coder_remote_model: string; coder_timeout: number; dotmaze_model: string
@@ -99,6 +99,7 @@ export default function ModelsPanel() {
     <section className="agent-settings">
       <div className="settings-section-title"><p className="eyebrow">AGENT ROUTING</p><h2>Choose the right brain for each job</h2><p>Local for cost and privacy; hosted models where quality matters most.</p></div>
       <AgentModel title="Game Designer" description="Design document, mechanics and level arc" backend={settings.designer_backend} options={backendOptions.standard} model={settings.designer_backend === 'local' ? settings.designer_model : settings.designer_remote_model} models={modelsFor(settings.designer_backend)} onBackend={(value) => update('designer_backend', value)} onModel={(value) => update(settings.designer_backend === 'local' ? 'designer_model' : 'designer_remote_model', value)} />
+      <label>Hosted Designer timeout (seconds)<input type="number" min="30" max="1800" value={settings.designer_timeout} onChange={(event) => update('designer_timeout', Number(event.target.value))} /></label>
       <AgentModel title="Studio Director" description="QA triage and repair routing" backend={settings.director_backend} options={backendOptions.director} model={settings.director_backend === 'local' ? settings.director_model : settings.director_remote_model} models={modelsFor(settings.director_backend)} modelPlaceholder={settings.director_backend === 'local' ? 'Inherit Coder model' : undefined} onBackend={(value) => update('director_backend', value)} onModel={(value) => update(settings.director_backend === 'local' ? 'director_model' : 'director_remote_model', value)} />
       <AgentModel title="Systems Architect" description="Blueprint, dependencies and acceptance contracts" backend={settings.architect_backend} options={backendOptions.architect} model={settings.architect_model} models={modelsFor(settings.architect_backend)} onBackend={(value) => update('architect_backend', value)} onModel={(value) => update('architect_model', value)} featured />
       <AgentModel title="Coder" description="Godot gameplay implementation" backend={settings.coder_backend} options={backendOptions.coder} model={settings.coder_backend === 'ollama' ? settings.coder_model : settings.coder_remote_model} models={modelsFor(settings.coder_backend)} onBackend={(value) => update('coder_backend', value)} onModel={(value) => update(settings.coder_backend === 'ollama' ? 'coder_model' : 'coder_remote_model', value)} featured />

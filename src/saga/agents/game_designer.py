@@ -378,7 +378,14 @@ def _design_remote(user_prompt: str, level_count: int | None = None) -> dict:
         },
         {"role": "user", "content": user_prompt},
     ]
-    doc = _parse_json_lenient(chat(messages, model=REMOTE_MODEL, json_mode=True))
+    doc = _parse_json_lenient(
+        chat(
+            messages,
+            model=REMOTE_MODEL,
+            json_mode=True,
+            timeout=settings.designer_timeout,
+        )
+    )
 
     problems = _validate(doc, level_count)
     if problems:
@@ -393,7 +400,14 @@ def _design_remote(user_prompt: str, level_count: int | None = None) -> dict:
                 ),
             }
         )
-        doc = _parse_json_lenient(chat(messages, model=REMOTE_MODEL, json_mode=True))
+        doc = _parse_json_lenient(
+            chat(
+                messages,
+                model=REMOTE_MODEL,
+                json_mode=True,
+                timeout=settings.designer_timeout,
+            )
+        )
         problems = _validate(doc, level_count)
         if problems:
             raise ValueError(f"Remote designer produced an invalid design doc: {problems}")

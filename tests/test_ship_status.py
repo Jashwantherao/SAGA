@@ -1,9 +1,12 @@
 from saga.main import assess_ship_status, unconfirmed_systems
 
 
-def _result(level_results, *, qa_passed=True, blocked=False, builds=None):
+def _result(level_results, *, qa_passed=True, blocked=False, builds=None, template=None):
     return {
-        "design_doc": {"levels": [{"name": "L1"}, {"name": "L2"}]},
+        "design_doc": {
+            "levels": [{"name": "L1"}, {"name": "L2"}],
+            "mechanic_template": template,
+        },
         "qa_passed": qa_passed,
         "ship_blocked": blocked,
         "level_results": level_results,
@@ -59,6 +62,42 @@ def test_clean_complete_ledger_passes():
         )
     )
     assert (status, ready) == ("passed", True)
+
+
+def test_run_and_gun_quality_gate_blocks_placeholder_environment():
+    result = _result(
+        [
+            {
+                "level_index": 0,
+                "status": "passed",
+                "vision_notes": [
+                    "Vision (quality gate): placeholder art: plain platform rectangles"
+                ],
+            },
+            {"level_index": 1, "status": "passed"},
+        ],
+        template="run_and_gun",
+    )
+
+    assert assess_ship_status(result) == ("failed", False)
+
+
+def test_run_and_gun_quality_gate_blocks_perspective_mismatch():
+    result = _result(
+        [
+            {
+                "level_index": 0,
+                "status": "passed",
+                "vision_notes": [
+                    "Vision (quality gate): perspective mismatch: diagonal train behind side view"
+                ],
+            },
+            {"level_index": 1, "status": "passed"},
+        ],
+        template="run_and_gun",
+    )
+
+    assert assess_ship_status(result) == ("failed", False)
 
 
 def test_shipped_system_without_an_acceptance_probe_is_a_warning():

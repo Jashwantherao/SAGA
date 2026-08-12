@@ -933,6 +933,7 @@ def _run_dot_maze_objective_probe(
 def _vision_prompt(design_doc) -> str:
     hero = (design_doc or {}).get("hero_description", "the player character")
     title = (design_doc or {}).get("title", "the game")
+    template = (design_doc or {}).get("mechanic_template", "unknown")
     return (
         f"This is a screenshot of an auto-generated 2D game called {title!r} "
         f"taken about one second into gameplay, at 1024x576. The hero is: "
@@ -940,12 +941,21 @@ def _vision_prompt(design_doc) -> str:
         "invent problems. Answer ONLY with JSON matching: "
         '{"hero_visible": bool, "background_fills_screen": bool, '
         '"text_clipped": bool, "placeholder_art": string or null, '
+        '"perspective_mismatch": string or null, '
         '"looks_broken": string or null}. '
         "Set text_clipped true only if some text runs off the screen edge or "
         "is hidden behind another element. Set placeholder_art to a short "
-        "description if plain untextured coloured rectangles are standing in "
-        "for game objects, otherwise null. Set looks_broken if a sprite is "
-        "gigantic, cut off, or floating somewhere nonsensical, otherwise null."
+        "description only when plain, unstyled boxes or slabs visibly stand in "
+        "for a character, platform, or foreground scenery. Do not mark a shaped "
+        "weapon pickup, hazard spikes, projectile, checkpoint beacon, HUD panel, "
+        "or simple visual effect as placeholder art merely because it uses clean "
+        "geometric forms. Otherwise set it to null. Set looks_broken if a sprite is "
+        "gigantic, cut off, or floating somewhere nonsensical, otherwise null. "
+        f"The mechanic template is {template!r}. For run_and_gun only, set "
+        "perspective_mismatch to a short description when the gameplay is a flat "
+        "side view but the background's main route is visibly top-down, isometric, "
+        "or diagonal; otherwise null. Do not count lightning, clouds, mountains, "
+        "or other obviously decorative distant scenery as a route."
     )
 
 
@@ -1026,8 +1036,15 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
         # criticism must not spend a Coder retry. Temporal video QA can still
         # gate an actual layering, stability, or disappearance defect.
         advisory.append(f"Vision (advisory): {data['looks_broken']}")
+    template = (design_doc or {}).get("mechanic_template", "")
     if data.get("placeholder_art"):
-        advisory.append(f"Vision (advisory): {data['placeholder_art']}")
+        prefix = "Vision (quality gate)" if template == "run_and_gun" else "Vision (advisory)"
+        advisory.append(f"{prefix}: placeholder art: {data['placeholder_art']}")
+    if data.get("perspective_mismatch"):
+        prefix = "Vision (quality gate)" if template == "run_and_gun" else "Vision (advisory)"
+        advisory.append(
+            f"{prefix}: perspective mismatch: {data['perspective_mismatch']}"
+        )
     return gating, advisory
 
 

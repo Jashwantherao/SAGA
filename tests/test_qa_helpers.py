@@ -9,6 +9,7 @@ from saga.agents.qa_agent import (
     _run_maze_objective_probe,
     _run_objective_probe,
     _validate_video_verdict,
+    _vision_prompt,
     _vision_review,
     _video_review,
     qa_agent,
@@ -915,6 +916,38 @@ def test_free_form_broken_visual_claim_is_advisory(monkeypatch):
 
     assert gating == []
     assert advisory == ["Vision (advisory): the composition feels unfinished"]
+
+
+def test_run_and_gun_placeholder_and_perspective_are_quality_gate_notes(monkeypatch):
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._vision_raw",
+        lambda *_args: {
+            "hero_visible": True,
+            "background_fills_screen": True,
+            "text_clipped": False,
+            "placeholder_art": "plain platform rectangles",
+            "perspective_mismatch": "diagonal train behind flat side-view play",
+            "looks_broken": None,
+        },
+    )
+
+    gating, advisory = _vision_review(
+        "frame.png", {"mechanic_template": "run_and_gun"}
+    )
+
+    assert gating == []
+    assert advisory == [
+        "Vision (quality gate): placeholder art: plain platform rectangles",
+        "Vision (quality gate): perspective mismatch: diagonal train behind flat side-view play",
+    ]
+
+
+def test_vision_prompt_distinguishes_gameplay_symbols_from_placeholders():
+    prompt = _vision_prompt({"mechanic_template": "run_and_gun"})
+
+    assert "weapon pickup" in prompt
+    assert "hazard spikes" in prompt
+    assert "merely because it uses clean geometric forms" in prompt
 
 
 def test_video_verdict_requires_complete_structured_evidence():

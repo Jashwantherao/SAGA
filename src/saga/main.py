@@ -74,6 +74,20 @@ def assess_ship_status(result: dict) -> tuple[str, bool]:
     if not result.get("qa_passed") or not all_passed:
         return "failed", False
 
+    # Presentation warnings are normally shippable and remain visible in the
+    # ledger. A production run-and-gun build is the exception: placeholder
+    # geometry or a top-down/isometric background behind flat side-view play
+    # is a known prototype-quality defect, not a subjective polish note.
+    if (result.get("design_doc") or {}).get("mechanic_template") == "run_and_gun":
+        quality_failures = [
+            note
+            for item in by_index.values()
+            for note in (item.get("vision_notes") or [])
+            if str(note).startswith("Vision (quality gate):")
+        ]
+        if quality_failures:
+            return "failed", False
+
     has_warnings = bool(unconfirmed_systems(result)) or any(
         (item.get("vision_notes") or [])
         or (item.get("balance_notes") or [])

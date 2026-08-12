@@ -128,12 +128,56 @@ func _solid_rect(position: Vector2, size: Vector2, color: Color) -> StaticBody2D
 	collision.shape = rectangle
 	body.add_child(collision)
 	var visual := Polygon2D.new()
-	visual.polygon = PackedVector2Array([
-		Vector2(-size.x / 2.0, -size.y / 2.0), Vector2(size.x / 2.0, -size.y / 2.0),
-		Vector2(size.x / 2.0, size.y / 2.0), Vector2(-size.x / 2.0, size.y / 2.0)
-	])
-	visual.color = color
+	if size.y <= 30.0:
+		visual.polygon = PackedVector2Array([
+			Vector2(-size.x / 2.0, -size.y / 2.0), Vector2(size.x / 2.0, -size.y / 2.0),
+			Vector2(size.x / 2.0, -size.y / 2.0 + 8.0), Vector2(-size.x / 2.0, -size.y / 2.0 + 8.0)
+		])
+	else:
+		visual.polygon = PackedVector2Array([
+			Vector2(-size.x / 2.0, -size.y / 2.0), Vector2(size.x / 2.0, -size.y / 2.0),
+			Vector2(size.x / 2.0, size.y / 2.0), Vector2(-size.x / 2.0, size.y / 2.0)
+		])
+	visual.color = color.darkened(0.22)
 	body.add_child(visual)
+	var top_trim := Polygon2D.new()
+	top_trim.polygon = PackedVector2Array([
+		Vector2(-size.x / 2.0, -size.y / 2.0), Vector2(size.x / 2.0, -size.y / 2.0),
+		Vector2(size.x / 2.0, -size.y / 2.0 + 5.0), Vector2(-size.x / 2.0, -size.y / 2.0 + 5.0)
+	])
+	top_trim.color = Color("f3a33a")
+	body.add_child(top_trim)
+	var lower_trim := Line2D.new()
+	lower_trim.points = PackedVector2Array([
+		Vector2(-size.x / 2.0, size.y / 2.0 - 3.0), Vector2(size.x / 2.0, size.y / 2.0 - 3.0)
+	])
+	lower_trim.width = 3.0
+	lower_trim.default_color = Color("6d8294") if size.y <= 30.0 else Color("132235")
+	body.add_child(lower_trim)
+	for panel_x in range(int(-size.x / 2.0) + 48, int(size.x / 2.0), 96):
+		var seam := Line2D.new()
+		if size.y <= 30.0:
+			seam.points = PackedVector2Array([
+				Vector2(panel_x - 48.0, -size.y / 2.0 + 7.0),
+				Vector2(panel_x, size.y / 2.0 - 3.0),
+				Vector2(panel_x + 48.0, -size.y / 2.0 + 7.0)
+			])
+		else:
+			seam.points = PackedVector2Array([
+				Vector2(panel_x, -size.y / 2.0 + 7.0), Vector2(panel_x, size.y / 2.0 - 5.0)
+			])
+		seam.width = 2.0
+		seam.default_color = Color("536f85") if size.y <= 30.0 else Color(0.08, 0.16, 0.24, 0.72)
+		body.add_child(seam)
+	if size.y <= 30.0:
+		for support_x in [-size.x * 0.32, size.x * 0.32]:
+			var support := Polygon2D.new()
+			support.polygon = PackedVector2Array([
+				Vector2(support_x - 9.0, size.y / 2.0), Vector2(support_x + 9.0, size.y / 2.0),
+				Vector2(support_x + 4.0, size.y / 2.0 + 28.0), Vector2(support_x - 4.0, size.y / 2.0 + 28.0)
+			])
+			support.color = Color("172a3e")
+			body.add_child(support)
 	add_child(body)
 	return body
 
