@@ -236,6 +236,12 @@ def _record_replacement_in_ledger(ledger: list[dict], event: dict) -> list[dict]
 
 
 def asset_maker(state: GraphState) -> GraphState:
+    # Reproducible coder benchmarks and replays can preload one frozen asset
+    # pack. Reuse those exact files instead of introducing image-model noise.
+    if state.get("sprite_paths") and not state.get("reasset_request"):
+        print(f"[Asset Maker] Reusing {len(state['sprite_paths'])} frozen assets")
+        return {"sprite_paths": list(state["sprite_paths"])}
+
     _check_comfyui_reachable()
     design_doc = state["design_doc"]
     output_dir = assets_dir(state)

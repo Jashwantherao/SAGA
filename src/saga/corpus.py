@@ -17,11 +17,18 @@ swallowed with a warning.
 """
 
 import json
+import os
 import time
 from pathlib import Path
 
 DATASET_DIR = Path(__file__).resolve().parent.parent.parent / "datasets"
 CORPUS_PATH = DATASET_DIR / "coder_corpus.jsonl"
+
+
+def _recording_enabled() -> bool:
+    return os.environ.get("SAGA_RECORD_CORPUS", "1").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
 
 
 def record_level(
@@ -36,12 +43,13 @@ def record_level(
     vision_notes: list[str] | None,
 ) -> None:
     """Append one verified (brief -> script) pair. Never raises."""
-    if not prompt or not script:
+    if not _recording_enabled() or not prompt or not script:
         return  # a fix/tune pass has no fresh brief; not a clean training pair
     try:
         doc = design_doc or {}
         level = (doc.get("levels") or [{}])[min(level_index, len(doc.get("levels") or [{}]) - 1)]
         record = {
+            "schema_version": 2,
             "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "template": template,
             "model": model,
@@ -53,6 +61,10 @@ def record_level(
             # may want to weight clean first-try generations higher.
             "first_try": retry_count == 0,
             "vision_notes": vision_notes or [],
+            "verification": {
+                "status": "passed",
+                "gates": ["godot_startup", "runtime", "template_contract"],
+            },
             "prompt": prompt,
             "completion": script,
         }

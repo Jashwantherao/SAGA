@@ -1,0 +1,155 @@
+{
+  "id": "skill-context-ab-v1",
+  "notes": [
+    "Isolates SAGA_SKILL_CONTEXT. Skill text is injected only into the",
+    "specialist builder brief, so SAGA_INCREMENTAL_BUILD must be 1 in BOTH",
+    "arms - with it off the two arms are byte-identical prompts and the run",
+    "measures nothing.",
+    "Every other variable is pinned per pair: same model, same designer,",
+    "same director, same max systems. The only delta is the flag.",
+    "The local 14B pair matters most and is listed last: it is where the",
+    "extra 3-5k tokens are most likely to help (weakest engine knowledge)",
+    "and most likely to hurt (this is the model that drops var declarations",
+    "once a prompt outgrows its few-shots). Skip it only if wall time forces",
+    "the issue, and say so in the writeup.",
+    "Results are not comparable with coder-pilot-v1: the architect contract",
+    "now enters every Coder prompt."
+  ],
+  "repetitions": 1,
+  "profiles": [
+    {
+      "id": "laguna-skills-off",
+      "provider": "NVIDIA NIM",
+      "model": "poolside/laguna-xs-2.1",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "poolside/laguna-xs-2.1",
+        "SAGA_DOTMAZE_MODEL": "poolside/laguna-xs-2.1",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true",
+        "SAGA_INCREMENTAL_BUILD": "1",
+        "SAGA_INCREMENTAL_MAX_SYSTEMS": "6",
+        "SAGA_SKILL_CONTEXT": "0"
+      }
+    },
+    {
+      "id": "laguna-skills-on",
+      "provider": "NVIDIA NIM",
+      "model": "poolside/laguna-xs-2.1",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "poolside/laguna-xs-2.1",
+        "SAGA_DOTMAZE_MODEL": "poolside/laguna-xs-2.1",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true",
+        "SAGA_INCREMENTAL_BUILD": "1",
+        "SAGA_INCREMENTAL_MAX_SYSTEMS": "6",
+        "SAGA_SKILL_CONTEXT": "1",
+        "SAGA_SKILL_CONTEXT_LIMIT": "2"
+      }
+    },
+    {
+      "id": "nemotron-skills-off",
+      "provider": "NVIDIA NIM",
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_DOTMAZE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true",
+        "SAGA_INCREMENTAL_BUILD": "1",
+        "SAGA_INCREMENTAL_MAX_SYSTEMS": "6",
+        "SAGA_SKILL_CONTEXT": "0"
+      }
+    },
+    {
+      "id": "nemotron-skills-on",
+      "provider": "NVIDIA NIM",
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_DOTMAZE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true",
+        "SAGA_INCREMENTAL_BUILD": "1",
+        "SAGA_INCREMENTAL_MAX_SYSTEMS": "6",
+        "SAGA_SKILL_CONTEXT": "1",
+        "SAGA_SKILL_CONTEXT_LIMIT": "2"
+      }
+    },
+    {
+      "id": "qwen-local-skills-off",
+      "provider": "Ollama",
+      "model": "qwen2.5-coder:14b",
+      "env": {
+        "SAGA_CODER_BACKEND": "ollama",
+        "SAGA_CODER_MODEL": "qwen2.5-coder:14b",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true",
+        "SAGA_INCREMENTAL_BUILD": "1",
+        "SAGA_INCREMENTAL_MAX_SYSTEMS": "6",
+        "SAGA_SKILL_CONTEXT": "0"
+      }
+    },
+    {
+      "id": "qwen-local-skills-on",
+      "provider": "Ollama",
+      "model": "qwen2.5-coder:14b",
+      "env": {
+        "SAGA_CODER_BACKEND": "ollama",
+        "SAGA_CODER_MODEL": "qwen2.5-coder:14b",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true",
+        "SAGA_INCREMENTAL_BUILD": "1",
+        "SAGA_INCREMENTAL_MAX_SYSTEMS": "6",
+        "SAGA_SKILL_CONTEXT": "1",
+        "SAGA_SKILL_CONTEXT_LIMIT": "2"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "signal-orchard",
+      "idea": "Restore a storm-dark orchard by collecting escaped signal seeds.",
+      "levels": 1,
+      "design_doc": "designs/signal_orchard.json",
+      "asset_pack": "../output/runs/20260801-213542-48f6b72b/run.json"
+    },
+    {
+      "id": "ember-reservoir",
+      "idea": "Keep a walking furnace alive while crossing a frozen reservoir.",
+      "levels": 1,
+      "design_doc": "designs/ember_reservoir.json",
+      "asset_pack": "../output/runs/20260801-213542-48f6b72b/run.json"
+    },
+    {
+      "id": "clockwork-catacomb",
+      "idea": "Clear every time shard from a clockwork catacomb while wardens hunt you.",
+      "levels": 1,
+      "design_doc": "designs/clockwork_catacomb.json",
+      "asset_pack": "../output/runs/20260801-213542-48f6b72b/run.json"
+    }
+  ]
+}

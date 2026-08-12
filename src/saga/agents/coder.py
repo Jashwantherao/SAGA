@@ -28,6 +28,7 @@ from saga.agents.coder_backend import (
     chat as _chat,
     extract_gdscript as _extract_gdscript,
     is_remote as _is_remote,
+    routed_chat as _routed_chat,
     stop_gpu_services as _stop_gpu_services,
 )
 from saga.agents.coder_contracts import (
@@ -35,10 +36,14 @@ from saga.agents.coder_contracts import (
     TEMPLATE_CONTRACTS,
     UNIVERSAL_CONTRACTS,
     animation_call_violations,
+    balance_violations,
 )
+from saga.config import settings
+from saga.experience import experience_context
 from saga.repair_gate import recover_interrupted_repair, validate_and_promote_repair
 from saga.safety import assert_safe_gdscript, scan_generated_gdscript
 from saga.sfx import write_default_sfx
+from saga.skills import skill_context_for_kinds
 from saga.state import GraphState
 from saga.workspace import project_dir as run_project_dir
 
@@ -62,6 +67,7 @@ DepletionProbe="*res://depletion_probe.gd"
 HybridProbe="*res://hybrid_probe.gd"
 CaptureProbe="*res://capture_probe.gd"
 HerdProbe="*res://herd_probe.gd"
+RunAndGunProbe="*res://run_and_gun_probe.gd"
 Music="*res://music.gd"
 Game="*res://game.gd"
 
@@ -2182,6 +2188,139 @@ func _fail(reason: String):
 	print("[OBJECTIVE] status=failed template=herd_to_goal reason=%s collected=%d total=5 remaining=%d frames=%d" % [reason, _milestones, maxi(0, 5 - _milestones), _frame]); get_tree().quit()
 """
 
+RUN_AND_GUN_PROBE_GD = """extends Node
+
+var _active := false
+var _combat_flags: Array[bool] = [false, false, false, false, false, false, false, false, false, false]
+var _combat_snapshot: Dictionary = {}
+
+func _ready() -> void:
+	var arguments := OS.get_cmdline_user_args()
+	_active = "--objective-probe" in arguments and "--objective-template=run_and_gun" in arguments
+	if _active:
+		process_priority = 700
+		call_deferred("_run")
+
+func _bool(value: bool) -> String:
+	return str(value).to_lower()
+
+func _report_structure(snapshot: Dictionary) -> bool:
+	var layout := str(snapshot.get("layout_id", "missing"))
+	var platforms := int(snapshot.get("platform_count", 0))
+	var encounters := int(snapshot.get("encounter_count", 0))
+	var hazards := int(snapshot.get("hazard_count", 0))
+	var pickups := int(snapshot.get("pickup_count", 0))
+	var roles := int(snapshot.get("enemy_role_count", 0))
+	var valid := layout != "" and layout != "missing" and platforms >= 3 and encounters >= 5 and hazards >= 1 and pickups >= 1 and roles >= 4
+	print("[RUN_AND_GUN_STRUCTURE] layout=%s platforms=%d encounters=%d hazards=%d pickups=%d roles=%d valid=%s" % [layout, platforms, encounters, hazards, pickups, roles, _bool(valid)])
+	return valid
+
+func _report_combat() -> bool:
+	var threat_spent := int(_combat_snapshot.get("threat_budget_spent", 0))
+	var threat_limit := int(_combat_snapshot.get("threat_budget_limit", 0))
+	print("[RUN_AND_GUN_COMBAT] pulse=%s spread=%s launcher=%s pickup=%s wave_spawn=%s wave_clear=%s roles=%s budget=%s restart=%s boss_phases=%s threat_spent=%d threat_limit=%d" % [_bool(_combat_flags[0]), _bool(_combat_flags[1]), _bool(_combat_flags[2]), _bool(_combat_flags[3]), _bool(_combat_flags[4]), _bool(_combat_flags[5]), _bool(_combat_flags[6]), _bool(_combat_flags[7]), _bool(_combat_flags[8]), _bool(_combat_flags[9]), threat_spent, threat_limit])
+	for flag in _combat_flags:
+		if not flag:
+			return false
+	return true
+
+func _report_failed(reason: String, completed: int, flags: Array[bool]) -> void:
+	_report_combat()
+	print("[RUN_AND_GUN_METRICS] fire=%s checkpoint=%s lose=%s restart=%s enemy=%s boss_damage=%s win=%s" % [_bool(flags[0]), _bool(flags[1]), _bool(flags[2]), _bool(flags[3]), _bool(flags[4]), _bool(flags[5]), _bool(flags[6])])
+	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=%d max_stall_frames=1 stuck=false restart=%s deaths=%d" % [completed, "passed" if flags[3] else "failed", 1 if flags[2] else 0])
+	print("[OBJECTIVE] status=failed template=run_and_gun reason=%s collected=%d total=7 remaining=%d frames=12" % [reason, completed, 7 - completed])
+	get_tree().quit()
+
+func _run() -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var levels := get_tree().get_nodes_in_group("saga_run_and_gun_level")
+	if levels.is_empty():
+		_report_structure({})
+		_report_failed("pack_interface_missing", 0, [false, false, false, false, false, false, false])
+		return
+	var level: Node = levels[0]
+	for method in ["qa_snapshot", "qa_fire", "qa_equip_weapon", "qa_collect_weapon", "qa_trigger_wave", "qa_clear_wave", "qa_set_boss_phase", "qa_activate_checkpoint", "qa_damage_player", "qa_restart", "qa_defeat_enemy", "qa_defeat_boss"]:
+		if not level.has_method(method):
+			_report_structure({})
+			_report_failed("pack_interface_missing", 0, [false, false, false, false, false, false, false])
+			return
+	var flags: Array[bool] = [false, false, false, false, false, false, false]
+	var before: Dictionary = level.qa_snapshot()
+	_combat_snapshot = before
+	if not _report_structure(before):
+		_report_failed("structure_failed", 0, flags)
+		return
+	level.qa_fire()
+	var fired: Dictionary = level.qa_snapshot()
+	flags[0] = int(fired.get("projectiles", 0)) > int(before.get("projectiles", 0))
+	_combat_flags[0] = flags[0] and fired.get("weapon_id") == "pulse" and int(fired.get("weapon_projectiles", 0)) == 1
+	level.qa_equip_weapon("spread")
+	var spread_before: Dictionary = level.qa_snapshot()
+	level.qa_fire()
+	var spread_after: Dictionary = level.qa_snapshot()
+	_combat_flags[1] = spread_after.get("weapon_id") == "spread" and int(spread_after.get("projectiles", 0)) >= int(spread_before.get("projectiles", 0)) + 3 and int(spread_after.get("weapon_projectiles", 0)) == 3
+	level.qa_equip_weapon("launcher")
+	var launcher_before: Dictionary = level.qa_snapshot()
+	level.qa_fire()
+	var launcher_after: Dictionary = level.qa_snapshot()
+	_combat_flags[2] = launcher_after.get("weapon_id") == "launcher" and int(launcher_after.get("weapon_damage", 0)) >= 3 and float(launcher_after.get("weapon_blast_radius", 0.0)) > 0.0 and int(launcher_after.get("projectiles", 0)) > int(launcher_before.get("projectiles", 0))
+	level.qa_collect_weapon()
+	var pickup_state: Dictionary = level.qa_snapshot()
+	_combat_flags[3] = pickup_state.get("weapon_id") == "spread" and int(pickup_state.get("weapon_inventory_size", 0)) >= 3
+	level.qa_activate_checkpoint()
+	var checkpoint_state: Dictionary = level.qa_snapshot()
+	flags[1] = bool(checkpoint_state.get("checkpoint_active", false)) and checkpoint_state.get("spawn_point") != before.get("spawn_point")
+	level.qa_trigger_wave()
+	var wave_started: Dictionary = level.qa_snapshot()
+	_combat_flags[4] = bool(wave_started.get("wave_active", false)) and int(wave_started.get("wave_active_enemies", 0)) > 0 and int(wave_started.get("wave_count", 0)) >= 2
+	_combat_flags[6] = int(wave_started.get("enemy_role_count", 0)) >= 4
+	_combat_flags[7] = int(wave_started.get("threat_budget_spent", 0)) > 0 and int(wave_started.get("threat_budget_spent", 0)) <= int(wave_started.get("threat_budget_limit", 0))
+	_combat_snapshot = wave_started
+	level.qa_damage_player(999)
+	var lost: Dictionary = level.qa_snapshot()
+	flags[2] = lost.get("state") == "over" and int(lost.get("player_health", 1)) == 0
+	level.qa_restart()
+	var restarted: Dictionary = level.qa_snapshot()
+	flags[3] = restarted.get("state") == "playing" and int(restarted.get("player_health", 0)) == int(restarted.get("player_max_health", -1)) and restarted.get("player_position") == restarted.get("spawn_point")
+	_combat_flags[8] = flags[3] and restarted.get("weapon_id") == "pulse" and bool(restarted.get("wave_active", false)) and int(restarted.get("wave_active_enemies", 0)) > 0
+	var waves_before := int(restarted.get("completed_waves", 0))
+	level.qa_clear_wave()
+	var wave_cleared: Dictionary = level.qa_snapshot()
+	_combat_flags[5] = int(wave_cleared.get("completed_waves", 0)) == waves_before + 1 and not bool(wave_cleared.get("wave_active", true))
+	var kills_before := int(wave_cleared.get("kills", 0))
+	level.qa_defeat_enemy()
+	var enemy_state: Dictionary = level.qa_snapshot()
+	flags[4] = int(enemy_state.get("kills", 0)) == kills_before + 1
+	var boss_before := int(enemy_state.get("boss_health", 0))
+	if level.get("boss") != null:
+		level.get("boss").take_damage(1)
+	var damaged: Dictionary = level.qa_snapshot()
+	flags[5] = int(damaged.get("boss_health", boss_before)) == boss_before - 1
+	level.qa_set_boss_phase(2)
+	var boss_two: Dictionary = level.qa_snapshot()
+	level.qa_set_boss_phase(3)
+	var boss_three: Dictionary = level.qa_snapshot()
+	_combat_flags[9] = int(boss_two.get("boss_phase", 0)) == 2 and int(boss_two.get("boss_pattern_projectiles", 0)) == 3 and int(boss_three.get("boss_phase", 0)) == 3 and int(boss_three.get("boss_pattern_projectiles", 0)) == 5
+	level.qa_defeat_boss()
+	var won: Dictionary = level.qa_snapshot()
+	flags[6] = won.get("state") == "won" and int(won.get("boss_health", 1)) == 0
+	var completed := 0
+	for flag in flags:
+		if flag:
+			completed += 1
+	if completed != flags.size():
+		_report_failed("capability_failed", completed, flags)
+		return
+	if not _report_combat():
+		_report_failed("combat_depth_failed", completed, flags)
+		return
+	print("[RUN_AND_GUN_METRICS] fire=true checkpoint=true lose=true restart=true enemy=true boss_damage=true win=true")
+	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=7 max_stall_frames=1 stuck=false restart=passed deaths=1")
+	print("[OBJECTIVE] status=passed template=run_and_gun reason=none collected=7 total=7 remaining=0 frames=12")
+	get_tree().quit()
+"""
+
 AMBIENCE_GD = """extends Node
 
 func _ready():
@@ -2236,6 +2375,45 @@ script = ExtResource("1")
 """
 
 
+def _write_harness_project(
+    project_dir: Path,
+    design_doc: dict,
+    current_level: int,
+    bgm_filename: str | None,
+) -> None:
+    """Write engine-owned project plumbing for classic and packed levels."""
+    levels = design_doc["levels"]
+    (project_dir / "project.godot").write_text(
+        PROJECT_GODOT_TEMPLATE.format(title=design_doc["title"]), encoding="utf-8"
+    )
+    harness_files = {
+        "screenshot.gd": SCREENSHOT_GD,
+        "sfx.gd": SFX_GD,
+        "ambience.gd": AMBIENCE_GD,
+        "anim.gd": ANIM_GD,
+        "autoplay.gd": AUTOPLAY_GD,
+        "objective_probe.gd": OBJECTIVE_PROBE_GD,
+        "switch_probe.gd": SWITCH_PROBE_GD,
+        "survival_probe.gd": SURVIVAL_PROBE_GD,
+        "depletion_probe.gd": DEPLETION_PROBE_GD,
+        "hybrid_probe.gd": HYBRID_PROBE_GD,
+        "capture_probe.gd": CAPTURE_PROBE_GD,
+        "herd_probe.gd": HERD_PROBE_GD,
+        "run_and_gun_probe.gd": RUN_AND_GUN_PROBE_GD,
+        "music.gd": _build_music_gd(bgm_filename),
+        "game.gd": _build_game_gd(
+            len(levels), [level.get("outro_beat", "") for level in levels]
+        ),
+        "interlude.gd": INTERLUDE_GD,
+        "Interlude.tscn": INTERLUDE_TSCN,
+        "victory.gd": VICTORY_GD,
+        "Victory.tscn": VICTORY_TSCN,
+        f"Level_{current_level}.tscn": _build_level_tscn(current_level),
+    }
+    for filename, content in harness_files.items():
+        (project_dir / filename).write_text(content, encoding="utf-8")
+
+
 # Godot 3 -> 4 renames the models reach for most. Every one of these was
 # observed live: a zero-shot platformer burned its entire retry budget on
 # Camera2D alone, repairing one property per pass (current, then
@@ -2259,7 +2437,11 @@ GODOT4_API_NOTES = (
     "`await`. Signals connect and emit as `sig.connect(callable)` and "
     "`sig.emit(...)`. Renamed: instance() -> instantiate(), .empty() -> "
     ".is_empty(), rand_range -> randf_range, OS.get_ticks_msec() -> "
-    "Time.get_ticks_msec(). Set label text size with "
+    "Time.get_ticks_msec(). Godot 3 node names are gone: KinematicBody2D -> "
+    "CharacterBody2D, Sprite -> Sprite2D, AnimatedSprite -> AnimatedSprite2D, "
+    "CollisionShape -> CollisionShape2D, Particles2D -> GPUParticles2D, "
+    "export/onready -> @export/@onready. move_and_slide() takes no arguments; "
+    "set the velocity property first. Set label text size with "
     "label.add_theme_font_size_override(\"font_size\", n). A physics body must "
     "be inside the tree before move_and_slide() or any body_test_motion() "
     "call. Parse JSON with JSON.parse_string(text), which returns the value "
@@ -2437,8 +2619,10 @@ TEMPLATE_REQUIREMENTS = {
         "player is within a named panic_radius variable - beyond that radius "
         "it does not move at all. Inside the radius it moves along the vector "
         "pointing away from the player, scaled by speed and delta, clamped "
-        "inside the viewport; flee speed must stay well below the player's "
-        "speed or it can never be caught up with. A creature whose position "
+        "inside the viewport; flee_speed MUST be less than 0.6 x speed (aim "
+        "for about 0.4 x, as the worked example does) or the creature can "
+        "never be caught up with and objective QA rejects the level outright. "
+        "A creature whose position "
         "is inside goal_radius SETTLES permanently: set creature_settled[index], "
         "stop it fleeing for the rest of the level no matter how close the "
         "player comes, and play the pickup sound once. Track the settled "
@@ -4157,6 +4341,7 @@ def _contract_violations(gdscript: str, template: str) -> list[str]:
     contract = (TEMPLATE_CONTRACTS.get(template) or []) + UNIVERSAL_CONTRACTS
     violations = [desc for desc, pattern in contract if not re.search(pattern, gdscript)]
     violations += animation_call_violations(gdscript)
+    violations += balance_violations(gdscript, template)
     violations += [desc for desc, pattern in FORBIDDEN_PATTERNS if re.search(pattern, gdscript)]
     return list(dict.fromkeys(violations))
 
@@ -4177,6 +4362,16 @@ def _final_candidate_errors(
     return errors
 
 
+_REJECTED_NOTICE = (
+    "Repair candidate rejected before promotion; the previous gameplay script was preserved."
+)
+_GOAL_PREFIX = "Original repair goal: "
+_VALIDATION_PREFIX = "Candidate validation: "
+# Enough history for the model to see what it keeps getting wrong, bounded so
+# a stubborn level cannot crowd the actual script out of the prompt.
+_MAX_GOALS = 6
+
+
 def _rejected_repair_result(
     *,
     project_dir: Path,
@@ -4184,11 +4379,24 @@ def _rejected_repair_result(
     original_goal: list[str],
     errors: list[str],
 ) -> GraphState:
-    evidence = [
-        "Repair candidate rejected before promotion; the previous gameplay script was preserved."
-    ]
-    evidence += [f"Candidate validation: {error}" for error in errors]
-    evidence += [f"Original repair goal: {goal}" for goal in original_goal]
+    evidence = [_REJECTED_NOTICE]
+    evidence += [f"{_VALIDATION_PREFIX}{error}" for error in errors]
+
+    # A rejected repair feeds its own evidence back in as the next attempt's
+    # goal, so re-wrapping it verbatim nested one prefix per retry and
+    # repeated the same two parse errors a dozen times - growing the prompt
+    # fastest exactly when the model is already failing to hold it. Unwrap to
+    # the underlying goal, drop what this rejection already states, dedupe.
+    goals: list[str] = []
+    for goal in original_goal:
+        while goal.startswith(_GOAL_PREFIX):
+            goal = goal[len(_GOAL_PREFIX) :]
+        if goal == _REJECTED_NOTICE or goal in evidence or goal in goals:
+            continue
+        if goal.startswith(_VALIDATION_PREFIX) and goal[len(_VALIDATION_PREFIX) :] in errors:
+            continue
+        goals.append(goal)
+    evidence += [f"{_GOAL_PREFIX}{goal}" for goal in goals[:_MAX_GOALS]]
     print(f"[Coder] Repair candidate rejected; previous script restored: {errors}")
     return {
         "godot_project_path": str(project_dir),
@@ -4197,6 +4405,120 @@ def _rejected_repair_result(
         "repair_rejected": True,
         "repair_validation_errors": evidence,
     }
+
+
+def _blueprint_contract(state: GraphState) -> str:
+    """Compact architect handoff appended to fresh, repair and tune prompts."""
+    blueprint = state.get("blueprint") or {}
+    if not blueprint:
+        return ""
+    systems = {item.get("id"): item for item in blueprint.get("systems") or []}
+    ordered_ids = [
+        step.get("system_id") for step in state.get("blueprint_build_plan") or []
+    ]
+    if not ordered_ids:
+        ordered_ids = list(systems)
+
+    lines = [
+        "SYSTEMS ARCHITECT CONTRACT (mandatory; preserve it during repairs):",
+        "Core loop: " + " -> ".join(blueprint.get("core_loop") or []),
+    ]
+    for system_id in ordered_ids:
+        system = systems.get(system_id)
+        if not system:
+            continue
+        deps = ", ".join(system.get("depends_on") or []) or "none"
+        lines.append(
+            f"- {system_id} [{system.get('kind')}], after: {deps}: "
+            f"{system.get('description', '')}"
+        )
+        lines.extend(f"  ACCEPT: {criterion}" for criterion in system.get("acceptance") or [])
+    return "\n".join(lines) + "\n"
+
+
+def _skill_reference(state: GraphState) -> str:
+    """Vendored engine knowledge for the kinds this game actually contains.
+
+    The blueprint names them, so the monolithic Coder gets the same routed
+    references a specialist builder would - it writes every system in one
+    script, and until this existed the skill layer could not reach the path
+    that produces almost all of SAGA's GDScript. Empty unless
+    SAGA_SKILL_CONTEXT is on.
+    """
+    blueprint = state.get("blueprint") or {}
+    ordered_ids = [
+        step.get("system_id") for step in state.get("blueprint_build_plan") or []
+    ]
+    systems = {item.get("id"): item for item in blueprint.get("systems") or []}
+    kinds = [
+        systems[system_id].get("kind")
+        for system_id in (ordered_ids or list(systems))
+        if system_id in systems and systems[system_id].get("kind")
+    ]
+    reference = skill_context_for_kinds(kinds)
+    return f"{reference}\n\n" if reference else ""
+
+
+def _experience_reference(design_doc: dict, level_index: int) -> str:
+    """One relevant QA-passed script, bounded and disabled for clean A/Bs."""
+    if not settings.experience_memory:
+        return ""
+    levels = design_doc.get("levels") or [{}]
+    level = levels[min(level_index, len(levels) - 1)]
+    query = "\n".join(
+        [
+            str(design_doc.get("title") or ""),
+            str(design_doc.get("story_premise") or ""),
+            " ".join(design_doc.get("core_mechanics") or []),
+            str(design_doc.get("win_condition") or ""),
+            str(design_doc.get("lose_condition") or ""),
+            str(level.get("name") or ""),
+            str(level.get("description") or ""),
+            str(level.get("pressure_notes") or ""),
+        ]
+    )
+    reference = experience_context(
+        template=design_doc.get("mechanic_template") or "collect",
+        query=query,
+        limit=settings.experience_memory_limit,
+        max_chars=settings.experience_memory_max_chars,
+    )
+    if reference:
+        print("[Coder] Added QA-verified experience memory to the fresh-generation prompt")
+        return f"{reference}\n\n"
+    return ""
+
+
+# Mechanics whose deterministic solver can answer "does this still complete?"
+# during a build, not just at the end of one. Kept in sync with the QA Agent's
+# objective-probe gate; a template outside it simply gets no behavioral gate.
+PROBED_TEMPLATES = {
+    "collect",
+    "ordered_switches",
+    "survive_hazards",
+    "depletion",
+    "survive_and_deplete",
+    "capture_zones",
+    "herd_to_goal",
+    "dot_maze",
+    "maze_chase",
+    "run_and_gun",
+}
+
+
+def _objective_probe_for(project_dir, level_index: int, template: str):
+    """Bind the QA Agent's objective solver to this level, or None when the
+    template has no deterministic completion probe."""
+    if template not in PROBED_TEMPLATES:
+        return None
+    from saga.agents.qa_agent import _run_objective_probe
+
+    def run_probe():
+        return _run_objective_probe(
+            str(project_dir), f"res://Level_{level_index}.tscn", template
+        )
+
+    return run_probe
 
 
 def coder(state: GraphState) -> GraphState:
@@ -4243,6 +4565,32 @@ def coder(state: GraphState) -> GraphState:
     assets_manifest = _asset_manifest(listed_assets, design_doc)
 
     template = design_doc.get("mechanic_template") or "collect"
+    if template == "run_and_gun":
+        from saga.archetypes import scaffold_run_and_gun_level
+
+        _write_harness_project(project_dir, design_doc, current_level, bgm_filename)
+        pack = scaffold_run_and_gun_level(
+            project_dir, design_doc, current_level, asset_filenames
+        )
+        print(
+            f"[Coder] Scaffolded level {current_level + 1}/{total_levels} from "
+            f"{pack.id}@{pack.version} ({len(pack.capabilities)} capabilities) "
+            f"-> {project_dir}"
+        )
+        result = {
+            "godot_project_path": str(project_dir),
+            "tune_notes": None,
+            "coder_model": f"archetype/{pack.id}@{pack.version}",
+            "repair_rejected": False,
+            "repair_validation_errors": [],
+        }
+        if not state.get("qa_errors") and not state.get("tune_notes"):
+            result["coder_prompt"] = (
+                f"Archetype {pack.id}@{pack.version}; level "
+                f"{current_level + 1}; capabilities: {', '.join(pack.capabilities)}"
+            )
+        return result
+
     example_user, example_response = FEW_SHOTS[TEMPLATE_TO_FEW_SHOT.get(template, "collect")]
 
     script_file = project_dir / f"Level_{current_level}.gd"
@@ -4261,13 +4609,18 @@ def coder(state: GraphState) -> GraphState:
     # cannot recover from an invented-filename error (it has no way to know
     # which files exist) and tends to flail into fallback code instead.
     assets_line = f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
-
+    blueprint_contract = _blueprint_contract(state)
+    # Background knowledge leads; the script, the contract and the errors are
+    # what the model must read most recently.
+    skill_reference = _skill_reference(state)
     if qa_errors:
         previous_script = script_file.read_text(encoding="utf-8")
         errors_desc = "\n".join(f"- {e}" for e in qa_errors)
         user_prompt = (
+            f"{skill_reference}"
             f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
+            f"{blueprint_contract}"
             f"Godot reported these errors:\n{errors_desc}\n"
         )
         system_prompt = FIX_SYSTEM_PROMPT
@@ -4275,12 +4628,17 @@ def coder(state: GraphState) -> GraphState:
         previous_script = script_file.read_text(encoding="utf-8")
         notes_desc = "\n".join(f"- {n}" for n in tune_notes)
         user_prompt = (
+            f"{skill_reference}"
             f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
+            f"{blueprint_contract}"
             f"Apply these tuning changes:\n{notes_desc}\n"
         )
         system_prompt = TUNE_SYSTEM_PROMPT
     else:
+        # A worked reference is useful only for fresh generation. Repair
+        # prompts already carry the previous script and concrete QA errors.
+        experience_reference = _experience_reference(design_doc, current_level)
         key_item = design_doc["key_item"]
         level = levels[current_level]
         intensity = level.get("intensity")
@@ -4298,6 +4656,8 @@ def coder(state: GraphState) -> GraphState:
                 f"later levels get faster hazards, more of them, and tighter margins.\n"
             )
         user_prompt = (
+            f"{skill_reference}"
+            f"{experience_reference}"
             f"Title: {design_doc['title']}\n"
             f"Genre: {design_doc['genre']}\n"
             f"Mechanic template: {template}\n"
@@ -4309,6 +4669,7 @@ def coder(state: GraphState) -> GraphState:
             f"This is level {current_level + 1} of {total_levels}: "
             f"{level['name']}: {level['description']}\n"
             f"{difficulty_line}"
+            f"{blueprint_contract}"
             f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
         )
         requirements = TEMPLATE_REQUIREMENTS.get(template, TEMPLATE_REQUIREMENTS["collect"])
@@ -4437,31 +4798,7 @@ def coder(state: GraphState) -> GraphState:
         )
     assert_safe_gdscript(gdscript)
 
-    (project_dir / "project.godot").write_text(
-        PROJECT_GODOT_TEMPLATE.format(title=design_doc["title"]), encoding="utf-8"
-    )
-    (project_dir / "screenshot.gd").write_text(SCREENSHOT_GD, encoding="utf-8")
-    (project_dir / "sfx.gd").write_text(SFX_GD, encoding="utf-8")
-    (project_dir / "ambience.gd").write_text(AMBIENCE_GD, encoding="utf-8")
-    (project_dir / "anim.gd").write_text(ANIM_GD, encoding="utf-8")
-    (project_dir / "autoplay.gd").write_text(AUTOPLAY_GD, encoding="utf-8")
-    (project_dir / "objective_probe.gd").write_text(OBJECTIVE_PROBE_GD, encoding="utf-8")
-    (project_dir / "switch_probe.gd").write_text(SWITCH_PROBE_GD, encoding="utf-8")
-    (project_dir / "survival_probe.gd").write_text(SURVIVAL_PROBE_GD, encoding="utf-8")
-    (project_dir / "depletion_probe.gd").write_text(DEPLETION_PROBE_GD, encoding="utf-8")
-    (project_dir / "hybrid_probe.gd").write_text(HYBRID_PROBE_GD, encoding="utf-8")
-    (project_dir / "capture_probe.gd").write_text(CAPTURE_PROBE_GD, encoding="utf-8")
-    (project_dir / "herd_probe.gd").write_text(HERD_PROBE_GD, encoding="utf-8")
-    beats = [lvl.get("outro_beat", "") for lvl in levels]
-    (project_dir / "music.gd").write_text(_build_music_gd(bgm_filename), encoding="utf-8")
-    (project_dir / "game.gd").write_text(_build_game_gd(total_levels, beats), encoding="utf-8")
-    (project_dir / "interlude.gd").write_text(INTERLUDE_GD, encoding="utf-8")
-    (project_dir / "Interlude.tscn").write_text(INTERLUDE_TSCN, encoding="utf-8")
-    (project_dir / "victory.gd").write_text(VICTORY_GD, encoding="utf-8")
-    (project_dir / "Victory.tscn").write_text(VICTORY_TSCN, encoding="utf-8")
-    (project_dir / f"Level_{current_level}.tscn").write_text(
-        _build_level_tscn(current_level), encoding="utf-8"
-    )
+    _write_harness_project(project_dir, design_doc, current_level, bgm_filename)
     if is_repair:
         validation = validate_and_promote_repair(
             script_file,
@@ -4479,6 +4816,36 @@ def coder(state: GraphState) -> GraphState:
         print(f"[Coder] Repair gate passed for level {current_level + 1}; candidate promoted")
     else:
         script_file.write_text(gdscript, encoding="utf-8")
+
+    system_build_results = None
+    if not is_repair and settings.incremental_build and state.get("blueprint"):
+        from saga.protected_builder import protected_incremental_build
+
+        print(
+            f"[Protected Builder] Quality mode enabled; refining up to "
+            f"{settings.incremental_max_systems} blueprint systems"
+        )
+        system_build_results = protected_incremental_build(
+            script_file=script_file,
+            project_dir=project_dir,
+            scene=f"res://Level_{current_level}.tscn",
+            level_index=current_level,
+            blueprint=state["blueprint"],
+            build_plan=state.get("blueprint_build_plan") or [],
+            model=model,
+            chat=_chat,
+            route_chat=lambda messages, preferred: _routed_chat(messages, preferred, model),
+            extract_gdscript=_extract_gdscript,
+            candidate_errors=lambda candidate: _final_candidate_errors(
+                candidate,
+                template=template,
+                valid_assets=valid_assets,
+            ),
+            existing_results=state.get("system_build_results") or [],
+            max_systems=settings.incremental_max_systems,
+            max_attempts=settings.incremental_max_attempts,
+            probe=_objective_probe_for(project_dir, current_level, template),
+        )
 
     action = "Fixed" if qa_errors else ("Tuned" if tune_notes else "Generated")
     print(
@@ -4500,4 +4867,6 @@ def coder(state: GraphState) -> GraphState:
         # brief survives in state - a level that passes after two repairs
         # is still a valid (brief -> working script) training pair.
         result["coder_prompt"] = user_prompt
+    if system_build_results is not None:
+        result["system_build_results"] = system_build_results
     return result

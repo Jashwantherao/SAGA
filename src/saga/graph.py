@@ -1,6 +1,6 @@
 """Builds the SAGA graph:
 
-Studio Director -> Game Designer -> (Asset Maker, Audio Agent)
+Studio Director -> Game Designer -> Systems Architect -> (Asset Maker, Audio Agent)
     -> Coder <-> QA Agent (per level, advancing through the design doc's
        levels via advance_level) -> END
 
@@ -19,6 +19,7 @@ from saga.agents.coder import coder
 from saga.agents.game_designer import game_designer
 from saga.agents.qa_agent import qa_agent
 from saga.agents.studio_director import studio_director
+from saga.agents.systems_architect import systems_architect
 from saga.config import settings
 from saga.state import GraphState
 
@@ -78,6 +79,7 @@ def build_graph(human_gate: bool = False):
     graph = StateGraph(GraphState)
     graph.add_node("studio_director", studio_director)
     graph.add_node("game_designer", game_designer)
+    graph.add_node("systems_architect", systems_architect)
     graph.add_node("asset_maker", asset_maker)
     graph.add_node("audio_agent", audio_agent)
     # The agentic Coder wraps the one-shot one: it produces the draft, then
@@ -101,8 +103,9 @@ def build_graph(human_gate: bool = False):
         _route_after_director,
         {"design": "game_designer", "revise": "coder", "reasset": "asset_maker"},
     )
-    graph.add_edge("game_designer", "asset_maker")
-    graph.add_edge("game_designer", "audio_agent")
+    graph.add_edge("game_designer", "systems_architect")
+    graph.add_edge("systems_architect", "asset_maker")
+    graph.add_edge("systems_architect", "audio_agent")
     graph.add_edge("asset_maker", "coder")
     graph.add_edge("audio_agent", "coder")
     graph.add_edge("coder", "qa_agent")

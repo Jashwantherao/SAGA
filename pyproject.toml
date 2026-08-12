@@ -29,6 +29,7 @@ dependencies = [
 saga = "saga.main:main"
 saga-doctor = "saga.doctor:main"
 saga-ui-api = "saga.ui_api:main"
+saga-benchmark = "saga.benchmark:main"
 
 [build-system]
 requires = ["uv_build>=0.11.26,<0.12.0"]

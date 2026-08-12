@@ -4,15 +4,12 @@ Two checks, cheapest first: import assets, then an actual bounded headless
 run of the scene. (There used to be a parse-only --check-only pass between
 them, but it cannot see autoload singletons like Sfx, so a correct script
 that calls an autoload fails it - the scene run catches real compile errors
-anyway, since a broken script fails to load.) After both pass, a
-non-blocking windowed pass captures a screenshot (via the harness-owned
-screenshot.gd autoload) so a human - or later, a vision model - can check
-the build's look without launching it. The screenshot is a lens, not a
-gate: its failure never fails QA. If a local vision model is available via
-Ollama, it reviews the screenshot too (is the hero visible? does anything
-look broken?) - also non-gating, since 7B vision verdicts are too noisy to
-burn Coder retries on, but its findings are surfaced as vision_notes for
-the human and the playtest loop.
+anyway, since a broken script fails to load.) After both pass, a fresh
+windowed process captures active gameplay via the harness-owned screenshot.gd
+autoload. Capture infrastructure remains non-blocking. Structured visible
+defects can gate a build, while free-form art criticism stays advisory. When
+video QA is enabled, its temporal evidence reconciles contradictory
+single-frame findings before SAGA spends a Coder retry.
 """
 
 import json
@@ -23,6 +20,7 @@ from pathlib import Path
 from saga.balance import check_level
 from saga.config import settings
 from saga.corpus import record_level
+from saga.repair_gate import godot_environment
 from saga.safety import UnsafeGeneratedCodeError, assert_safe_gdscript
 from saga.state import GraphState
 
@@ -103,6 +101,22 @@ HERD_METRICS = re.compile(
     r"goal_gain=([\d.]+) settled=(\d+) creatures=(\d+) still=(true|false) "
     r"flee=(true|false) settle=(true|false) persistent=(true|false) win=(true|false)"
 )
+RUN_AND_GUN_METRICS = re.compile(
+    r"\[RUN_AND_GUN_METRICS\] fire=(true|false) checkpoint=(true|false) "
+    r"lose=(true|false) restart=(true|false) enemy=(true|false) "
+    r"boss_damage=(true|false) win=(true|false)"
+)
+RUN_AND_GUN_STRUCTURE = re.compile(
+    r"\[RUN_AND_GUN_STRUCTURE\] layout=([a-z0-9_]+) platforms=(\d+) "
+    r"encounters=(\d+) hazards=(\d+) pickups=(\d+) roles=(\d+) valid=(true|false)"
+)
+RUN_AND_GUN_COMBAT = re.compile(
+    r"\[RUN_AND_GUN_COMBAT\] pulse=(true|false) spread=(true|false) "
+    r"launcher=(true|false) pickup=(true|false) wave_spawn=(true|false) "
+    r"wave_clear=(true|false) roles=(true|false) budget=(true|false) "
+    r"restart=(true|false) boss_phases=(true|false) "
+    r"threat_spent=(\d+) threat_limit=(\d+)"
+)
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
 MAX_SURVIVAL_SOLVER_SECONDS = 30.0
@@ -117,13 +131,15 @@ MAX_HERD_SOLVER_SECONDS = 60.0
 # never produce this specific shutdown-order noise, so it's safe to ignore.
 BENIGN_EXIT_NOISE = re.compile(
     r"resources? still in use at exit|Leaked instance:|ObjectDB instances were leaked at exit|"
-    r"Orphan StringName|unclaimed string names at exit|RID allocations of type",
+    r"Orphan StringName|unclaimed string names at exit|RID allocations of type|"
+    r"Failed to read the root certificate store",
     re.IGNORECASE,
 )
 
 HARNESS_SCRIPT_ERROR = re.compile(
     r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|capture_probe|herd_probe|screenshot|sfx|music|ambience|anim|game|"
-    r"interlude|victory)\.gd",
+    r"run_and_gun_probe|interlude|victory)\.gd|"
+    r"res://archetypes/run_and_gun/[^\s)]+\.gd",
     re.IGNORECASE,
 )
 
@@ -142,6 +158,7 @@ def _run(args: list[str], cwd: str | None = None, timeout: float = 60) -> subpro
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=godot_environment(),
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
@@ -179,6 +196,31 @@ def _find_errors(output: str) -> list[str]:
             if len(found) >= 10:
                 break
     return found
+
+
+# A probe that refuses a level because its numbers make the mechanic
+# unsolvable reports only a reason code, and the per-template requirement text
+# describes the mechanic rather than the threshold that was violated. A real
+# run spent all six retries on invalid_herd_balance without ever learning which
+# numbers were wrong. These name the rule so one repair can satisfy it.
+PROBE_REASON_HINTS = {
+    "invalid_herd_balance": (
+        " Specifically: panic_radius, goal_radius, speed and flee_speed must all "
+        "be positive, and flee_speed must be less than 0.6 x speed."
+    ),
+    "invalid_depletion_settings": (
+        " Specifically: the maximum resource, drain_rate and survival_time must "
+        "all be positive, and refill_rate must be strictly greater than drain_rate."
+    ),
+    "invalid_survival_settings": (
+        " Specifically: the starting resource must be at least 2 and "
+        "survival_time must be positive."
+    ),
+    "invalid_capture_rates": (
+        " Specifically: capture_required, capture_radius, capture_rate and "
+        "decay_rate must all be positive."
+    ),
+}
 
 
 def _run_objective_probe(
@@ -377,6 +419,68 @@ def _run_objective_probe(
                 "herd_win_verified": won == "true",
             }
         )
+    if template == "run_and_gun":
+        combat = RUN_AND_GUN_METRICS.search(output)
+        if not combat:
+            return result, ["QA infrastructure: run-and-gun probe produced no capability metrics."], True
+        fire, checkpoint, lose, restart, enemy, boss_damage, win = combat.groups()
+        result.update(
+            {
+                "fire_verified": fire == "true",
+                "checkpoint_verified": checkpoint == "true",
+                "lose_verified": lose == "true",
+                "clean_restart": restart == "true",
+                "enemy_defeat_verified": enemy == "true",
+                "boss_damage_verified": boss_damage == "true",
+                "boss_win_verified": win == "true",
+            }
+        )
+        structure = RUN_AND_GUN_STRUCTURE.search(output)
+        if not structure:
+            return result, ["QA infrastructure: run-and-gun probe produced no structure metrics."], True
+        layout, platforms, encounters, hazards, pickups, roles, valid = structure.groups()
+        result.update(
+            {
+                "layout_id": layout,
+                "platform_count": int(platforms),
+                "encounter_count": int(encounters),
+                "hazard_count": int(hazards),
+                "pickup_count": int(pickups),
+                "enemy_role_count": int(roles),
+                "structure_verified": valid == "true",
+            }
+        )
+        if valid != "true":
+            return result, [
+                "QA infrastructure: the studio-owned run-and-gun encounter plan failed its structure contract."
+            ], True
+        combat_depth = RUN_AND_GUN_COMBAT.search(output)
+        if not combat_depth:
+            return result, ["QA infrastructure: run-and-gun probe produced no combat-depth metrics."], True
+        (
+            pulse, spread, launcher, weapon_pickup, wave_spawn, wave_clear,
+            roles, budget, combat_restart, boss_phases, threat_spent, threat_limit,
+        ) = combat_depth.groups()
+        result.update(
+            {
+                "pulse_weapon_verified": pulse == "true",
+                "spread_weapon_verified": spread == "true",
+                "launcher_weapon_verified": launcher == "true",
+                "weapon_pickup_verified": weapon_pickup == "true",
+                "wave_spawn_verified": wave_spawn == "true",
+                "wave_clear_verified": wave_clear == "true",
+                "enemy_roles_verified": roles == "true",
+                "threat_budget_verified": budget == "true",
+                "combat_restart_verified": combat_restart == "true",
+                "boss_phases_verified": boss_phases == "true",
+                "threat_budget_spent": int(threat_spent),
+                "threat_budget_limit": int(threat_limit),
+            }
+        )
+        if "false" in combat_depth.groups()[:10]:
+            return result, [
+                "Run-and-gun combat depth: weapon patterns, pickup acquisition, bounded waves, role behavior, restart, or boss phases failed."
+            ], False
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -416,10 +520,14 @@ def _run_objective_probe(
                             "them and reset ownership, and owning every zone must win."
                             if template == "capture_zones"
                             else (
+                                "Firing, checkpoint activation, player loss/restart, enemy defeat, boss damage and boss victory must all use the stable archetype interface."
+                                if template == "run_and_gun"
+                                else (
                                 "Creatures must stay calm outside panic range, flee toward the "
                                 "goal when approached, settle permanently, and all settled must win."
                                 if template == "herd_to_goal"
                                 else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                                )
                             )
                         )
                     )
@@ -432,6 +540,7 @@ def _run_objective_probe(
                 f"Objective completion: {template} solver failed "
                 f"({reason}); collected {collected}/{total} with {remaining} remaining. "
                 f"{objective_requirement}"
+                f"{PROBE_REASON_HINTS.get(reason, '')}"
                 f"{position_note}"
             ],
             False,
@@ -445,7 +554,7 @@ def _run_objective_probe(
     if int(remaining) != 0 or int(collected) < int(total):
         item = (
             "milestones"
-            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal"}
+            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal", "run_and_gun"}
             else "objective items"
         )
         return (
@@ -638,6 +747,21 @@ def _run_objective_probe(
             return result, ["Objective completion: herd terminal accounting is inconsistent."], True
         if result["completion_seconds"] > MAX_HERD_SOLVER_SECONDS:
             return result, [f"Objective completion: herd solver exceeded {MAX_HERD_SOLVER_SECONDS:.0f}s QA ceiling."], False
+    if template == "run_and_gun":
+        flags = [
+            "fire_verified",
+            "checkpoint_verified",
+            "lose_verified",
+            "clean_restart",
+            "enemy_defeat_verified",
+            "boss_damage_verified",
+            "boss_win_verified",
+        ]
+        missing = [name for name in flags if not result[name]]
+        if missing:
+            return result, ["Objective completion: run-and-gun pass omitted: " + ", ".join(missing) + "."], True
+        if result["restart_status"] != "passed" or result["deaths"] != 1:
+            return result, ["Objective completion: run-and-gun loss/restart accounting is inconsistent."], True
     return result, [], False
 
 
@@ -749,10 +873,55 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
             "element. Reposition the labels so every one is fully readable."
         )
     if data.get("looks_broken"):
-        gating.append(f"Visual defect: {data['looks_broken']}")
+        # This is free-form model prose from one frame. Structured observations
+        # above can identify a concrete failure, but vague composition or art
+        # criticism must not spend a Coder retry. Temporal video QA can still
+        # gate an actual layering, stability, or disappearance defect.
+        advisory.append(f"Vision (advisory): {data['looks_broken']}")
     if data.get("placeholder_art"):
         advisory.append(f"Vision (advisory): {data['placeholder_art']}")
     return gating, advisory
+
+
+def _reconcile_visual_evidence(
+    screenshot_gating: list[str],
+    screenshot_advisory: list[str],
+    video_result: dict | None,
+) -> tuple[list[str], list[str]]:
+    """Resolve single-frame findings against stronger temporal evidence.
+
+    A gameplay video showing the player or readable HUD directly contradicts
+    a screenshot model claiming the opposite. Those findings remain visible
+    in the ledger as advisories, but cannot trigger code regeneration. Other
+    concrete screenshot defects remain gating.
+    """
+    remaining = []
+    notes = list(screenshot_advisory)
+    for finding in screenshot_gating:
+        lower = finding.lower()
+        contradicted_by = None
+        if (
+            "hero sprite is not visible" in lower
+            and video_result
+            and video_result.get("player_visible") is True
+        ):
+            contradicted_by = "the gameplay video shows the player"
+        elif (
+            "on-screen text is clipped" in lower
+            and video_result
+            and video_result.get("hud_readable") is True
+        ):
+            contradicted_by = "the gameplay video shows a readable HUD"
+
+        if contradicted_by:
+            detail = finding.removeprefix("Visual defect: ").strip()
+            notes.append(
+                f"Vision (advisory, contradicted): {detail} ({contradicted_by})."
+            )
+        else:
+            remaining.append(finding)
+
+    return remaining, remaining + notes
 
 
 def _capture_gameplay_video(
@@ -1247,6 +1416,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "herd_to_goal",
         "dot_maze",
         "maze_chase",
+        "run_and_gun",
     }:
         objective_result, objective_errors, objective_blocked = _run_objective_probe(
             project_dir,
@@ -1301,9 +1471,10 @@ def qa_agent(state: GraphState) -> GraphState:
                 objective_result=objective_result,
             )
 
-    # 5. Non-blocking windowed screenshot pass (a window flashes for ~1.5s).
-    # screenshot.gd saves frame 60 to res://screenshot.png; it no-ops in the
-    # headless runs above.
+    # 5. Active-gameplay screenshot pass (a window flashes for ~1.5s). This is
+    # a fresh process: screenshot.gd dismisses the title screen and captures
+    # frame 60, so the objective solver above cannot leave it on a win screen.
+    # It no-ops in the headless runs above.
     screenshot_path = None
     screenshot_file = Path(project_dir) / f"screenshot_Level{current_level}.png"
     try:
@@ -1311,28 +1482,35 @@ def qa_agent(state: GraphState) -> GraphState:
         _run(["--path", project_dir, scene, "--quit-after", "90"], timeout=30)
         if screenshot_file.exists():
             screenshot_path = str(screenshot_file)
-            print(f"[QA Agent] Screenshot captured -> {screenshot_path}")
+            print(f"[QA Agent] Active gameplay screenshot captured -> {screenshot_path}")
         else:
             print("[QA Agent] Screenshot pass produced no image (non-blocking)")
     except Exception as e:
         print(f"[QA Agent] Screenshot pass failed (non-blocking): {e}")
 
-    # 6. Vision review. Code-fixable defects gate on every attempt; everything
-    # else is advisory. A noisy provider can still be disabled or switched,
-    # but a configured gate cannot leave a known defect behind and call the
-    # level clean.
+    # 6. Vision review. When video QA is enabled, hold single-frame gating
+    # findings until the stronger temporal evidence can confirm or contradict
+    # them. Free-form art/composition criticism is always advisory.
     vision_notes = []
+    vision_gating = []
+    vision_advisory = []
     if screenshot_path:
-        gating, advisory = _vision_review(screenshot_path, state.get("design_doc"))
-        vision_notes = gating + advisory
-        for note in vision_notes:
-            print(f"[QA Agent] {note}")
-        if gating:
-            print(f"[QA Agent] FAILED on {len(gating)} visual defect(s) - requesting a fix")
+        vision_gating, vision_advisory = _vision_review(
+            screenshot_path, state.get("design_doc")
+        )
+        vision_notes = vision_gating + vision_advisory
+        if not VIDEO_QA_ENABLED:
+            for note in vision_notes:
+                print(f"[QA Agent] {note}")
+        if vision_gating and not VIDEO_QA_ENABLED:
+            print(
+                f"[QA Agent] FAILED on {len(vision_gating)} visual defect(s) "
+                "- requesting a fix"
+            )
             return _failed_attempt(
                 state,
                 stage="vision",
-                errors=gating,
+                errors=vision_gating,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
                 balance_notes=balance_notes,
@@ -1404,6 +1582,31 @@ def qa_agent(state: GraphState) -> GraphState:
             f"{video_qa_result['evidence']}"
         )
 
+        vision_gating, vision_notes = _reconcile_visual_evidence(
+            vision_gating,
+            vision_advisory,
+            video_qa_result,
+        )
+        for note in vision_notes:
+            print(f"[QA Agent] {note}")
+        if vision_gating:
+            print(
+                f"[QA Agent] FAILED on {len(vision_gating)} confirmed visual "
+                "defect(s) - requesting a fix"
+            )
+            return _failed_attempt(
+                state,
+                stage="vision",
+                errors=vision_gating,
+                screenshot_path=screenshot_path,
+                vision_notes=vision_notes,
+                balance_notes=balance_notes,
+                objective_result=objective_result,
+                gameplay_video_path=gameplay_video_path,
+                video_qa_result=video_qa_result,
+                video_notes=video_notes,
+            )
+
     # This is the only point in the pipeline where a script is known-good
     # (compiled, ran, satisfied its template contract) - so it's where the
     # training corpus gets its verified pairs.
@@ -1417,6 +1620,18 @@ def qa_agent(state: GraphState) -> GraphState:
         design_doc=state.get("design_doc"),
         vision_notes=vision_notes + video_notes,
     )
+
+    system_build_results = state.get("system_build_results") or []
+    if system_build_results:
+        from saga.protected_builder import attach_qa_evidence
+
+        system_build_results = attach_qa_evidence(
+            system_build_results,
+            level_index=current_level,
+            active_script=script_file.read_text(encoding="utf-8"),
+            objective_result=objective_result,
+            video_qa_result=video_qa_result,
+        )
 
     print("[QA Agent] PASSED - scene ran headlessly with no errors")
     return {
@@ -1442,4 +1657,5 @@ def qa_agent(state: GraphState) -> GraphState:
             video_notes=video_notes,
         ),
         "ship_blocked": False,
+        "system_build_results": system_build_results,
     }

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import re
 
 from saga.agents.coder import (
@@ -178,3 +180,163 @@ def test_herd_example_satisfies_qa_contract_and_installs_probe():
     assert "creature_did_not_flee_toward_goal" in HERD_PROBE_GD
     assert "settled_creature_moved" in HERD_PROBE_GD
     assert "all_settled_did_not_win" in HERD_PROBE_GD
+
+
+def _reject(previous_evidence, errors):
+    from saga.agents.coder import _rejected_repair_result
+
+    return _rejected_repair_result(
+        project_dir=Path("."),
+        model="m",
+        original_goal=list(previous_evidence),
+        errors=list(errors),
+    )["repair_validation_errors"]
+
+
+def test_repeated_repair_rejections_do_not_nest_their_own_evidence():
+    """A rejected repair feeds its evidence back as the next attempt's goal.
+    Re-wrapping it verbatim nested one prefix per retry and repeated the same
+    parse errors a dozen times, growing the prompt fastest exactly when the
+    model was already failing to hold it."""
+    errors = ['Parse Error: Could not find base class "KinematicBody2D".']
+
+    evidence = _reject(["Original goal from QA"], errors)
+    for _ in range(5):
+        evidence = _reject(evidence, errors)
+
+    assert not any("Original repair goal: Original repair goal:" in item for item in evidence)
+    assert len(evidence) == len(set(evidence)), "no duplicated lines"
+    assert len(evidence) <= 8
+
+
+def test_rejection_still_reports_the_goal_and_the_validation_failure():
+    evidence = _reject(["player must move with the arrow keys"], ["unbalanced indent"])
+
+    assert "Candidate validation: unbalanced indent" in evidence
+    assert "Original repair goal: player must move with the arrow keys" in evidence
+
+
+def test_a_goal_restating_this_rejection_is_not_echoed_back():
+    errors = ["unbalanced indent"]
+    first = _reject(["fix the indent"], errors)
+    second = _reject(first, errors)
+
+    assert second.count("Candidate validation: unbalanced indent") == 1
+
+
+def _godot3_violations(source):
+    from saga.agents.coder_contracts import FORBIDDEN_PATTERNS
+
+    return [desc for desc, pattern in FORBIDDEN_PATTERNS if re.search(pattern, source)]
+
+
+def test_godot3_base_class_is_caught_before_a_godot_spawn():
+    """A real run burned all six retries on `extends KinematicBody2D`: Godot
+    reports it only as "Could not find base class", which never names the
+    replacement, so the model spiralled instead of repairing."""
+    violations = _godot3_violations("extends KinematicBody2D\n")
+
+    assert len(violations) == 1
+    assert "CharacterBody2D" in violations[0]
+
+
+def test_the_worked_examples_trip_no_godot3_rule():
+    """The few-shot responses are known-good Godot 4. Any match here is a
+    false positive that would reject correct code on every single run."""
+    from saga.agents import coder
+
+    sources = {
+        name: getattr(coder, name)
+        for name in dir(coder)
+        if name.endswith(("EXAMPLE_RESPONSE", "_GD"))
+    }
+    offenders = {
+        name: _godot3_violations(source)
+        for name, source in sources.items()
+        if isinstance(source, str) and _godot3_violations(source)
+    }
+
+    assert sources, "expected worked examples to check against"
+    assert offenders == {}
+
+
+def test_godot4_spellings_are_not_mistaken_for_their_godot3_ancestors():
+    """The \b in \bSprite\b cannot fire inside Sprite2D - that boundary is
+    what makes a rename table safe to run over every candidate."""
+    clean = (
+        "extends CharacterBody2D\n"
+        "@export var speed := 200.0\n"
+        "@onready var art: Sprite2D = $Sprite2D\n"
+        "var shape := $CollisionShape2D\n"
+        "var puff := $GPUParticles2D\n"
+        "var names := PackedStringArray()\n"
+        "func _physics_process(_d):\n"
+        "\tvelocity = Vector2.ZERO\n"
+        "\tmove_and_slide()\n"
+        "\tbody_entered.connect(_on_body_entered)\n"
+        "\tvar n = preload('res://x.tscn').instantiate()\n"
+        "\tif names.is_empty():\n"
+        "\t\tprint(Time.get_ticks_msec(), randf_range(0.0, 1.0))\n"
+    )
+
+    assert _godot3_violations(clean) == []
+
+
+def test_godot3_api_calls_are_named_with_their_replacement():
+    for source, expected in [
+        ("move_and_slide(velocity)", "no arguments"),
+        ('button.connect("pressed", self, "_on_pressed")', "Callable"),
+        ("export var speed = 5", "@export var"),
+        ("onready var hero = $Hero", "@onready var"),
+        ("yield(get_tree(), 'idle_frame')", "await"),
+        ("var n = scene.instance()", ".instantiate()"),
+    ]:
+        violations = _godot3_violations(source)
+        assert violations, f"{source!r} should be rejected"
+        assert any(expected in item for item in violations), f"{source!r} -> {violations}"
+
+
+def test_unherdable_speed_balance_is_caught_before_the_probe_runs():
+    """A real 3-level run spent all six retries on invalid_herd_balance. The
+    probe enforces flee_speed < 0.6 x speed but reports only a reason code, and
+    the prompt said merely "well below", so nothing ever named the threshold."""
+    from saga.agents.coder_contracts import balance_violations
+
+    violations = balance_violations(
+        "@export var speed = 240.0\nvar flee_speed = 200.0\n", "herd_to_goal"
+    )
+
+    assert len(violations) == 1
+    assert "200" in violations[0] and "144" in violations[0]
+
+
+def test_a_balanced_herd_passes():
+    from saga.agents.coder_contracts import balance_violations
+
+    assert balance_violations(
+        "@export var speed = 240.0\nvar flee_speed = 90.0\n", "herd_to_goal"
+    ) == []
+
+
+def test_the_herd_worked_example_satisfies_the_rule_it_teaches():
+    """The few-shot is the model's template for these numbers; if it tripped
+    the check, every herd game would start from a rejected example."""
+    from saga.agents.coder import HERD_EXAMPLE_RESPONSE
+    from saga.agents.coder_contracts import balance_violations
+
+    assert balance_violations(HERD_EXAMPLE_RESPONSE, "herd_to_goal") == []
+
+
+def test_balance_rules_apply_only_to_their_own_template():
+    from saga.agents.coder_contracts import balance_violations
+
+    unbalanced = "@export var speed = 240.0\nvar flee_speed = 200.0\n"
+
+    assert balance_violations(unbalanced, "collect") == []
+
+
+def test_probe_rejection_names_the_threshold_it_enforced():
+    from saga.agents.qa_agent import PROBE_REASON_HINTS
+
+    assert "0.6" in PROBE_REASON_HINTS["invalid_herd_balance"]
+    assert "greater than drain_rate" in PROBE_REASON_HINTS["invalid_depletion_settings"]

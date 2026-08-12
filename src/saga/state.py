@@ -28,7 +28,7 @@ class DesignDoc(TypedDict):
     title: str
     genre: str
     # collect | survive_hazards | ordered_switches | depletion | herd_to_goal
-    # | capture_zones | survive_and_deplete | maze_chase | dot_maze
+    # | capture_zones | survive_and_deplete | maze_chase | dot_maze | run_and_gun
     mechanic_template: str
     hero_description: str  # concrete, high-contrast visual description of the hero sprite
     core_mechanics: list[str]
@@ -54,6 +54,20 @@ class GraphState(TypedDict, total=False):
     # Unique output/runs/<id> workspace allocated during Studio Director intake.
     run_dir: str
     design_doc: Optional[DesignDoc]
+    # Agent Team v2: the Systems Architect turns the creative design into an
+    # ordered, machine-verifiable systems contract before assets or code are
+    # produced. The plan records benchmark-informed specialist candidates;
+    # the current monolithic Coder consumes the acceptance contract while
+    # protected per-system builders are introduced incrementally.
+    blueprint: Optional[dict]
+    blueprint_status: Optional[str]
+    blueprint_model: Optional[str]
+    blueprint_errors: Optional[list[str]]
+    blueprint_build_plan: Optional[list[dict]]
+    # Protected incremental builder ledger. "integrated" means the focused
+    # candidate passed static contracts plus a Godot startup gate; behavioral
+    # confirmation is attached later by the authoritative QA probes.
+    system_build_results: list[dict]
     sprite_paths: Optional[list[str]]
     bgm_path: Optional[str]
     godot_project_path: Optional[str]

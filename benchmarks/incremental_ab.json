@@ -1,0 +1,99 @@
+{
+  "id": "incremental-ab-v1",
+  "repetitions": 1,
+  "profiles": [
+    {
+      "id": "laguna-baseline",
+      "provider": "NVIDIA NIM",
+      "model": "poolside/laguna-xs-2.1",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "poolside/laguna-xs-2.1",
+        "SAGA_DOTMAZE_MODEL": "poolside/laguna-xs-2.1",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true",
+        "SAGA_INCREMENTAL_BUILD": "0"
+      }
+    },
+    {
+      "id": "laguna-incremental",
+      "provider": "NVIDIA NIM",
+      "model": "poolside/laguna-xs-2.1",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "poolside/laguna-xs-2.1",
+        "SAGA_DOTMAZE_MODEL": "poolside/laguna-xs-2.1",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true",
+        "SAGA_INCREMENTAL_BUILD": "1",
+        "SAGA_INCREMENTAL_MAX_SYSTEMS": "6"
+      }
+    },
+    {
+      "id": "nemotron-baseline",
+      "provider": "NVIDIA NIM",
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_DOTMAZE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true",
+        "SAGA_INCREMENTAL_BUILD": "0"
+      }
+    },
+    {
+      "id": "nemotron-incremental",
+      "provider": "NVIDIA NIM",
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "env": {
+        "SAGA_CODER_BACKEND": "openai",
+        "SAGA_CODER_REMOTE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_DOTMAZE_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        "SAGA_OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "SAGA_OPENAI_KEY_ENV": "NVIDIA_API_KEY",
+        "SAGA_DESIGNER_BACKEND": "local",
+        "SAGA_DIRECTOR_BACKEND": "local",
+        "SAGA_DIRECTOR_MODEL": "qwen2.5-coder:14b",
+        "SAGA_VIDEO_QA": "true",
+        "SAGA_INCREMENTAL_BUILD": "1",
+        "SAGA_INCREMENTAL_MAX_SYSTEMS": "6"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "signal-orchard",
+      "idea": "Restore a storm-dark orchard by collecting escaped signal seeds.",
+      "levels": 1,
+      "design_doc": "designs/signal_orchard.json",
+      "asset_pack": "../output/runs/20260801-213542-48f6b72b/run.json"
+    },
+    {
+      "id": "ember-reservoir",
+      "idea": "Keep a walking furnace alive while crossing a frozen reservoir.",
+      "levels": 1,
+      "design_doc": "designs/ember_reservoir.json",
+      "asset_pack": "../output/runs/20260801-213542-48f6b72b/run.json"
+    },
+    {
+      "id": "clockwork-catacomb",
+      "idea": "Clear every time shard from a clockwork catacomb while wardens hunt you.",
+      "levels": 1,
+      "design_doc": "designs/clockwork_catacomb.json",
+      "asset_pack": "../output/runs/20260801-213542-48f6b72b/run.json"
+    }
+  ]
+}
