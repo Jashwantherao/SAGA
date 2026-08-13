@@ -4,7 +4,7 @@ Multi-agent LangGraph pipeline that turns a one-line prompt into a playable, mul
 
 ```
 Studio Director -> Game Designer -> Systems Architect -> (Asset Maker, Audio Agent)
-    -> Coder <-> QA Agent  (repeats per level, advancing through the design
+    -> Coder <-> QA Agent -> Quality Director  (repeats per level, advancing through the design
        doc's levels; every failure returns to the Studio Director, which
        triages it: fix / regenerate / new art)
     -> [--gate: human plays this level] -> [--playtest] -> done
@@ -37,8 +37,8 @@ operations in Python while providing:
 - generation job state, cancellation, WebSocket log streaming with a
   follow/copy log console, and a session history of past generations;
 - a generated-game library with screenshots, search, and status filters;
-- a full run detail view: gameplay video player, per-level QA ledger with
-  objective metrics and Video-QA evidence, an asset gallery with lightbox,
+- a full run detail view: gameplay video player, evidence-based Quality
+  Director score, per-level QA ledger with objective metrics and Video-QA evidence, an asset gallery with lightbox,
   background-music playback, the design document, and run deletion;
 - allow-listed start/stop/restart controls and a log viewer for Ollama,
   ComfyUI, and MusicGen (Ollama is launched with its D: models root); and
@@ -91,6 +91,7 @@ are intentionally locked while a generation is active.
 | Audio Agent | local GPU, MusicGen (`transformers`) | Background music from the design doc's audio mood; loops continuously across level changes via a harness-owned autoload |
 | Coder | local GPU, hosted API, or deterministic archetype pack | Classic templates write one `Level_N.gd` from a template-matched few-shot. `run_and_gun` instead scaffolds a versioned multi-file Godot capability pack and writes only a compact level definition: the model cannot silently reimplement movement, projectiles, enemy AI, checkpoints or boss state. The harness also writes `project.godot`, scenes, procedural SFX, ambience, narrative interludes and Victory flow |
 | QA Agent | Godot 4.7, headless + optional NVIDIA video QA | Imports assets and runs each level, then **plays it**. Autoplay proves input-driven movement; ten deterministic mechanic probes cover the nine classic templates plus run-and-gun structure, weapons, waves, progression/save integrity, combat transitions and victory. Structured results and every artifact remain in the truthful per-level ledger |
+| Quality Director | deterministic evidence review | Reviews every technically passing level across playability, objective completion, visual and motion presentation, balance, and reliability. It assigns findings to the responsible agent, permits one bounded polish pass, and closes the ship gate when a release misses the measured quality floor |
 
 Coder repairs are transactional. SAGA preserves the previous gameplay script,
 rechecks corrected output for contracts, asset references, and unsafe APIs, then
@@ -358,7 +359,7 @@ This is a real example, not a placeholder - it's what produced "The Clockwork He
 
 What happens, in order: Studio Director allocates an isolated `output/runs/<run-id>/` workspace and passes your prompt to the Game Designer, which returns a full design doc (title, mechanic, 3-5 levels with an authored difficulty curve and narrative beats) printed to the console and saved in that workspace; Asset Maker and Audio Agent then generate the hero/key-item/background art and the BGM in parallel; the Coder writes each level's GDScript and QA Agent builds and verifies it in Godot, with every failure triaged by the Studio Director - repair the script, regenerate it fresh, or regenerate a wrong asset - within `MAX_RETRIES` per level before moving to the next level. Total time for a 3-4 level game is typically several minutes, dominated by image generation and Coder retries.
 
-Final output reports sprite/BGM paths, the generated Godot project path, aggregate QA status, the latest screenshot, the latest mechanic-specific gameplay completion score, and—when enabled—the gameplay MP4. The isolated run directory also contains `design_doc.json` and a machine-readable versioned `run.json` manifest. Its `level_results` ledger retains every QA attempt, error, retry, advisory, objective metric, screenshot, video path and structured NVIDIA verdict per level; `ship_ready` is true only when every designed level has a recorded clean pass. When the Studio Director identifies an art-side defect, Asset Maker now regenerates only the named hero pose set, key item, extra sprite, or current-level background. The replaced file is backed up under `assets/revisions/`, and the old/new paths plus the Director's evidence are retained in both the affected level ledger and manifest. Advisory-only builds are labelled `passed_with_warnings`, and a required QA probe that cannot produce a verdict is labelled `blocked` rather than silently passing.
+Final output reports sprite/BGM paths, the generated Godot project path, aggregate QA status, the latest screenshot, the latest mechanic-specific gameplay completion score, and—when enabled—the gameplay MP4. The isolated run directory also contains `design_doc.json`, `quality_report.json`, and a machine-readable versioned `run.json` manifest. Its `level_results` ledger retains every QA attempt, error, retry, advisory, objective metric, screenshot, video path and structured NVIDIA verdict per level; `quality_results` preserves each pre/post-polish review, while `quality_report` exposes the current 0–100 score, evidence confidence, findings, ownership, repair plan, and gate decision. `ship_ready` is true only when every designed level has a recorded clean pass and the Quality Director gate is open. When the Studio Director identifies an art-side defect, Asset Maker now regenerates only the named hero pose set, key item, extra sprite, or current-level background. The replaced file is backed up under `assets/revisions/`, and the old/new paths plus the Director's evidence are retained in both the affected level ledger and manifest. Advisory-only builds are labelled `passed_with_warnings`, and a required QA probe that cannot produce a verdict is labelled `blocked` rather than silently passing.
 
 To play the result:
 ```sh

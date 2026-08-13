@@ -1,7 +1,7 @@
 """Builds the SAGA graph:
 
 Studio Director -> Game Designer -> Systems Architect -> (Asset Maker, Audio Agent)
-    -> Coder <-> QA Agent (per level, advancing through the design doc's
+    -> Coder <-> QA Agent -> Quality Director (per level, advancing through the design doc's
        levels via advance_level) -> END
 
 Failures do not loop straight back to the Coder: they return to the Studio
@@ -21,6 +21,7 @@ from saga.agents.qa_agent import qa_agent
 from saga.agents.studio_director import studio_director
 from saga.agents.systems_architect import systems_architect
 from saga.config import settings
+from saga.quality_director import quality_director
 from saga.state import GraphState
 
 MAX_RETRIES = 6
@@ -30,14 +31,22 @@ def _route_after_qa(state: GraphState) -> str:
     if state.get("ship_blocked"):
         return "done"
     if state.get("qa_passed"):
-        design_doc = state.get("design_doc") or {}
-        total_levels = len(design_doc.get("levels") or [None])
-        if (state.get("current_level") or 0) + 1 < total_levels:
-            return "next_level"
-        return "done"
+        return "quality"
     if (state.get("retry_count") or 0) >= MAX_RETRIES:
         return "done"
     return "triage"
+
+
+def _route_after_quality(state: GraphState) -> str:
+    if state.get("quality_repair_requested"):
+        return "triage"
+    if not state.get("qa_passed") or state.get("ship_blocked"):
+        return "done"
+    design_doc = state.get("design_doc") or {}
+    total_levels = len(design_doc.get("levels") or [None])
+    if (state.get("current_level") or 0) + 1 < total_levels:
+        return "next_level"
+    return "done"
 
 
 def _route_after_director(state: GraphState) -> str:
@@ -67,6 +76,8 @@ def advance_level(state: GraphState) -> GraphState:
         "qa_errors": None,
         "retry_count": 0,
         "ship_blocked": False,
+        "quality_repair_requested": False,
+        "quality_repair_owner": None,
     }
 
 
@@ -92,6 +103,7 @@ def build_graph(human_gate: bool = False):
     else:
         graph.add_node("coder", coder)
     graph.add_node("qa_agent", qa_agent)
+    graph.add_node("quality_director", quality_director)
     graph.add_node("advance_level", advance_level)
 
     graph.add_edge(START, "studio_director")
@@ -117,6 +129,11 @@ def build_graph(human_gate: bool = False):
     graph.add_conditional_edges(
         "qa_agent",
         _route_after_qa,
+        {"triage": "studio_director", "quality": "quality_director", "done": END},
+    )
+    graph.add_conditional_edges(
+        "quality_director",
+        _route_after_quality,
         {"triage": "studio_director", "next_level": next_level_target, "done": END},
     )
     if human_gate:

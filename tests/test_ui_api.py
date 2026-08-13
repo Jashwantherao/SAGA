@@ -1,6 +1,20 @@
 import json
 
+import pytest
+from pydantic import ValidationError
+
 from saga import ui_api
+
+
+def test_generation_request_accepts_detailed_game_briefs():
+    request = ui_api.GenerationRequest(idea="A" * 4000, levels=1)
+
+    assert len(request.idea) == 4000
+
+
+def test_generation_request_rejects_ideas_above_documented_limit():
+    with pytest.raises(ValidationError):
+        ui_api.GenerationRequest(idea="A" * 4001, levels=1)
 
 
 def test_read_manifest_exposes_qa_ledger(tmp_path):
@@ -13,6 +27,7 @@ def test_read_manifest_exposes_qa_ledger(tmp_path):
                 "status": "passed",
                 "ship_ready": True,
                 "level_results": [{"level_index": 0, "status": "passed"}],
+                "quality_report": {"overall_score": 92, "gate": {"passed": True}},
             }
         ),
         encoding="utf-8",
@@ -23,6 +38,7 @@ def test_read_manifest_exposes_qa_ledger(tmp_path):
     assert manifest["id"] == "sample-run"
     assert manifest["ship_ready"] is True
     assert manifest["level_results"][0]["status"] == "passed"
+    assert manifest["quality_report"]["overall_score"] == 92
     assert manifest["complete"] is True
 
 

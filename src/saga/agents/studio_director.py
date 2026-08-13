@@ -122,7 +122,27 @@ def _triage(state: GraphState) -> GraphState:
         f"(retry {retry_count}/{MAX_RETRIES}) - triaging"
     )
     evidence = _evidence_text(state, MAX_RETRIES)
-    if backend in {"deterministic", "off"}:
+    # The Quality Director has already classified the evidence and selected
+    # the responsible discipline. Preserve that deterministic ownership
+    # instead of paying another model to reinterpret the same findings.
+    quality_owner = state.get("quality_repair_owner")
+    if state.get("quality_repair_requested") and quality_owner == "asset_maker":
+        decision = {
+            "action": "reasset",
+            "reasoning": "Quality Director assigned the polish defect to generated art.",
+            "note_to_coder": "",
+            "reasset_field": state.get("quality_reasset_field") or "level_background",
+            "reasset_value": state.get("quality_reasset_value") or "",
+        }
+    elif state.get("quality_repair_requested"):
+        decision = {
+            "action": "fix",
+            "reasoning": f"Quality Director assigned the polish defect to {quality_owner or 'code'}.",
+            "note_to_coder": "Apply the Quality Director findings as a focused polish pass.",
+            "reasset_field": "",
+            "reasset_value": "",
+        }
+    elif backend in {"deterministic", "off"}:
         decision = _deterministic_decision(retry_count)
     else:
         try:
@@ -306,7 +326,11 @@ def _apply(state: GraphState, decision: dict) -> GraphState:
             "errors": [e[:200] for e in (state.get("qa_errors") or [])][:6],
         }
     )
-    update: GraphState = {"director_action": action, "director_history": history}
+    update: GraphState = {
+        "director_action": action,
+        "director_history": history,
+        "quality_repair_requested": False,
+    }
 
     if action == "fix":
         note = (decision.get("note_to_coder") or "").strip()

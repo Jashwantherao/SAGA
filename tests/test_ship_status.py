@@ -180,6 +180,26 @@ def test_required_probe_failure_blocks_shipping():
     assert (status, ready) == ("blocked", False)
 
 
+def test_quality_director_gate_can_block_a_technically_passing_run():
+    result = _result(_clean_levels())
+    result["quality_report"] = {
+        "status": "needs_improvement",
+        "gate": {"passed": False, "reasons": ["visual presentation below threshold"]},
+    }
+
+    assert assess_ship_status(result) == ("failed", False)
+
+
+def test_passing_quality_report_preserves_clean_ship_status():
+    result = _result(_clean_levels())
+    result["quality_report"] = {
+        "status": "passed",
+        "gate": {"passed": True, "reasons": []},
+    }
+
+    assert assess_ship_status(result) == ("passed", True)
+
+
 def test_video_advisory_is_reported_as_a_shippable_warning():
     status, ready = assess_ship_status(
         _result(

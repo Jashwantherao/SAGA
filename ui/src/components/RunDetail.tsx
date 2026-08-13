@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { artifactUrl, formatBytes, formatDate, getJSON, statusLabel } from '../api'
-import type { DesignDoc, LevelAttempt, LevelResult, RunFiles, SagaRun, SystemBuildResult, VideoQaResult } from '../types'
+import type { DesignDoc, LevelAttempt, LevelResult, QualityReport, RunFiles, SagaRun, SystemBuildResult, VideoQaResult } from '../types'
 import Icon from './Icon'
 
 type Tab = 'qa' | 'assets' | 'design'
@@ -65,6 +65,11 @@ export default function RunDetail({ run, onClose, onOpen, onDelete, deletable }:
                 {detail.ship_ready ? 'Ship ready' : statusLabel(detail.status)}
               </span>
               {levels.length > 0 && <span className="chip">{passedLevels}/{levels.length} levels passed</span>}
+              {detail.quality_report && (
+                <span className={`chip quality-chip ${detail.quality_report.gate.passed ? 'passed' : 'failed'}`}>
+                  Quality {detail.quality_report.overall_score}/100
+                </span>
+              )}
               {detail.retry_count !== undefined && <span className="chip">{detail.retry_count} retries</span>}
               {detail.coder_model && <span className="chip mono">{detail.coder_model}</span>}
               {files && <span className="chip">{formatBytes(files.total_bytes)} · {files.script_count} scripts</span>}
@@ -110,7 +115,12 @@ export default function RunDetail({ run, onClose, onOpen, onDelete, deletable }:
           <button className={tab === 'design' ? 'active' : ''} onClick={() => setTab('design')} disabled={!design}><Icon name="doc" /> Design doc</button>
         </nav>
 
-        {tab === 'qa' && <QaLedger run={detail} levels={levels} />}
+        {tab === 'qa' && (
+          <>
+            {detail.quality_report && <QualityReportCard report={detail.quality_report} />}
+            <QaLedger run={detail} levels={levels} />
+          </>
+        )}
         {tab === 'assets' && <AssetGallery runId={run.id} files={files} onZoom={setLightbox} />}
         {tab === 'design' && design && <DesignView design={design} />}
       </section>
@@ -121,6 +131,63 @@ export default function RunDetail({ run, onClose, onOpen, onDelete, deletable }:
         </div>
       )}
     </div>
+  )
+}
+
+function QualityReportCard({ report }: { report: QualityReport }) {
+  const grouped = new Map<string, { score: number; count: number; confidence: Set<string> }>()
+  for (const level of report.level_reports) {
+    for (const [name, dimension] of Object.entries(level.dimensions)) {
+      const current = grouped.get(name) || { score: 0, count: 0, confidence: new Set<string>() }
+      current.score += dimension.score
+      current.count += 1
+      current.confidence.add(dimension.confidence)
+      grouped.set(name, current)
+    }
+  }
+  const actionable = report.findings.filter((finding) => finding.severity !== 'info')
+  return (
+    <section className={`quality-report ${report.gate.passed ? 'passed' : 'failed'}`}>
+      <div className="quality-score">
+        <strong>{Math.round(report.overall_score)}</strong><span>/100</span>
+        <small>QUALITY SCORE</small>
+      </div>
+      <div className="quality-body">
+        <div className="quality-head">
+          <div>
+            <p className="eyebrow">QUALITY DIRECTOR</p>
+            <h3>{report.gate.passed ? 'Production bar cleared' : 'Polish gate is closed'}</h3>
+          </div>
+          <span className={`status ${report.gate.passed ? 'passed' : 'failed'}`}>
+            {report.gate.passed ? 'Approved' : 'Needs improvement'}
+          </span>
+        </div>
+        <div className="quality-dimensions">
+          {[...grouped.entries()].map(([name, value]) => {
+            const score = Math.round(value.score / value.count)
+            return (
+              <div key={name} title={`Evidence: ${[...value.confidence].join(', ')}`}>
+                <span>{name.replaceAll('_', ' ')}</span><b>{score}</b>
+                <i><em style={{ width: `${score}%` }} /></i>
+              </div>
+            )
+          })}
+        </div>
+        {actionable.length > 0 && (
+          <div className="quality-findings">
+            {actionable.slice(0, 5).map((finding, index) => (
+              <div key={`${finding.code}-${index}`}>
+                <span>{finding.owner.replaceAll('_', ' ')}</span>
+                <p><b>{finding.summary}</b>{finding.evidence}</p>
+              </div>
+            ))}
+          </div>
+        )}
+        {!report.gate.passed && report.gate.reasons.length > 0 && (
+          <small className="quality-gate-reason">Ship gate: {report.gate.reasons.join(' · ')}</small>
+        )}
+      </div>
+    </section>
   )
 }
 

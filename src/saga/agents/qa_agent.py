@@ -1317,6 +1317,7 @@ def _record_attempt(
     gameplay_video_path: str | None = None,
     video_qa_result: dict | None = None,
     video_notes: list[str] | None = None,
+    playability_result: dict | None = None,
     blocked: bool = False,
 ) -> list[dict]:
     """Return a new durable QA ledger with this attempt appended.
@@ -1360,6 +1361,7 @@ def _record_attempt(
             "gameplay_video_path": gameplay_video_path,
             "video_qa_result": video_qa_result,
             "video_notes": video_notes,
+            "playability_result": playability_result,
             "coder_model": state.get("coder_model"),
         }
     )
@@ -1378,6 +1380,7 @@ def _record_attempt(
         "gameplay_video_path": gameplay_video_path,
         "video_qa_result": video_qa_result,
         "video_notes": video_notes,
+        "playability_result": playability_result,
         "coder_model": state.get("coder_model"),
         "asset_replacements": asset_replacements,
     }
@@ -1534,6 +1537,7 @@ def qa_agent(state: GraphState) -> GraphState:
             errors=play_process_errors or [f"Autoplay exited with code {play.returncode}"],
             blocked=blocked,
         )
+    playability_result = None
     verdict = re.search(
         r"\[AUTOPLAY\] idle_rate=([\d.]+) input_rate=([\d.]+) label_states=(\d+)", play_out
     )
@@ -1546,6 +1550,13 @@ def qa_agent(state: GraphState) -> GraphState:
         # Measured on one real build and a copy of it with input disabled:
         # 4.28 vs 0.97 against an identical idle rate of ~0.89.
         moved = input_rate > max(idle_rate * 1.5, 0.5)
+        playability_result = {
+            "status": "passed" if moved else "failed",
+            "responsive": moved,
+            "idle_rate": idle_rate,
+            "input_rate": input_rate,
+            "label_states": label_states,
+        }
         print(
             f"[QA Agent] Autoplay: idle={idle_rate:.2f} input={input_rate:.2f} "
             f"responsive={moved} label_states={label_states}"
@@ -1868,6 +1879,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "gameplay_video_path": gameplay_video_path,
         "video_qa_result": video_qa_result,
         "video_notes": video_notes,
+        "playability_result": playability_result,
         "level_results": _record_attempt(
             state,
             passed=True,
@@ -1879,6 +1891,7 @@ def qa_agent(state: GraphState) -> GraphState:
             gameplay_video_path=gameplay_video_path,
             video_qa_result=video_qa_result,
             video_notes=video_notes,
+            playability_result=playability_result,
         ),
         "ship_blocked": False,
         "system_build_results": system_build_results,

@@ -29,11 +29,13 @@ const IDEA_POOL = [
   'A sentient teapot brews courage potions for knights afraid of the dark',
   'A magnetic scrapyard robot builds a bridge home from falling stars',
 ]
+const MAX_IDEA_LENGTH = 4000
 
 let toastId = 0
 
 function App() {
   const [view, setView] = useState<View>('studio')
+  const [commandOpen, setCommandOpen] = useState(false)
   const [health, setHealth] = useState<Health | null>(null)
   const [services, setServices] = useState<ManagedService[]>([])
   const [serviceBusy, setServiceBusy] = useState<string | null>(null)
@@ -124,6 +126,18 @@ function App() {
     return () => window.clearInterval(poll)
   }, [isRunning, loadJob])
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setCommandOpen((current) => !current)
+      }
+      if (event.key === 'Escape') setCommandOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   async function createGame(idea: string, levels: number, skipPreflight: boolean) {
     try {
       const payload = await sendJSON<Job>('/generations', 'POST', { idea, levels, skip_preflight: skipPreflight })
@@ -206,10 +220,12 @@ function App() {
           <span><strong>SAGA</strong><small>Autonomous game studio</small></span>
         </button>
         <nav>
+          <span className="nav-caption">Workspace</span>
           <NavButton active={view === 'studio'} icon="grid" label="Studio" onClick={() => setView('studio')} />
           <NavButton active={view === 'create'} icon="spark" label="Create game" onClick={() => setView('create')} />
           <NavButton active={view === 'library'} icon="library" label="Game library" onClick={() => setView('library')} count={runs.length} />
           <span className="nav-divider" />
+          <span className="nav-caption">Infrastructure</span>
           <NavButton active={view === 'services'} icon="services" label="Services" onClick={() => setView('services')} />
           <NavButton active={view === 'models'} icon="models" label="Models & APIs" onClick={() => setView('models')} />
         </nav>
@@ -235,6 +251,12 @@ function App() {
                 <span className="live-dot" /> {activeStage}{job?.started_at ? ` · ${elapsedBetween(job.started_at)}` : ''}
               </button>
             )}
+            <button className="command-trigger" onClick={() => setCommandOpen(true)} aria-label="Open command palette">
+              <Icon name="search" /><span>Jump to…</span><kbd>Ctrl K</kbd>
+            </button>
+            <span className={`topbar-health ${health?.ready ? 'ready' : ''}`} title="Current studio health">
+              <i />{health?.ready ? 'Ready' : loading ? 'Checking' : 'Attention'}
+            </span>
             <button className="primary compact" onClick={() => setView('create')}><span>＋</span> New game</button>
           </div>
         </header>
@@ -293,6 +315,14 @@ function App() {
           onClose={() => setSelectedRun(null)}
           onOpen={(target) => void openRun(selectedRun, target)}
           onDelete={() => void deleteRun(selectedRun)}
+        />
+      )}
+      {commandOpen && (
+        <CommandPalette
+          current={view}
+          onClose={() => setCommandOpen(false)}
+          onNavigate={(target) => { setView(target); setCommandOpen(false) }}
+          onRefresh={() => { void loadStatus(); setCommandOpen(false) }}
         />
       )}
       <Toasts toasts={toasts} onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))} />
@@ -355,7 +385,7 @@ function StudioView({ health, loading, runs, job, history, isRunning, activeStag
             <>
               <div className="stage-track">
                 {['Design', 'Assets', 'Build', 'QA', 'Ship'].map((stage, index) => (
-                  <div className={`stage ${index <= stageIndex(activeStage) ? 'done' : ''}`} key={stage}>
+                  <div className={`stage ${index < stageIndex(activeStage) ? 'done' : ''} ${index === stageIndex(activeStage) ? 'active' : ''}`} key={stage}>
                     <span>{index < stageIndex(activeStage) ? '✓' : index + 1}</span><small>{stage}</small>
                   </div>
                 ))}
@@ -382,6 +412,11 @@ function StudioView({ health, loading, runs, job, history, isRunning, activeStag
               <div className="orb"><span>✦</span></div>
               <h3>Your next game starts with one sentence.</h3>
               <p>SAGA designs it, creates the assets, builds it in Godot, and verifies every level.</p>
+              <div className="empty-pipeline" aria-label="SAGA production pipeline">
+                {['Design', 'Art + audio', 'Godot build', 'Playtest', 'Ship gate'].map((step, index) => (
+                  <span key={step}><b>{String(index + 1).padStart(2, '0')}</b>{step}</span>
+                ))}
+              </div>
               <button className="primary" onClick={onCreate}>Create a game <span>→</span></button>
             </div>
           )}
@@ -480,9 +515,9 @@ function CreateView({ health, isRunning, onSubmit }: {
             onChange={(event) => setIdea(event.target.value)}
             onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') void submit() }}
             placeholder="A tiny lighthouse keeper redirects moonbeams to guide ghost ships through a storm…"
-            minLength={3} maxLength={500} required
+            minLength={3} maxLength={MAX_IDEA_LENGTH} required
           />
-          <div className="prompt-footer"><span>Describe the fantasy, player action, and pressure. Ctrl+Enter to generate.</span><b>{idea.length}/500</b></div>
+          <div className="prompt-footer"><span>Describe the fantasy, player action, progression, and pressure. Ctrl+Enter to generate.</span><b className={idea.length > MAX_IDEA_LENGTH * .9 ? 'near-limit' : ''}>{idea.length.toLocaleString()}/{MAX_IDEA_LENGTH.toLocaleString()}</b></div>
           <div className="suggestions">
             <span>Try one:</span>
             {IDEA_POOL.slice(0, 3).map((sample) => (
@@ -492,6 +527,10 @@ function CreateView({ health, isRunning, onSubmit }: {
         </section>
         <aside className="panel production-settings">
           <p className="eyebrow">PRODUCTION SETTINGS</p>
+          <div className={`preflight-summary ${health?.ready ? 'ready' : ''}`}>
+            <span><i />{health?.ready ? 'Studio preflight ready' : 'Preflight needs attention'}</span>
+            <b>{health?.checks.filter((check) => check.ok).length || 0}/{health?.checks.length || 0}</b>
+          </div>
           <label>Number of levels</label>
           <div className="level-picker">
             {[1, 2, 3, 4, 5].map((value) => (
@@ -592,6 +631,55 @@ function NavButton({ active, icon, label, onClick, count }: { active: boolean; i
   )
 }
 
+function CommandPalette({ current, onClose, onNavigate, onRefresh }: {
+  current: View
+  onClose: () => void
+  onNavigate: (view: View) => void
+  onRefresh: () => void
+}) {
+  const [query, setQuery] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  const commands: { label: string; detail: string; icon: string; view?: View; action?: () => void }[] = [
+    { label: 'Studio overview', detail: 'Production, health and recent builds', icon: 'grid', view: 'studio' },
+    { label: 'Create a new game', detail: 'Start from a one-sentence premise', icon: 'spark', view: 'create' },
+    { label: 'Open game library', detail: 'Browse runs and truthful QA evidence', icon: 'library', view: 'library' },
+    { label: 'Manage services', detail: 'Ollama, ComfyUI and MusicGen', icon: 'services', view: 'services' },
+    { label: 'Configure models & APIs', detail: 'Route each studio agent', icon: 'models', view: 'models' },
+    { label: 'Refresh studio health', detail: 'Run local readiness checks again', icon: 'refresh', action: onRefresh },
+  ]
+  const visible = commands.filter((command) => `${command.label} ${command.detail}`.toLowerCase().includes(query.toLowerCase()))
+
+  useEffect(() => inputRef.current?.focus(), [])
+
+  function run(command: typeof commands[number]) {
+    if (command.view) onNavigate(command.view)
+    else command.action?.()
+  }
+
+  return (
+    <div className="command-backdrop" onMouseDown={onClose}>
+      <section className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="command-search">
+          <Icon name="search" />
+          <input ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && visible[0]) run(visible[0]) }} placeholder="Jump to a studio surface…" />
+          <kbd>Esc</kbd>
+        </div>
+        <div className="command-list">
+          {visible.map((command) => (
+            <button key={command.label} className={command.view === current ? 'current' : ''} onClick={() => run(command)}>
+              <span><Icon name={command.icon} /></span>
+              <div><strong>{command.label}</strong><small>{command.detail}</small></div>
+              {command.view === current && <em>Current</em>}
+            </button>
+          ))}
+          {!visible.length && <p>No command matches “{query}”.</p>}
+        </div>
+        <footer><span><kbd>Enter</kbd> open</span><span><kbd>Ctrl K</kbd> toggle</span><b>SAGA COMMAND DECK</b></footer>
+      </section>
+    </div>
+  )
+}
+
 function Metric({ label, value, detail, tone }: { label: string; value: string; detail: string; tone?: string }) {
   return <article className={`metric ${tone || ''}`}><div><span>{label}</span><strong>{value}</strong><small>{detail}</small></div><i /></article>
 }
@@ -607,7 +695,10 @@ function RunCard({ run, onSelect, onPlay }: { run: SagaRun; onSelect: () => void
       </div>
       <div className="run-copy">
         <h3>{run.title || run.idea || 'Production in progress'}</h3>
-        <p>{run.level_results?.length || 0} levels · {run.retry_count || 0} retries</p>
+        <p>
+          {run.level_results?.length || 0} levels · {run.retry_count || 0} retries
+          {run.quality_report ? ` · quality ${Math.round(run.quality_report.overall_score)}` : ''}
+        </p>
         <div><span>{formatDate(run.updated_at)}</span><b>{run.coder_model || 'SAGA'}</b></div>
       </div>
     </article>

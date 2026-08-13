@@ -33,6 +33,15 @@ export type LevelAttempt = {
   objective_result?: Record<string, unknown>
   video_qa_result?: VideoQaResult
   coder_model?: string
+  playability_result?: PlayabilityResult
+}
+
+export type PlayabilityResult = {
+  status?: string
+  responsive?: boolean
+  idle_rate?: number
+  input_rate?: number
+  label_states?: number
 }
 
 export type LevelResult = {
@@ -49,6 +58,44 @@ export type LevelResult = {
   qa_errors?: string[]
   vision_notes?: string[]
   video_notes?: string[]
+  playability_result?: PlayabilityResult
+}
+
+export type QualityDimension = {
+  score: number
+  weight: number
+  confidence: string
+}
+
+export type QualityFinding = {
+  dimension: string
+  owner: string
+  severity: 'critical' | 'high' | 'medium' | 'info'
+  code: string
+  summary: string
+  evidence: string
+  recommended_action: string
+}
+
+export type QualityLevelReport = {
+  level_index: number
+  level_number: number
+  name: string
+  overall_score: number
+  dimensions: Record<string, QualityDimension>
+  findings: QualityFinding[]
+  gate: { passed: boolean; minimum_score: number; reasons: string[] }
+}
+
+export type QualityReport = {
+  report_version: number
+  status: string
+  overall_score: number
+  levels_reviewed: number
+  expected_levels: number
+  level_reports: QualityLevelReport[]
+  findings: QualityFinding[]
+  gate: { passed: boolean; minimum_score: number; reasons: string[] }
 }
 
 export type SystemBuildResult = {
@@ -83,6 +130,7 @@ export type SagaRun = {
   vision_notes?: string[]
   level_results?: LevelResult[]
   system_build_results?: SystemBuildResult[]
+  quality_report?: QualityReport
 }
 
 export type RunFileEntry = { path: string; name: string; size: number }
