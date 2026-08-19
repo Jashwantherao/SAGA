@@ -18,6 +18,7 @@ def _state(**level_overrides):
         },
         "objective_result": {"status": "passed", "completion_score": 1.0},
         "screenshot_path": "screenshot.png",
+        "vision_evaluated": True,
         "video_qa_result": {"status": "passed", "evidence": "clean motion"},
         "vision_notes": [],
         "video_notes": [],
@@ -54,6 +55,27 @@ def test_visual_quality_defect_closes_gate_and_assigns_asset_owner():
     assert review["gate"]["passed"] is False
     assert review["dimensions"]["visual_presentation"]["score"] == 45
     assert review["findings"][0]["owner"] == "asset_maker"
+
+
+def test_packed_game_without_a_valid_visual_verdict_cannot_ship():
+    state = _state(vision_evaluated=False)
+
+    review = review_level(state)
+    result = quality_director(state)
+
+    assert review["gate"]["passed"] is False
+    assert review["dimensions"]["visual_presentation"] == {
+        "score": 30,
+        "weight": 20,
+        "confidence": "not_evaluated",
+    }
+    assert any(
+        finding["code"] == "visual_review_unavailable"
+        and finding["owner"] == "qa_agent"
+        for finding in review["findings"]
+    )
+    assert result["quality_repair_requested"] is False
+    assert result["qa_passed"] is False
 
 
 def test_motion_orientation_defect_is_owned_by_coder():

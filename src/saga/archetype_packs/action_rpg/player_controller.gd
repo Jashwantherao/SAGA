@@ -42,7 +42,7 @@ func _physics_process(delta: float) -> void:
 		input_vector = Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
 	if input_vector.length_squared() > 0.0:
 		facing = input_vector.normalized()
-	var dash_pressed := Input.is_key_pressed(KEY_SHIFT)
+	var dash_pressed := Input.is_key_pressed(KEY_SHIFT) or Input.is_action_pressed("rpg_dash")
 	var dash_now := dash_unlocked and dash_pressed and not _dash_latched and dash_cooldown_left <= 0.0
 	velocity = input_vector.normalized() * move_speed * (2.4 if dash_now else 1.0)
 	if dash_now:
@@ -50,7 +50,7 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 	position.x = clampf(position.x, 34.0, 990.0)
 	position.y = clampf(position.y, 92.0, 542.0)
-	var pressed := Input.is_key_pressed(KEY_Z) or Input.is_action_pressed("ui_accept")
+	var pressed := Input.is_key_pressed(KEY_Z) or Input.is_action_pressed("rpg_attack")
 	if pressed and not _attack_latched:
 		attack()
 	_attack_latched = pressed

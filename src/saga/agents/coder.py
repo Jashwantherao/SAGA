@@ -2596,6 +2596,303 @@ func _fail(reason: String) -> void:
 	get_tree().quit()
 """
 
+ACTION_RPG_PLAYTHROUGH_GD = """extends Node
+
+const FRAME_LIMIT := 6000
+const MAX_DEATHS := 3
+var _active := false
+var _frame := 0
+var _stage := "entry_spark"
+var _last_position := Vector2.ZERO
+var _distance_moved := 0.0
+var _attacks := 0
+var _interactions := 0
+var _deaths := 0
+var _over_counted := false
+var _movement := false
+var _melee := false
+var _pickup := false
+var _inventory := false
+var _dialogue := false
+var _quest := false
+var _checkpoint := false
+var _dash := false
+var _boss_phase := false
+var _visited := {}
+
+func _ready() -> void:
+	_active = "--action-rpg-playthrough" in OS.get_cmdline_user_args()
+	if _active:
+		process_priority = 720
+		for action in ["rpg_attack", "rpg_interact", "rpg_inventory", "rpg_dash"]:
+			if not InputMap.has_action(action):
+				InputMap.add_action(action)
+
+func _physics_process(_delta: float) -> void:
+	if not _active:
+		return
+	_frame += 1
+	if _frame >= FRAME_LIMIT:
+		_fail("timeout_%s" % _stage)
+		return
+	var levels := get_tree().get_nodes_in_group("saga_action_rpg_level")
+	if levels.is_empty():
+		_release_all()
+		return
+	var level: Node = levels[0]
+	var player := level.get("player") as Node2D
+	if not is_instance_valid(player):
+		_fail("player_missing")
+		return
+	var moved := player.global_position.distance_to(_last_position)
+	if _last_position != Vector2.ZERO:
+		_distance_moved += moved
+	_movement = _movement or _distance_moved > 120.0
+	_last_position = player.global_position
+	var player_velocity: Vector2 = player.get("velocity")
+	_dash = _dash or player_velocity.length() > float(player.get("move_speed")) * 1.5
+	var room := int(level.get("room_index"))
+	_visited[room] = true
+	var checkpoint_data := level.get("checkpoint_data") as Dictionary
+	_checkpoint = _checkpoint or (not checkpoint_data.is_empty() and int(checkpoint_data.get("room_index", -1)) >= 1)
+	var collected := level.get("collected_pickups") as Array
+	_pickup = _pickup or (
+		"entry_sparks" in collected and "vault_sparks" in collected and "ember_charm" in collected
+	)
+	_dialogue = _dialogue or bool(level.get("dialogue_open"))
+	_quest = _quest or str(level.get("quest_stage")) in ["forge_open", "complete"]
+	var state := str(level.get("state"))
+	if _frame % 600 == 0:
+		print("[ACTION_RPG_PLAYTHROUGH_PROGRESS] frame=%d stage=%s room=%d x=%.1f y=%.1f hp=%d deaths=%d" % [_frame, _stage, room, player.position.x, player.position.y, int(player.get("health")), _deaths])
+	if state == "won":
+		_pass()
+		return
+	if state == "over":
+		_release_all()
+		if not _over_counted:
+			_over_counted = true
+			_deaths += 1
+			if _deaths > MAX_DEATHS:
+				_fail("death_budget_exceeded")
+				return
+		_pulse("ui_accept", 12)
+		return
+	_over_counted = false
+	if state != "playing":
+		_release_all()
+		return
+
+	if _stage not in ["inventory_open", "inventory_close", "hermit_dialogue", "boss"] and _defend(player):
+		return
+	_release_action("rpg_attack")
+
+	match _stage:
+		"entry_spark":
+			if "entry_sparks" in collected:
+				_stage = "enter_vault"
+			else:
+				_navigate(player, Vector2(500, 330))
+		"enter_vault":
+			if room == 1:
+				_stage = "vault_sparks"
+			else:
+				_navigate(player, Vector2(990, 330))
+		"vault_sparks":
+			if "vault_sparks" in collected:
+				_stage = "vault_charm"
+			else:
+				_navigate(player, Vector2(500, 330))
+		"vault_charm":
+			if "ember_charm" in collected:
+				_stage = "inventory_open"
+			else:
+				_navigate(player, Vector2(600, 180))
+		"inventory_open":
+			_release_movement()
+			if bool(level.get("inventory_open")):
+				_inventory = true
+				_stage = "inventory_close"
+			else:
+				_pulse_counted("rpg_inventory", 14, false)
+		"inventory_close":
+			_release_movement()
+			if not bool(level.get("inventory_open")):
+				_stage = "return_to_hermit"
+			else:
+				_pulse_counted("rpg_inventory", 14, false)
+		"return_to_hermit":
+			if room == 0:
+				_stage = "hermit_dialogue"
+			elif player.position.y < 410.0:
+				# Drop below the vault's central obstacle before heading west.
+				# A direct x-first line collides with its left face forever.
+				_navigate(player, Vector2(player.position.x, 430))
+			else:
+				_navigate(player, Vector2(34, 430))
+		"hermit_dialogue":
+			var npc := level.get("npc") as Node2D
+			if str(level.get("quest_stage")) == "forge_open":
+				_quest = true
+				_stage = "travel_to_forge"
+			elif not is_instance_valid(npc):
+				_fail("hermit_missing")
+			elif player.global_position.distance_to(npc.global_position) > 68.0:
+				_release_action("rpg_interact")
+				_navigate(player, npc.global_position)
+			else:
+				_release_movement()
+				_pulse_counted("rpg_interact", 14, true)
+		"travel_to_forge":
+			if room == 2:
+				_stage = "boss"
+			elif room == 0:
+				_navigate(player, Vector2(990, 270))
+				_try_dash()
+			else:
+				_navigate(player, Vector2(990, 320))
+				_try_dash()
+		"boss":
+			_fight_boss(player)
+
+func _nearest_enemy(player: Node2D) -> Node2D:
+	var nearest: Node2D = null
+	var nearest_distance := INF
+	for candidate in get_tree().get_nodes_in_group("action_rpg_enemies"):
+		if not is_instance_valid(candidate) or int(candidate.get("health")) <= 0:
+			continue
+		var distance := player.global_position.distance_to(candidate.global_position)
+		if distance < nearest_distance:
+			nearest = candidate
+			nearest_distance = distance
+	return nearest
+
+func _defend(player: Node2D) -> bool:
+	var enemy := _nearest_enemy(player)
+	if not is_instance_valid(enemy) or player.global_position.distance_to(enemy.global_position) > 76.0:
+		return false
+	var before := int(enemy.get("health"))
+	_face_and_attack(player, enemy.global_position)
+	_melee = _melee or before < int(enemy.get("max_health"))
+	return true
+
+func _fight_boss(player: Node2D) -> void:
+	var bosses := get_tree().get_nodes_in_group("action_rpg_boss")
+	if bosses.is_empty():
+		_release_all()
+		return
+	var boss := bosses[0] as Node2D
+	if not is_instance_valid(boss):
+		return
+	_boss_phase = _boss_phase or int(boss.get("phase")) >= 2
+	_melee = _melee or int(boss.get("health")) < int(boss.get("max_health"))
+	var distance := player.global_position.distance_to(boss.global_position)
+	if str(boss.get("state")) == "slam_telegraph":
+		_release_action("rpg_attack")
+		var away := boss.global_position.direction_to(player.global_position)
+		_move_vector(away)
+		_try_dash()
+	elif distance > 72.0:
+		_release_action("rpg_attack")
+		_navigate(player, boss.global_position)
+	else:
+		_face_and_attack(player, boss.global_position)
+
+func _face_and_attack(player: Node2D, target: Vector2) -> void:
+	_move_vector(player.global_position.direction_to(target))
+	if _frame % 30 < 2:
+		Input.action_press("rpg_attack")
+		if _frame % 30 == 0:
+			_attacks += 1
+	else:
+		Input.action_release("rpg_attack")
+
+func _navigate(player: Node2D, target: Vector2) -> void:
+	var delta := target - player.global_position
+	if absf(delta.x) > 18.0:
+		_move_vector(Vector2(signf(delta.x), 0))
+	elif absf(delta.y) > 18.0:
+		_move_vector(Vector2(0, signf(delta.y)))
+	else:
+		_release_movement()
+
+func _move_vector(direction: Vector2) -> void:
+	_release_movement()
+	if absf(direction.x) >= absf(direction.y) and absf(direction.x) > 0.1:
+		Input.action_press("ui_right" if direction.x > 0.0 else "ui_left")
+	elif absf(direction.y) > 0.1:
+		Input.action_press("ui_down" if direction.y > 0.0 else "ui_up")
+
+func _try_dash() -> void:
+	if _frame % 50 < 2:
+		Input.action_press("rpg_dash")
+	else:
+		Input.action_release("rpg_dash")
+
+func _pulse_counted(action: String, period: int, interaction: bool) -> void:
+	if _frame % period < 2:
+		Input.action_press(action)
+		if _frame % period == 0 and interaction:
+			_interactions += 1
+	else:
+		Input.action_release(action)
+
+func _pulse(action: String, period: int) -> void:
+	if _frame % period < 2:
+		Input.action_press(action)
+	else:
+		Input.action_release(action)
+
+func _release_action(action: String) -> void:
+	Input.action_release(action)
+
+func _release_movement() -> void:
+	for action in ["ui_left", "ui_right", "ui_up", "ui_down"]:
+		Input.action_release(action)
+
+func _release_all() -> void:
+	_release_movement()
+	for action in ["ui_accept", "rpg_attack", "rpg_interact", "rpg_inventory", "rpg_dash"]:
+		Input.action_release(action)
+
+func _metrics(status: String, reason: String) -> void:
+	var rooms := _visited.size() >= 3
+	var won := status == "passed"
+	print("[ACTION_RPG_PLAYTHROUGH] status=%s movement=%s melee=%s pickup=%s inventory=%s dialogue=%s quest=%s rooms=%s checkpoint=%s dash=%s boss_phase=%s win=%s frames=%d attacks=%d interactions=%d deaths=%d reason=%s" % [
+		status, str(_movement).to_lower(), str(_melee).to_lower(), str(_pickup).to_lower(),
+		str(_inventory).to_lower(), str(_dialogue).to_lower(), str(_quest).to_lower(),
+		str(rooms).to_lower(), str(_checkpoint).to_lower(), str(_dash).to_lower(),
+		str(_boss_phase).to_lower(), str(won).to_lower(), _frame, _attacks,
+		_interactions, _deaths, reason
+	])
+
+func _pass() -> void:
+	var missing := []
+	var checks := {
+		"movement": _movement, "melee": _melee, "pickup": _pickup,
+		"inventory": _inventory, "dialogue": _dialogue, "quest": _quest,
+		"rooms": _visited.size() >= 3, "checkpoint": _checkpoint,
+		"dash": _dash, "boss_phase": _boss_phase
+	}
+	for key in checks:
+		if not bool(checks[key]):
+			missing.append(key)
+	if not missing.is_empty():
+		_fail("missing_%s" % "_".join(missing))
+		return
+	_active = false
+	_release_all()
+	_metrics("passed", "none")
+	get_tree().quit()
+
+func _fail(reason: String) -> void:
+	if not _active:
+		return
+	_active = false
+	_release_all()
+	_metrics("failed", reason)
+	get_tree().quit()
+"""
+
 CAMPAIGN_PROBE_GD = """extends Node
 
 var _active := false
@@ -2727,6 +3024,7 @@ def _write_harness_project(
             'Music="*res://music.gd"',
             'ActionRpgProfile="*res://archetypes/action_rpg/progression_profile.gd"\n'
             'ActionRpgProbe="*res://action_rpg_probe.gd"\n'
+            'ActionRpgPlaythrough="*res://action_rpg_playthrough.gd"\n'
             'Music="*res://music.gd"',
         )
     (project_dir / "project.godot").write_text(project_config, encoding="utf-8")
@@ -2746,6 +3044,7 @@ def _write_harness_project(
         "run_and_gun_probe.gd": RUN_AND_GUN_PROBE_GD,
         "action_rpg_probe.gd": ACTION_RPG_PROBE_GD,
         "run_and_gun_playthrough.gd": RUN_AND_GUN_PLAYTHROUGH_GD,
+        "action_rpg_playthrough.gd": ACTION_RPG_PLAYTHROUGH_GD,
         "campaign_probe.gd": CAMPAIGN_PROBE_GD,
         "music.gd": _build_music_gd(bgm_filename),
         "game.gd": _build_game_gd(

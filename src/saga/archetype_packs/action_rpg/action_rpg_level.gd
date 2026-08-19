@@ -35,6 +35,7 @@ func level_definition() -> Dictionary:
 
 func _ready() -> void:
 	add_to_group("saga_action_rpg_level")
+	_ensure_input_actions()
 	_definition = level_definition()
 	RenderingServer.set_default_clear_color(Color("10151d"))
 	_build_background()
@@ -51,25 +52,49 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	if not is_instance_valid(player):
 		return
-	var x_pressed := Input.is_key_pressed(KEY_X)
+	var x_pressed := Input.is_key_pressed(KEY_X) or Input.is_action_pressed("rpg_interact")
 	if x_pressed and not _x_latched:
 		if dialogue_open:
 			advance_dialogue()
 		elif room_index == 0 and player.position.distance_to(npc.position) < 95.0:
 			begin_dialogue()
 	_x_latched = x_pressed
-	var c_pressed := Input.is_key_pressed(KEY_C)
+	var c_pressed := Input.is_key_pressed(KEY_C) or Input.is_action_pressed("rpg_inventory")
 	if c_pressed and not _c_latched:
 		toggle_inventory()
 	_c_latched = c_pressed
 	if state == "over" and Input.is_action_just_pressed("ui_accept"):
 		restart_from_checkpoint()
 	if state == "playing" and not dialogue_open and not inventory_open:
-		if player.position.x >= 985.0:
+		# Transition before the player's collision capsule reaches the invisible
+		# boundary wall. The old 985/39 thresholds sat beyond the physical travel
+		# limit, leaving players walking forever against the edge.
+		if player.position.x >= 970.0:
 			transition_room(1)
-		elif player.position.x <= 39.0:
-			transition_room(-1)
+		elif player.position.x <= 54.0:
+			if room_index == 2 and is_instance_valid(boss):
+				# The forge is a committed boss arena. Letting the west edge
+				# transition during a dodge silently unloads the boss and strands
+				# the quest in an unwinnable state.
+				player.position.x = 60.0
+			else:
+				transition_room(-1)
 	_update_hud()
+
+func _ensure_input_actions() -> void:
+	var bindings := {
+		"rpg_attack": KEY_Z,
+		"rpg_interact": KEY_X,
+		"rpg_inventory": KEY_C,
+		"rpg_dash": KEY_SHIFT
+	}
+	for action in bindings:
+		if not InputMap.has_action(action):
+			InputMap.add_action(action)
+		if InputMap.action_get_events(action).is_empty():
+			var event := InputEventKey.new()
+			event.physical_keycode = int(bindings[action])
+			InputMap.action_add_event(action, event)
 
 func _asset(name: String) -> String:
 	return str((_definition.get("assets", {}) as Dictionary).get(name, ""))

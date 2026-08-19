@@ -14,7 +14,7 @@ from collections import defaultdict
 from saga.state import GraphState
 
 
-REPORT_VERSION = 1
+REPORT_VERSION = 2
 MINIMUM_SCORE = 75
 MINIMUM_DIMENSION_SCORE = 45
 MAX_POLISH_REPAIRS_PER_LEVEL = 1
@@ -33,6 +33,7 @@ OBJECTIVE_TEMPLATES = {
     "run_and_gun",
     "action_rpg",
 }
+PACKED_VISUAL_TEMPLATES = {"run_and_gun", "action_rpg"}
 
 
 def _clamp(value: float) -> int:
@@ -120,6 +121,7 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
         objective_score = 90 if passed else 0
 
     vision_notes = [str(note) for note in (level.get("vision_notes") or [])]
+    vision_evaluated = level.get("vision_evaluated") is True
     visual_score = 100
     for note in vision_notes:
         hard = note.startswith("Vision (quality gate):")
@@ -140,6 +142,14 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
             "visual_presentation", "qa_agent", "info", "screenshot_missing",
             "No final gameplay screenshot was captured", "screenshot_path is empty",
             "Capture an active gameplay frame so visual quality can be inspected.",
+        ))
+    if template in PACKED_VISUAL_TEMPLATES and not vision_evaluated:
+        visual_score = min(visual_score, 30)
+        findings.append(_finding(
+            "visual_presentation", "qa_agent", "high", "visual_review_unavailable",
+            "Packed game has no valid visual-review verdict",
+            "vision_evaluated is false; a screenshot file alone does not prove visual quality",
+            "Restore the configured vision provider and rerun QA before considering this game ship-ready.",
         ))
     visual_score = _clamp(visual_score)
 
@@ -196,7 +206,11 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
     dimensions = {
         "playability": {"score": playability_score, "weight": 25, "confidence": "measured" if playability else "inferred"},
         "objective": {"score": objective_score, "weight": 25, "confidence": "measured" if objective else "inferred"},
-        "visual_presentation": {"score": visual_score, "weight": 20, "confidence": "measured" if screenshot else "limited"},
+        "visual_presentation": {
+            "score": visual_score,
+            "weight": 20,
+            "confidence": "measured" if screenshot and vision_evaluated else "not_evaluated",
+        },
         "motion_presentation": {"score": motion_score, "weight": 15, "confidence": "measured" if video else "not_evaluated"},
         "balance": {"score": balance_score, "weight": 10, "confidence": "static_analysis"},
         "reliability": {"score": reliability_score, "weight": 5, "confidence": "measured"},
@@ -340,6 +354,11 @@ def quality_director(state: GraphState) -> GraphState:
     )
     may_repair = (
         not review["gate"]["passed"]
+        and any(
+            finding.get("owner") in {"coder", "asset_maker"}
+            and finding.get("severity") != "info"
+            for finding in review.get("findings") or []
+        )
         and prior_failed_reviews < MAX_POLISH_REPAIRS_PER_LEVEL
         and (state.get("retry_count") or 0) < MAX_TOTAL_RETRIES_PER_LEVEL
     )

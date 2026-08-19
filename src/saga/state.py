@@ -90,6 +90,9 @@ class GraphState(TypedDict, total=False):
     video_notes: Optional[list[str]]
     # Non-gating findings from the local vision model's screenshot review.
     vision_notes: Optional[list[str]]
+    # True only when the screenshot backend returned the complete structured
+    # verdict required by QA. A screenshot alone is not visual evaluation.
+    vision_evaluated: bool
     # Non-gating findings from the balance check - a level that is winnable but
     # toothless, or a fight that drags. These are tuning notes, not defects, so
     # they feed the playtest loop rather than failing a build; see saga.balance.

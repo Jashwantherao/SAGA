@@ -229,6 +229,10 @@ function VideoQaCard({ result }: { result: VideoQaResult }) {
 
 function AttemptCard({ attempt, runId }: { attempt: LevelAttempt; runId: string }) {
   const chips = metricChips(attempt.objective_result)
+  const inputPlaythrough = attempt.objective_result?.input_playthrough
+  const inputChips = typeof inputPlaythrough === 'object' && inputPlaythrough !== null
+    ? metricChips(inputPlaythrough as Record<string, unknown>)
+    : []
   return (
     <div className="attempt">
       <div className="attempt-head">
@@ -245,6 +249,25 @@ function AttemptCard({ attempt, runId }: { attempt: LevelAttempt; runId: string 
             </span>
           ))}
         </div>
+      )}
+      {inputChips.length > 0 && (
+        <div className="video-qa">
+          <div className="video-qa-head">
+            <span className={`status ${inputPlaythrough && (inputPlaythrough as Record<string, unknown>).status === 'passed' ? 'passed' : 'failed'}`}>
+              Normal-input playthrough
+            </span>
+          </div>
+          <div className="metric-chips">
+            {inputChips.map((chip) => (
+              <span key={chip.key} className={chip.good === undefined ? '' : chip.good ? 'good' : 'bad'}>
+                <small>{chip.key.replaceAll('_', ' ')}</small><b>{chip.value}</b>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {attempt.vision_evaluated === false && (
+        <small className="note bad">Visual review was not evaluated for this attempt. Packed archetypes cannot pass release quality without it.</small>
       )}
       {(attempt.errors?.length || 0) > 0 && attempt.errors!.map((error) => <small className="note bad" key={error}>{error}</small>)}
       {(attempt.vision_notes?.length || 0) > 0 && attempt.vision_notes!.map((note) => <small className="note" key={note}>{note}</small>)}
@@ -285,6 +308,7 @@ function QaLedger({ run, levels }: { run: SagaRun; levels: LevelResult[] }) {
                   : <AttemptCard runId={run.id} attempt={{
                       attempt: 1, status: level.status, errors: level.qa_errors,
                       vision_notes: level.vision_notes, objective_result: level.objective_result,
+                      vision_evaluated: level.vision_evaluated,
                       screenshot_path: level.screenshot_path,
                     }} />}
               </div>

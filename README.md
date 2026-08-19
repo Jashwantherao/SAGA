@@ -160,7 +160,12 @@ QA refuses to ship until thirteen named RPG transitions pass: movement, melee,
 enemy state, pickup, inventory, dialogue, quest, room transition, save/reload,
 loss, clean restart, boss phase and final win. Production builds also require an
 authored hero and background and treat placeholder or perspective-mismatched art
-as a ship-gate failure.
+as a ship-gate failure. A second, independent Action-RPG playthrough must then
+finish the adventure using only the public movement, attack, interact, inventory,
+dash and restart input actions. It may observe runtime state, but cannot invoke
+the pack's `qa_*` shortcuts. Its per-system results, frame count, attack and
+interaction counts, and death count are retained under `input_playthrough` in
+the level ledger.
 
 These packs are the pattern future creature-collection and deeper RPG families
 should extend instead of adding larger monolithic few-shots.
@@ -376,7 +381,7 @@ This is a real example, not a placeholder - it's what produced "The Clockwork He
 
 What happens, in order: Studio Director allocates an isolated `output/runs/<run-id>/` workspace and passes your prompt to the Game Designer, which returns a full design doc (title, mechanic, 3-5 levels with an authored difficulty curve and narrative beats) printed to the console and saved in that workspace; Asset Maker and Audio Agent then generate the hero/key-item/background art and the BGM in parallel; the Coder writes each level's GDScript and QA Agent builds and verifies it in Godot, with every failure triaged by the Studio Director - repair the script, regenerate it fresh, or regenerate a wrong asset - within `MAX_RETRIES` per level before moving to the next level. Total time for a 3-4 level game is typically several minutes, dominated by image generation and Coder retries.
 
-Final output reports sprite/BGM paths, the generated Godot project path, aggregate QA status, the latest screenshot, the latest mechanic-specific gameplay completion score, and—when enabled—the gameplay MP4. The isolated run directory also contains `design_doc.json`, `quality_report.json`, and a machine-readable versioned `run.json` manifest. Its `level_results` ledger retains every QA attempt, error, retry, advisory, objective metric, screenshot, video path and structured NVIDIA verdict per level; `quality_results` preserves each pre/post-polish review, while `quality_report` exposes the current 0–100 score, evidence confidence, findings, ownership, repair plan, and gate decision. `ship_ready` is true only when every designed level has a recorded clean pass and the Quality Director gate is open. When the Studio Director identifies an art-side defect, Asset Maker now regenerates only the named hero pose set, key item, extra sprite, or current-level background. The replaced file is backed up under `assets/revisions/`, and the old/new paths plus the Director's evidence are retained in both the affected level ledger and manifest. Advisory-only builds are labelled `passed_with_warnings`, and a required QA probe that cannot produce a verdict is labelled `blocked` rather than silently passing.
+Final output reports sprite/BGM paths, the generated Godot project path, aggregate QA status, the latest screenshot, the latest mechanic-specific gameplay completion score, and—when enabled—the gameplay MP4. The isolated run directory also contains `design_doc.json`, `quality_report.json`, and a machine-readable versioned `run.json` manifest. Its `level_results` ledger retains every QA attempt, error, retry, advisory, objective metric, normal-input playthrough result, screenshot, video path, structured NVIDIA verdict, and whether screenshot vision actually returned a valid verdict; `quality_results` preserves each pre/post-polish review, while `quality_report` exposes the current 0–100 score, evidence confidence, findings, ownership, repair plan, and gate decision. `ship_ready` is true only when every designed level has a recorded clean pass and the Quality Director gate is open. Packed games fail that quality gate when `vision_evaluated` is false—a screenshot file is not treated as proof that visual review succeeded, and infrastructure-only findings do not waste a Coder retry. When the Studio Director identifies an art-side defect, Asset Maker now regenerates only the named hero pose set, key item, extra sprite, or current-level background. The replaced file is backed up under `assets/revisions/`, and the old/new paths plus the Director's evidence are retained in both the affected level ledger and manifest. Advisory-only builds are labelled `passed_with_warnings`, and a required QA probe that cannot produce a verdict is labelled `blocked` rather than silently passing.
 
 To play the result:
 ```sh
@@ -403,7 +408,7 @@ settled, a completion score of 100, and zero QA retries. Screenshot review found
 no gating defect; NVIDIA Nemotron video QA verified visible animated movement,
 correct facing, a readable HUD, and a stable scene. The v11 run manifest ended
 with `status=passed` and `ship_ready=true`. The repository suite currently has
-**85 passing tests** plus a clean `compileall` run.
+**290 passing tests** plus clean frontend type-check, build, and lint runs.
 
 ## Known limitations
 

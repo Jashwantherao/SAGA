@@ -33,7 +33,10 @@ func collect_for(player: Node) -> bool:
 		return false
 	consumed = true
 	visible = false
-	monitoring = false
+	# body_entered is emitted while physics is flushing queries. Changing an
+	# Area2D's monitoring state synchronously from that callback is rejected by
+	# Godot and used to turn an ordinary pickup into a runtime error.
+	set_deferred("monitoring", false)
 	collected.emit(pickup_id, kind, amount)
 	return true
 

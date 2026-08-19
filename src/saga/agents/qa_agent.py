@@ -139,6 +139,14 @@ RUN_AND_GUN_PLAYTHROUGH = re.compile(
     r"shots=(\d+) jumps=(\d+) deaths=(\d+) checkpoint=(true|false) "
     r"weapon=(true|false) wave=(true|false) frames=(\d+) reason=([a-z0-9_]+)"
 )
+ACTION_RPG_PLAYTHROUGH = re.compile(
+    r"\[ACTION_RPG_PLAYTHROUGH\] status=(passed|failed) movement=(true|false) "
+    r"melee=(true|false) pickup=(true|false) inventory=(true|false) "
+    r"dialogue=(true|false) quest=(true|false) rooms=(true|false) "
+    r"checkpoint=(true|false) dash=(true|false) boss_phase=(true|false) "
+    r"win=(true|false) frames=(\d+) attacks=(\d+) interactions=(\d+) "
+    r"deaths=(\d+) reason=([a-z0-9_]+)"
+)
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
 MAX_SURVIVAL_SOLVER_SECONDS = 30.0
@@ -160,7 +168,7 @@ BENIGN_EXIT_NOISE = re.compile(
 
 HARNESS_SCRIPT_ERROR = re.compile(
     r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|capture_probe|herd_probe|screenshot|sfx|music|ambience|anim|game|"
-    r"run_and_gun_probe|action_rpg_probe|run_and_gun_playthrough|campaign_probe|interlude|victory)\.gd|"
+    r"run_and_gun_probe|action_rpg_probe|run_and_gun_playthrough|action_rpg_playthrough|campaign_probe|interlude|victory)\.gd|"
     r"res://archetypes/(?:run_and_gun|action_rpg)/[^\s)]+\.gd",
     re.IGNORECASE,
 )
@@ -973,6 +981,97 @@ def _run_run_and_gun_playthrough(
     return result, [], False
 
 
+def _run_action_rpg_playthrough(
+    project_dir: str,
+    scene: str,
+) -> tuple[dict | None, list[str], bool]:
+    """Complete the RPG through the same input actions available to a player."""
+    probe = _run(
+        [
+            "--headless",
+            "--path",
+            project_dir,
+            scene,
+            "--quit-after",
+            "40000",
+            "--",
+            "--action-rpg-playthrough",
+        ],
+        timeout=180,
+    )
+    output = probe.stdout + probe.stderr
+    process_errors = _find_errors(output)
+    if probe.returncode != 0 or process_errors:
+        errors = process_errors or [
+            f"Action-RPG input playthrough exited with code {probe.returncode}"
+        ]
+        return None, errors, _has_harness_error(errors)
+    match = ACTION_RPG_PLAYTHROUGH.search(output)
+    if not match:
+        return None, [
+            "QA infrastructure: Action-RPG input playthrough produced no verdict."
+        ], True
+    (
+        status,
+        movement,
+        melee,
+        pickup,
+        inventory,
+        dialogue,
+        quest,
+        rooms,
+        checkpoint,
+        dash,
+        boss_phase,
+        win,
+        frames,
+        attacks,
+        interactions,
+        deaths,
+        reason,
+    ) = match.groups()
+    result = {
+        "status": status,
+        "normal_input_only": True,
+        "movement_verified": movement == "true",
+        "melee_verified": melee == "true",
+        "pickup_verified": pickup == "true",
+        "inventory_verified": inventory == "true",
+        "dialogue_verified": dialogue == "true",
+        "quest_verified": quest == "true",
+        "rooms_verified": rooms == "true",
+        "checkpoint_verified": checkpoint == "true",
+        "dash_verified": dash == "true",
+        "boss_phase_verified": boss_phase == "true",
+        "win_verified": win == "true",
+        "frames": int(frames),
+        "attacks": int(attacks),
+        "interactions": int(interactions),
+        "deaths": int(deaths),
+        "reason": reason,
+    }
+    missing = [
+        name
+        for name, value in result.items()
+        if name.endswith("_verified") and value is not True
+    ]
+    if (
+        status != "passed"
+        or missing
+        or result["attacks"] < 1
+        or result["interactions"] < 1
+        or result["deaths"] > 3
+    ):
+        detail = f"reason={reason}, deaths={deaths}/3"
+        if missing:
+            detail += ", missing=" + ",".join(missing)
+        return result, [
+            "Input-driven Action-RPG playthrough could not complete the quest and "
+            f"boss through normal controls ({detail})."
+        ], False
+    return result, [], False
+
+
 def _run_maze_objective_probe(
     project_dir: str,
     scene: str,
@@ -1056,7 +1155,10 @@ def _vision_raw(screenshot_path: str, design_doc) -> dict:
     return json.loads(resp["message"]["content"])
 
 
-def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[str]]:
+def _vision_review_with_status(
+    screenshot_path: str,
+    design_doc,
+) -> tuple[list[str], list[str], bool]:
     """Review the screenshot and split findings by who can actually fix them.
 
     Returns (gating, advisory). Gating findings are defects the Coder can
@@ -1066,14 +1168,33 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
     Asset Maker never produced a suitable sprite, so failing QA over it would
     spend retries on a problem no rewrite can solve.
 
-    Any failure (model unavailable, timeout, unparseable reply) returns no
-    findings at all - the vision pass must never fail a build by breaking.
+    The third return value is truthful evidence that a complete structured
+    verdict was evaluated. A model failure still produces no speculative
+    findings, but packed-game release policy can distinguish that from a clean
+    visual review and keep the ship gate closed.
     """
     try:
         data = _vision_raw(screenshot_path, design_doc)
     except Exception as e:
         print(f"[QA Agent] Vision review skipped ({type(e).__name__}: {e})")
-        return [], []
+        return [], [], False
+
+    required_boolean_fields = (
+        "hero_visible",
+        "background_fills_screen",
+        "text_clipped",
+    )
+    invalid = [
+        field for field in required_boolean_fields
+        if not isinstance(data.get(field), bool)
+    ] if isinstance(data, dict) else list(required_boolean_fields)
+    if invalid:
+        print(
+            "[QA Agent] Vision review skipped (invalid structured verdict: "
+            + ", ".join(invalid)
+            + ")"
+        )
+        return [], [], False
 
     gating, advisory = [], []
     if data.get("hero_visible") is False:
@@ -1107,6 +1228,15 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
         advisory.append(
             f"{prefix}: perspective mismatch: {data['perspective_mismatch']}"
         )
+    return gating, advisory, True
+
+
+def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[str]]:
+    """Compatibility wrapper for callers that only need visual findings."""
+    gating, advisory, _evaluated = _vision_review_with_status(
+        screenshot_path,
+        design_doc,
+    )
     return gating, advisory
 
 
@@ -1374,6 +1504,7 @@ def _record_attempt(
     errors: list[str] | None = None,
     screenshot_path: str | None = None,
     vision_notes: list[str] | None = None,
+    vision_evaluated: bool = False,
     balance_notes: list[str] | None = None,
     objective_result: dict | None = None,
     gameplay_video_path: str | None = None,
@@ -1418,6 +1549,7 @@ def _record_attempt(
             "errors": errors,
             "screenshot_path": screenshot_path,
             "vision_notes": vision_notes,
+            "vision_evaluated": vision_evaluated,
             "balance_notes": balance_notes,
             "objective_result": objective_result,
             "gameplay_video_path": gameplay_video_path,
@@ -1437,6 +1569,7 @@ def _record_attempt(
         "qa_errors": errors,
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes,
+        "vision_evaluated": vision_evaluated,
         "balance_notes": balance_notes,
         "objective_result": objective_result,
         "gameplay_video_path": gameplay_video_path,
@@ -1460,6 +1593,7 @@ def _failed_attempt(
     errors: list[str],
     screenshot_path: str | None = None,
     vision_notes: list[str] | None = None,
+    vision_evaluated: bool = False,
     balance_notes: list[str] | None = None,
     objective_result: dict | None = None,
     gameplay_video_path: str | None = None,
@@ -1474,6 +1608,7 @@ def _failed_attempt(
         "retry_count": retry_count + 1,
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes or [],
+        "vision_evaluated": vision_evaluated,
         "balance_notes": balance_notes or [],
         "objective_result": objective_result,
         "gameplay_video_path": gameplay_video_path,
@@ -1486,6 +1621,7 @@ def _failed_attempt(
             errors=errors,
             screenshot_path=screenshot_path,
             vision_notes=vision_notes,
+            vision_evaluated=vision_evaluated,
             balance_notes=balance_notes,
             objective_result=objective_result,
             gameplay_video_path=gameplay_video_path,
@@ -1716,6 +1852,30 @@ def qa_agent(state: GraphState) -> GraphState:
             f"max_stall={objective_result['max_stall_frames']} frames)"
         )
         total_levels = len((state.get("design_doc") or {}).get("levels") or [{}])
+        if template == "action_rpg":
+            playthrough_result, playthrough_errors, playthrough_blocked = (
+                _run_action_rpg_playthrough(project_dir, scene)
+            )
+            objective_result["input_playthrough"] = playthrough_result
+            if playthrough_errors:
+                label = "BLOCKED" if playthrough_blocked else "FAILED"
+                print(f"[QA Agent] {label} input-driven Action-RPG: {playthrough_errors}")
+                return _failed_attempt(
+                    state,
+                    stage=(
+                        "playthrough_probe"
+                        if playthrough_blocked
+                        else "input_playthrough"
+                    ),
+                    errors=playthrough_errors,
+                    objective_result=objective_result,
+                    blocked=playthrough_blocked,
+                )
+            print(
+                "[QA Agent] Playthrough: normal inputs completed all three rooms, "
+                f"the hermit quest and boss in {playthrough_result['frames']} frames "
+                f"with {playthrough_result['deaths']} deaths"
+            )
         if template == "run_and_gun" and current_level == total_levels - 1:
             campaign_result, campaign_errors, campaign_blocked = _run_campaign_probe(
                 project_dir, "res://Level_0.tscn"
@@ -1803,8 +1963,9 @@ def qa_agent(state: GraphState) -> GraphState:
     vision_notes = []
     vision_gating = []
     vision_advisory = []
+    vision_evaluated = False
     if screenshot_path:
-        vision_gating, vision_advisory = _vision_review(
+        vision_gating, vision_advisory, vision_evaluated = _vision_review_with_status(
             screenshot_path, state.get("design_doc")
         )
         vision_notes = vision_gating + vision_advisory
@@ -1822,6 +1983,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=vision_gating,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
             )
@@ -1847,6 +2009,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=video_errors,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
                 blocked=video_blocked,
@@ -1865,6 +2028,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=[error],
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
                 gameplay_video_path=gameplay_video_path,
@@ -1880,6 +2044,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=video_gating,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
                 gameplay_video_path=gameplay_video_path,
@@ -1909,6 +2074,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=vision_gating,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
                 gameplay_video_path=gameplay_video_path,
@@ -1948,6 +2114,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "qa_errors": [],
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes,
+        "vision_evaluated": vision_evaluated,
         "balance_notes": balance_notes,
         "objective_result": objective_result,
         "gameplay_video_path": gameplay_video_path,
@@ -1960,6 +2127,7 @@ def qa_agent(state: GraphState) -> GraphState:
             stage="complete",
             screenshot_path=screenshot_path,
             vision_notes=vision_notes,
+            vision_evaluated=vision_evaluated,
             balance_notes=balance_notes,
             objective_result=objective_result,
             gameplay_video_path=gameplay_video_path,
