@@ -194,7 +194,11 @@ function QualityReportCard({ report }: { report: QualityReport }) {
 function metricChips(objective?: Record<string, unknown>) {
   if (!objective) return []
   const chips: { key: string; value: string; good?: boolean }[] = []
-  for (const [key, value] of Object.entries(objective)) {
+  const entries = Object.entries(objective).sort(([left], [right]) => {
+    const priority = (key: string) => key.endsWith('_verified') || key === 'clean_restart' ? 0 : 1
+    return priority(left) - priority(right)
+  })
+  for (const [key, value] of entries) {
     if (HIDDEN_METRICS.has(key) || value === null || typeof value === 'object') continue
     if (typeof value === 'boolean') {
       // Only color-code positively phrased flags; "stuck: false" is healthy.
@@ -203,7 +207,10 @@ function metricChips(objective?: Record<string, unknown>) {
       chips.push({ key, value: key.includes('seconds') ? `${value.toFixed(1)}s` : String(Math.round(value * 100) / 100) })
     }
   }
-  return chips.slice(0, 10)
+  // Complex packs expose one independently verified chip per system. Keep the
+  // complete Action-RPG contract visible instead of hiding the final checks
+  // behind generic frame/accounting metrics.
+  return chips.slice(0, 16)
 }
 
 function VideoQaCard({ result }: { result: VideoQaResult }) {
@@ -392,7 +399,7 @@ function DesignView({ design }: { design: DesignDoc }) {
               <div className="design-level-head">
                 <strong>{index + 1}. {level.name || 'Untitled level'}</strong>
                 {level.intensity !== undefined && (
-                  <span className="intensity" title={`Intensity ${level.intensity}/5`}>
+                  <span className="intensity" title={`Intensity ${level.intensity}/10`}>
                     {Array.from({ length: 5 }, (_, i) => <i key={i} className={i < (level.intensity || 0) ? 'on' : ''} />)}
                   </span>
                 )}

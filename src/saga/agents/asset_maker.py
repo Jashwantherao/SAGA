@@ -195,7 +195,8 @@ def _asset_requests(design_doc: dict) -> list[tuple]:
         )
     background_seed = 3 + len(design_doc.get("extra_sprites") or [])
     for index, level in enumerate(design_doc["levels"]):
-        if design_doc.get("mechanic_template") == "run_and_gun":
+        template = design_doc.get("mechanic_template")
+        if template == "run_and_gun":
             background_subject = (
                 f"distant atmospheric backdrop for {level.get('name', 'the stage')} "
                 f"in a {design_doc.get('genre', 'side-view action game')}, using only "
@@ -210,6 +211,19 @@ def _asset_requests(design_doc: dict) -> list[tuple]:
                 "parallel side elevation, layered parallax scenery, no top-down view, "
                 "no isometric angle, no diagonal travel path, no vanishing-point floor, "
                 "no characters, no enemies, no UI, no text, background scenery only"
+            )
+        elif template == "action_rpg":
+            background_subject = (
+                f"top-down environment for {level.get('name', 'the dungeon')} in a "
+                f"{design_doc.get('genre', 'fantasy action RPG')}, floor, walls, "
+                "ruins, paths and non-interactive environmental details only, empty "
+                "play space, no hero, no NPC, no enemies, no boss, no pickups, no UI"
+            )
+            viewpoint = (
+                "strict 2D top-down orthographic game background, camera facing "
+                "straight down at 90 degrees, readable connected rooms and open "
+                "combat floor, no perspective, no horizon, no vanishing point, no "
+                "camera tilt, no isometric angle, no characters, no UI, no text"
             )
         else:
             background_subject = level["description"]

@@ -31,6 +31,7 @@ OBJECTIVE_TEMPLATES = {
     "dot_maze",
     "maze_chase",
     "run_and_gun",
+    "action_rpg",
 }
 
 

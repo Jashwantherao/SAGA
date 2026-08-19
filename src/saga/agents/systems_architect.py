@@ -146,6 +146,7 @@ TEMPLATE_SYSTEM_KINDS = {
     "maze_chase": {"maze", "pickup", "hazard", "enemy_ai", "objective"},
     "dot_maze": {"maze", "pickup", "hazard", "enemy_ai", "objective"},
     "run_and_gun": {"combat", "enemy_ai", "checkpoint", "boss", "progression", "save_load", "objective"},
+    "action_rpg": {"combat", "enemy_ai", "inventory", "dialogue", "quest", "level_transition", "boss", "save_load", "objective"},
     "herd_to_goal": {"herding", "objective"},
     "capture_zones": {"zone_control", "hazard", "enemy_ai", "objective"},
 }
@@ -278,6 +279,7 @@ def deterministic_blueprint(design: dict) -> dict:
     """Template-aware safety net used when the architect service is offline."""
     template = design.get("mechanic_template") or "collect"
     run_and_gun = template == "run_and_gun"
+    action_rpg = template == "action_rpg"
     systems = [
         _system(
             "movement",
@@ -397,6 +399,16 @@ def deterministic_blueprint(design: dict) -> dict:
                 "Enemy attacks reduce health and zero health enters the loss state",
             ],
         ),
+        "action_rpg": (
+            "melee_combat",
+            "combat",
+            "Short frontal-arc melee with health, hit cooldown, stagger and clean loss.",
+            [
+                "A Z-key swing damages every enemy in the frontal arc exactly once",
+                "Enemy contact reduces hero health once per invulnerability window",
+                "Zero hero health enters loss and checkpoint restart restores a playable hero",
+            ],
+        ),
         "herd_to_goal": (
             "herding_objective",
             "herding",
@@ -486,6 +498,92 @@ def deterministic_blueprint(design: dict) -> dict:
             ]
         )
         completion_system_id = "sector_objective"
+    elif action_rpg:
+        systems.extend(
+            [
+                _system(
+                    "stalker_behaviour", "enemy_ai",
+                    "Enemies patrol, chase, attack and enter a non-damaging stagger state.",
+                    ["movement", "melee_combat"],
+                    [
+                        "An enemy outside detection follows its patrol",
+                        "An enemy inside detection chases and attacks only in range",
+                        "A melee hit causes a 0.5 second stagger before normal behavior resumes",
+                    ],
+                ),
+                _system(
+                    "inventory", "inventory",
+                    "Spark currency and gear pickups persist in a readable C-key panel.",
+                    ["hud"],
+                    [
+                        "A pickup changes inventory exactly once",
+                        "The inventory panel lists exact item and spark counts",
+                        "Spending sparks cannot make the balance negative",
+                    ],
+                ),
+                _system(
+                    "hermit_dialogue", "dialogue",
+                    "X-key NPC dialogue advances one line at a time and locks movement.",
+                    ["movement"],
+                    [
+                        "Interaction in range opens named dialogue",
+                        "Each X press advances exactly one line",
+                        "Closing the final line restores hero movement",
+                    ],
+                ),
+                _system(
+                    "forge_quest", "quest",
+                    "Ten sparks handed to the hermit unlock dash and the forge room.",
+                    ["inventory", "hermit_dialogue"],
+                    [
+                        "The quest cannot complete before ten sparks are held",
+                        "Turn-in deducts exactly ten sparks and advances the quest once",
+                        "Completion unlocks dash and opens the sealed room",
+                    ],
+                ),
+                _system(
+                    "persistent_rooms", "level_transition",
+                    "Three connected rooms retain defeated enemies and collected pickups.",
+                    ["stalker_behaviour", "inventory", "forge_quest"],
+                    [
+                        "Room exits place the hero at the matching entrance",
+                        "The forge room rejects entry until the quest opens it",
+                        "Cleared enemies and collected pickups do not respawn on revisit",
+                    ],
+                ),
+                _system(
+                    "checkpoint_profile", "save_load",
+                    "A versioned atomic checkpoint preserves room, hero, inventory and quest state.",
+                    ["persistent_rooms"],
+                    [
+                        "Checkpoint data includes every declared RPG state field",
+                        "Reload restores room, health, inventory and quest without duplication",
+                        "Malformed or incompatible data falls back to a valid profile",
+                    ],
+                ),
+                _system(
+                    "forge_warden", "boss",
+                    "A telegraphed forge boss becomes enraged below half health.",
+                    ["melee_combat", "forge_quest", "persistent_rooms"],
+                    [
+                        "Every slam visibly telegraphs before damage",
+                        "Crossing half health enters a faster second phase",
+                        "Defeat advances the quest to complete and triggers the win flow",
+                    ],
+                ),
+                _system(
+                    "heart_forge_objective", "objective",
+                    "The game wins only after quest completion, forge entry and boss defeat.",
+                    ["checkpoint_profile", "forge_warden"],
+                    [
+                        "All exploration, inventory, dialogue and quest transitions are probe-visible",
+                        "The boss cannot be reached before the forge quest opens the room",
+                        "Boss defeat sets won exactly once",
+                    ],
+                ),
+            ]
+        )
+        completion_system_id = "heart_forge_objective"
 
     if len(design.get("levels") or []) > 1:
         systems.append(
@@ -513,16 +611,34 @@ def deterministic_blueprint(design: dict) -> dict:
             "controls": (
                 ["left/right arrows: run", "up arrow: jump", "ui_accept: fire", "Tab: cycle acquired weapons"]
                 if run_and_gun
-                else ["held arrow keys: move in four directions"]
+                else (
+                    ["held arrows: move", "Z: melee", "X: interact and advance dialogue", "C: inventory", "Shift: dash after quest unlock"]
+                    if action_rpg
+                    else ["held arrow keys: move in four directions"]
+                )
             ),
             "abilities": (
                 ["run", "jump", "collect and switch weapons", "fire projectiles", "activate checkpoints", "purchase persistent upgrades"]
                 if run_and_gun
-                else ["touch-based interaction with gameplay objects"]
+                else (
+                    ["explore rooms", "swing lantern", "collect gear", "talk", "complete quests", "unlock dash", "save at room checkpoints"]
+                    if action_rpg
+                    else ["touch-based interaction with gameplay objects"]
+                )
             ),
         },
-        "entities": [],
-        "save_state": [],
+        "entities": (
+            [
+                {"name": "rust_stalker", "description": "Patrol/chase/stagger melee enemy", "ai_states": ["patrol", "chase", "attack", "staggered"]},
+                {"name": "ember_hermit", "description": "Quest NPC and spark trader", "ai_states": ["idle", "talking"]},
+                {"name": "forge_warden", "description": "Two-phase telegraphed boss", "ai_states": ["idle", "slam_telegraph", "slam", "enraged", "defeated"]},
+            ]
+            if action_rpg else []
+        ),
+        "save_state": (
+            ["room_index", "hero_position", "hero_hp", "sparks", "items", "quest_stage", "dash_unlocked", "boss_defeated", "collected_pickups", "cleared_enemies"]
+            if action_rpg else []
+        ),
         "systems": systems,
     }
 

@@ -122,6 +122,13 @@ RUN_AND_GUN_PROGRESSION = re.compile(
     r"upgrade=(true|false) save_reload=(true|false) carryover=(true|false) "
     r"corrupt_fallback=(true|false) schema=(true|false) currency=(\d+) xp=(\d+)"
 )
+ACTION_RPG_METRICS = re.compile(
+    r"\[ACTION_RPG_METRICS\] movement=(true|false) melee=(true|false) "
+    r"enemy_state=(true|false) pickup=(true|false) inventory=(true|false) "
+    r"dialogue=(true|false) quest=(true|false) room=(true|false) "
+    r"save=(true|false) loss=(true|false) restart=(true|false) "
+    r"boss_phase=(true|false) win=(true|false)"
+)
 CAMPAIGN_METRICS = re.compile(
     r"\[CAMPAIGN_METRICS\] scene=(true|false) stats=(true|false) "
     r"weapon=(true|false) reload=(true|false) corrupt=(true|false) "
@@ -153,8 +160,8 @@ BENIGN_EXIT_NOISE = re.compile(
 
 HARNESS_SCRIPT_ERROR = re.compile(
     r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|capture_probe|herd_probe|screenshot|sfx|music|ambience|anim|game|"
-    r"run_and_gun_probe|run_and_gun_playthrough|campaign_probe|interlude|victory)\.gd|"
-    r"res://archetypes/run_and_gun/[^\s)]+\.gd",
+    r"run_and_gun_probe|action_rpg_probe|run_and_gun_playthrough|campaign_probe|interlude|victory)\.gd|"
+    r"res://archetypes/(?:run_and_gun|action_rpg)/[^\s)]+\.gd",
     re.IGNORECASE,
 )
 
@@ -520,6 +527,28 @@ def _run_objective_probe(
             return result, [
                 "Run-and-gun progression: reward, duplicate protection, upgrade, persistence, carryover, corruption fallback, or schema verification failed."
             ], False
+    if template == "action_rpg":
+        rpg = ACTION_RPG_METRICS.search(output)
+        if not rpg:
+            return result, [
+                "QA infrastructure: action-RPG probe produced no capability metrics."
+            ], True
+        names = (
+            "movement_verified",
+            "melee_verified",
+            "enemy_state_verified",
+            "pickup_verified",
+            "inventory_verified",
+            "dialogue_verified",
+            "quest_verified",
+            "room_transition_verified",
+            "save_reload_verified",
+            "lose_verified",
+            "clean_restart",
+            "boss_phases_verified",
+            "boss_win_verified",
+        )
+        result.update({name: value == "true" for name, value in zip(names, rpg.groups())})
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -562,10 +591,14 @@ def _run_objective_probe(
                                 "Firing, checkpoint activation, player loss/restart, enemy defeat, boss damage and boss victory must all use the stable archetype interface."
                                 if template == "run_and_gun"
                                 else (
+                                "Movement, melee/stagger, pickup/inventory, dialogue/quest, room persistence, save/reload, loss/restart and both boss phases must all pass through the stable action-RPG interface."
+                                if template == "action_rpg"
+                                else (
                                 "Creatures must stay calm outside panic range, flee toward the "
                                 "goal when approached, settle permanently, and all settled must win."
                                 if template == "herd_to_goal"
                                 else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                                )
                                 )
                             )
                         )
@@ -593,7 +626,7 @@ def _run_objective_probe(
     if int(remaining) != 0 or int(collected) < int(total):
         item = (
             "milestones"
-            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal", "run_and_gun"}
+            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal", "run_and_gun", "action_rpg"}
             else "objective items"
         )
         return (
@@ -801,6 +834,33 @@ def _run_objective_probe(
             return result, ["Objective completion: run-and-gun pass omitted: " + ", ".join(missing) + "."], True
         if result["restart_status"] != "passed" or result["deaths"] != 1:
             return result, ["Objective completion: run-and-gun loss/restart accounting is inconsistent."], True
+    if template == "action_rpg":
+        flags = [
+            "movement_verified",
+            "melee_verified",
+            "enemy_state_verified",
+            "pickup_verified",
+            "inventory_verified",
+            "dialogue_verified",
+            "quest_verified",
+            "room_transition_verified",
+            "save_reload_verified",
+            "lose_verified",
+            "clean_restart",
+            "boss_phases_verified",
+            "boss_win_verified",
+        ]
+        missing = [name for name in flags if not result[name]]
+        if missing:
+            return result, [
+                "Objective completion: action-RPG pass omitted: "
+                + ", ".join(missing)
+                + "."
+            ], True
+        if result["restart_status"] != "passed" or result["deaths"] != 1:
+            return result, [
+                "Objective completion: action-RPG loss/restart accounting is inconsistent."
+            ], True
     return result, [], False
 
 
@@ -951,10 +1011,12 @@ def _vision_prompt(design_doc) -> str:
         "or simple visual effect as placeholder art merely because it uses clean "
         "geometric forms. Otherwise set it to null. Set looks_broken if a sprite is "
         "gigantic, cut off, or floating somewhere nonsensical, otherwise null. "
-        f"The mechanic template is {template!r}. For run_and_gun only, set "
+        f"The mechanic template is {template!r}. For run_and_gun, set "
         "perspective_mismatch to a short description when the gameplay is a flat "
         "side view but the background's main route is visibly top-down, isometric, "
-        "or diagonal; otherwise null. Do not count lightning, clouds, mountains, "
+        "or diagonal. For action_rpg, set it when the gameplay is top-down but the "
+        "background is visibly side-view, first-person, or strongly isometric; "
+        "otherwise null. Do not count lightning, clouds, mountains, "
         "or other obviously decorative distant scenery as a route."
     )
 
@@ -1038,10 +1100,10 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
         advisory.append(f"Vision (advisory): {data['looks_broken']}")
     template = (design_doc or {}).get("mechanic_template", "")
     if data.get("placeholder_art"):
-        prefix = "Vision (quality gate)" if template == "run_and_gun" else "Vision (advisory)"
+        prefix = "Vision (quality gate)" if template in {"run_and_gun", "action_rpg"} else "Vision (advisory)"
         advisory.append(f"{prefix}: placeholder art: {data['placeholder_art']}")
     if data.get("perspective_mismatch"):
-        prefix = "Vision (quality gate)" if template == "run_and_gun" else "Vision (advisory)"
+        prefix = "Vision (quality gate)" if template in {"run_and_gun", "action_rpg"} else "Vision (advisory)"
         advisory.append(
             f"{prefix}: perspective mismatch: {data['perspective_mismatch']}"
         )
@@ -1462,7 +1524,7 @@ def qa_agent(state: GraphState) -> GraphState:
         return _failed_attempt(state, stage="safety", errors=[str(exc)])
 
     template = (state.get("design_doc") or {}).get("mechanic_template", "")
-    if template == "run_and_gun":
+    if template in {"run_and_gun", "action_rpg"}:
         asset_names = [Path(path).name.lower() for path in (state.get("sprite_paths") or [])]
         has_hero = any("hero_sprite" in name or name.startswith("hero") for name in asset_names)
         has_background = any(name.startswith(f"level_{current_level}_") for name in asset_names)
@@ -1471,6 +1533,16 @@ def qa_agent(state: GraphState) -> GraphState:
             missing_assets.append("authored hero sprite")
         if not has_background:
             missing_assets.append(f"level {current_level + 1} background")
+        if template == "action_rpg":
+            role_assets = {
+                "stalker enemy sprite": ("stalker", "enemy", "creature"),
+                "quest NPC sprite": ("hermit", "npc", "keeper"),
+                "forge boss sprite": ("boss", "warden", "golem"),
+                "spark or gear pickup sprite": ("key_item", "spark", "charm"),
+            }
+            for label, needles in role_assets.items():
+                if not any(any(needle in name for needle in needles) for name in asset_names):
+                    missing_assets.append(label)
         if missing_assets:
             errors = [
                 "Production art gate: missing " + ", ".join(missing_assets)
@@ -1610,6 +1682,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "dot_maze",
         "maze_chase",
         "run_and_gun",
+        "action_rpg",
     }:
         objective_result, objective_errors, objective_blocked = _run_objective_probe(
             project_dir,
@@ -1633,6 +1706,7 @@ def qa_agent(state: GraphState) -> GraphState:
             "survive_and_deplete": "hybrid milestones",
             "capture_zones": "capture milestones",
             "herd_to_goal": "herding milestones",
+            "action_rpg": "RPG system transitions",
         }.get(template, "pickups")
         print(
             f"[QA Agent] Objective: completed {objective_result['collected']}/"

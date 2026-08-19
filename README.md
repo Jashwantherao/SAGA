@@ -85,12 +85,12 @@ are intentionally locked while a generation is active.
 | Agent | Runs on | Does |
 |---|---|---|
 | Studio Director | local (shares the Coder's model) or cloud | Intake, then supervision: every QA failure comes back to it and it routes the failure to the cheapest plausible fix - hand the errors to the Coder (with a one-line diagnosis when the evidence supports one), discard the script and regenerate fresh (when its own history shows a repair that didn't take), or re-describe one art asset and rebuild on top of it. Any failure of the triage call falls back to the deterministic fix-then-regenerate policy it replaced; the graph still owns the retry budget |
-| Game Designer | local (`qwen3-coder:30b-a3b`) or cloud (`claude-sonnet-5`) | One-line idea -> structured design doc: picks one of 10 mechanic templates/archetypes, a hero description, key item (with a gameplay role), story, 3-5 levels each with its own background, an authored non-decreasing difficulty curve (`intensity` 1-10), which of the mechanic's tuning levers rise per level, and a narrative beat shown between levels |
+| Game Designer | local (`qwen3-coder:30b-a3b`) or cloud (`claude-sonnet-5`) | One-line idea -> structured design doc: picks one of 11 mechanic templates/archetypes, a hero description, key item (with a gameplay role), story, 3-5 levels each with its own background, an authored non-decreasing difficulty curve (`intensity` 1-10), which of the mechanic's tuning levers rise per level, and a narrative beat shown between levels |
 | Systems Architect | NVIDIA Nemotron 3 Super by default; deterministic fallback | Converts the creative design into a versioned `blueprint.json`: dependency-ordered gameplay systems, observable acceptance criteria, and benchmark-informed model recommendations for each future specialist build step. Canonical premise and win/loss rules cannot drift. The current Coder consumes the complete contract; protected one-system-at-a-time builders are the next migration step. Provider failure is recorded and falls back without blocking production |
 | Asset Maker | local GPU, ComfyUI + Flux.1 schnell + rembg | The hero in a resting **and** a walking pose (sharing one seed, so they render the same character), the key-item icon, up to four `extra_sprites` the design doc asked for by name, and one background per level. Icons generate at 512x512 for reliable full-body framing, are background-removed via rembg since Flux can't emit alpha, then cropped to the alpha bounding box and downscaled to 128x128. Without `extra_sprites`, anything that isn't a hero, icon or background - platforms, enemies, walls - had no image and the Coder drew it as an untextured rectangle |
 | Audio Agent | local GPU, MusicGen (`transformers`) | Background music from the design doc's audio mood; loops continuously across level changes via a harness-owned autoload |
-| Coder | local GPU, hosted API, or deterministic archetype pack | Classic templates write one `Level_N.gd` from a template-matched few-shot. `run_and_gun` instead scaffolds a versioned multi-file Godot capability pack and writes only a compact level definition: the model cannot silently reimplement movement, projectiles, enemy AI, checkpoints or boss state. The harness also writes `project.godot`, scenes, procedural SFX, ambience, narrative interludes and Victory flow |
-| QA Agent | Godot 4.7, headless + optional NVIDIA video QA | Imports assets and runs each level, then **plays it**. Autoplay proves input-driven movement; ten deterministic mechanic probes cover the nine classic templates plus run-and-gun structure, weapons, waves, progression/save integrity, combat transitions and victory. Structured results and every artifact remain in the truthful per-level ledger |
+| Coder | local GPU, hosted API, or deterministic archetype pack | Classic templates write one `Level_N.gd` from a template-matched few-shot. `run_and_gun` and `action_rpg` instead scaffold versioned multi-file Godot capability packs and write only compact level definitions: the model cannot silently reimplement their stable controls, combat, AI, progression or boss state. The harness also writes `project.godot`, scenes, procedural SFX, ambience, narrative interludes and Victory flow |
+| QA Agent | Godot 4.7, headless + optional NVIDIA video QA | Imports assets and runs each level, then **plays it**. Autoplay proves input-driven movement; eleven deterministic mechanic probes cover the nine classic templates plus run-and-gun and action-RPG structure, combat, progression/save integrity, loss/restart and victory. Structured results and every artifact remain in the truthful per-level ledger |
 | Quality Director | deterministic evidence review | Reviews every technically passing level across playability, objective completion, visual and motion presentation, balance, and reliability. It assigns findings to the responsible agent, permits one bounded polish pass, and closes the ship gate when a release misses the measured quality floor |
 
 Coder repairs are transactional. SAGA preserves the previous gameplay script,
@@ -117,9 +117,9 @@ Generated sprites are single still images — there is no sprite sheet anywhere 
 
 The Game Designer picks whichever of these best fits the one-line idea, instead of defaulting to "collect":
 
-`collect` · `survive_hazards` · `ordered_switches` · `depletion` · `herd_to_goal` · `capture_zones` · `survive_and_deplete` (escalating drain + finite-fuel refill zones + roaming hazards) · `maze_chase` (walled corridors via axis-separated collision, pickups, a patrolling hazard) · `dot_maze` (a dense corridor maze, dots, patrollers, a hunter and power reversal) · `run_and_gun` (side-view running/jumping, projectiles, patrol/chase enemies, checkpoint respawn and a multi-phase boss)
+`collect` · `survive_hazards` · `ordered_switches` · `depletion` · `herd_to_goal` · `capture_zones` · `survive_and_deplete` (escalating drain + finite-fuel refill zones + roaming hazards) · `maze_chase` (walled corridors via axis-separated collision, pickups, a patrolling hazard) · `dot_maze` (a dense corridor maze, dots, patrollers, a hunter and power reversal) · `run_and_gun` (side-view running/jumping, projectiles, patrol/chase enemies, checkpoint respawn and a multi-phase boss) · `action_rpg` (top-down exploration, frontal melee, inventory, NPC dialogue, a persistent quest, three rooms, checkpoint saving and a two-phase boss)
 
-The nine classic templates each have a worked few-shot example in `coder.py`, since showing a local model a complete example of the structure it's asked to produce remains its biggest reliability lever. The dedicated examples expose the stable mechanic state required by autonomous QA, including switch sequence, territory ownership, and permanent creature settlement. `dot_maze`'s few-shot is the largest (244 lines) and routes to a bigger model via `TEMPLATE_MODEL_OVERRIDES` - the 14B reliably dropped variable declarations at that length. `run_and_gun` deliberately bypasses that monolithic path and scaffolds the pack below.
+The nine classic templates each have a worked few-shot example in `coder.py`, since showing a local model a complete example of the structure it's asked to produce remains its biggest reliability lever. The dedicated examples expose the stable mechanic state required by autonomous QA, including switch sequence, territory ownership, and permanent creature settlement. `dot_maze`'s few-shot is the largest (244 lines) and routes to a bigger model via `TEMPLATE_MODEL_OVERRIDES` - the 14B reliably dropped variable declarations at that length. `run_and_gun` and `action_rpg` deliberately bypass that monolithic path and scaffold the packs below.
 
 ### Archetype packs
 
@@ -128,7 +128,7 @@ manifest and ten reusable Godot modules live under
 `src/saga/archetype_packs/run_and_gun/`. The level script is a small adapter;
 stable engine code owns player physics, firing, projectile collision, enemy
 patrol/chase, health and loss, checkpoint respawn, camera/HUD, boss phases and
-level completion. Pack v4 compiles each brief into a reproducible encounter
+level completion. Pack v6 compiles each brief into a reproducible encounter
 plan: one of three stage topologies, traversal platforms, five paced encounter
 beats, differentiated enemy roles, hazards, recovery pickups, checkpoint
 placement and a separate boss arena. The plan is validated before Godot runs.
@@ -145,7 +145,24 @@ The deterministic blueprint exposes the runtime capabilities as separate,
 dependency-ordered systems. QA calls a stable pack interface and refuses to
 ship unless all seven core transitions, the encounter-structure contract, ten
 combat-depth assertions and seven progression/persistence assertions pass.
-This is the pattern future action RPG and creature-collection packs
+`action_rpg` is the second capability family. Pack v1 lives under
+`src/saga/archetype_packs/action_rpg/` and compiles a brief into a validated,
+reproducible three-room adventure. Stable modules own four-direction movement
+and collision, Z-key frontal melee, patrol/chase/attack/stagger enemy states,
+spark and gear pickups, a C-key inventory, X-key NPC dialogue, a ten-spark quest
+that unlocks Shift dash and the forge, persistent defeated/collected state,
+atomic checkpoint save/reload, clean loss/restart and a telegraphed two-phase
+boss. Authored hero, enemy, NPC, pickup, boss and top-down background assets are
+used when present, with procedural visuals retained only as a mechanics fallback.
+The deterministic objective probe uses a separate QA save namespace, so testing
+can never advance, corrupt, or erase the player's campaign profile.
+QA refuses to ship until thirteen named RPG transitions pass: movement, melee,
+enemy state, pickup, inventory, dialogue, quest, room transition, save/reload,
+loss, clean restart, boss phase and final win. Production builds also require an
+authored hero and background and treat placeholder or perspective-mismatched art
+as a ship-gate failure.
+
+These packs are the pattern future creature-collection and deeper RPG families
 should extend instead of adding larger monolithic few-shots.
 
 ### Retrieval strategy

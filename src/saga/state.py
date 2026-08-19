@@ -28,7 +28,8 @@ class DesignDoc(TypedDict):
     title: str
     genre: str
     # collect | survive_hazards | ordered_switches | depletion | herd_to_goal
-    # | capture_zones | survive_and_deplete | maze_chase | dot_maze | run_and_gun
+    # | capture_zones | survive_and_deplete | maze_chase | dot_maze
+    # | run_and_gun | action_rpg
     mechanic_template: str
     hero_description: str  # concrete, high-contrast visual description of the hero sprite
     core_mechanics: list[str]

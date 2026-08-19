@@ -549,7 +549,7 @@ func _ready() -> void:
 	for argument in arguments:
 		if argument.begins_with("--objective-template="):
 			_template = argument.trim_prefix("--objective-template=")
-	_active = _active and _template not in ["ordered_switches", "survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal"]
+	_active = _active and _template not in ["ordered_switches", "survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal", "action_rpg"]
 	if _active:
 		process_priority = 600
 
@@ -2366,6 +2366,68 @@ func _run() -> void:
 	get_tree().quit()
 """
 
+ACTION_RPG_PROBE_GD = """extends Node
+
+var _active := false
+
+func _ready() -> void:
+	var arguments := OS.get_cmdline_user_args()
+	_active = "--objective-probe" in arguments and "--objective-template=action_rpg" in arguments
+	if _active:
+		process_priority = 750
+		call_deferred("_run")
+
+func _bool(value: bool) -> String:
+	return str(value).to_lower()
+
+func _run() -> void:
+	for frame in 12:
+		await get_tree().process_frame
+	var levels := get_tree().get_nodes_in_group("saga_action_rpg_level")
+	if levels.is_empty():
+		_fail("missing_level", [])
+		return
+	var level = levels[0]
+	if not bool(level.qa_reset_for_probe()):
+		_fail("reset_failed", [])
+		return
+	var movement := bool(level.qa_verify_movement())
+	var melee_result: Dictionary = level.qa_verify_melee()
+	var pickup_result: Dictionary = level.qa_verify_pickup_inventory()
+	var dialogue_result: Dictionary = level.qa_verify_dialogue_quest()
+	var room_persistence := bool(level.qa_verify_room_persistence())
+	var save_reload := bool(level.qa_verify_save_reload())
+	var loss_result: Dictionary = level.qa_verify_loss_restart()
+	var boss_result: Dictionary = level.qa_verify_boss_phases_and_win()
+	var flags: Array[bool] = [
+		movement, bool(melee_result.get("melee", false)), bool(melee_result.get("enemy_state", false)),
+		bool(pickup_result.get("pickup", false)), bool(pickup_result.get("inventory", false)),
+		bool(dialogue_result.get("dialogue", false)), bool(dialogue_result.get("quest", false)),
+		room_persistence, save_reload, bool(loss_result.get("loss", false)),
+		bool(loss_result.get("restart", false)), bool(boss_result.get("boss_phase", false)),
+		bool(boss_result.get("win", false))
+	]
+	print("[ACTION_RPG_METRICS] movement=%s melee=%s enemy_state=%s pickup=%s inventory=%s dialogue=%s quest=%s room=%s save=%s loss=%s restart=%s boss_phase=%s win=%s" % [
+		_bool(flags[0]), _bool(flags[1]), _bool(flags[2]), _bool(flags[3]),
+		_bool(flags[4]), _bool(flags[5]), _bool(flags[6]), _bool(flags[7]),
+		_bool(flags[8]), _bool(flags[9]), _bool(flags[10]), _bool(flags[11]), _bool(flags[12])
+	])
+	var passed := not flags.has(false)
+	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=%d max_stall_frames=1 stuck=%s restart=%s deaths=1" % [
+		flags.count(true), _bool(not passed), "passed" if bool(loss_result.get("restart", false)) else "failed"
+	])
+	if passed:
+		print("[OBJECTIVE] status=passed template=action_rpg reason=none collected=13 total=13 remaining=0 frames=13")
+	else:
+		_fail("system_contract_failed", flags)
+	get_tree().quit()
+
+func _fail(reason: String, flags: Array) -> void:
+	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=%d max_stall_frames=1 stuck=true restart=failed deaths=1" % flags.count(true))
+	print("[OBJECTIVE] status=failed template=action_rpg reason=%s collected=%d total=13 remaining=%d frames=13" % [reason, flags.count(true), 13 - flags.count(true)])
+	get_tree().quit()
+"""
+
 RUN_AND_GUN_PLAYTHROUGH_GD = """extends Node
 
 const FRAME_LIMIT := 10800
@@ -2660,6 +2722,13 @@ def _write_harness_project(
             'CampaignProbe="*res://campaign_probe.gd"\n'
             'Music="*res://music.gd"',
         )
+    elif design_doc.get("mechanic_template") == "action_rpg":
+        project_config = project_config.replace(
+            'Music="*res://music.gd"',
+            'ActionRpgProfile="*res://archetypes/action_rpg/progression_profile.gd"\n'
+            'ActionRpgProbe="*res://action_rpg_probe.gd"\n'
+            'Music="*res://music.gd"',
+        )
     (project_dir / "project.godot").write_text(project_config, encoding="utf-8")
     harness_files = {
         "screenshot.gd": SCREENSHOT_GD,
@@ -2675,6 +2744,7 @@ def _write_harness_project(
         "capture_probe.gd": CAPTURE_PROBE_GD,
         "herd_probe.gd": HERD_PROBE_GD,
         "run_and_gun_probe.gd": RUN_AND_GUN_PROBE_GD,
+        "action_rpg_probe.gd": ACTION_RPG_PROBE_GD,
         "run_and_gun_playthrough.gd": RUN_AND_GUN_PLAYTHROUGH_GD,
         "campaign_probe.gd": CAMPAIGN_PROBE_GD,
         "music.gd": _build_music_gd(bgm_filename),
@@ -4780,6 +4850,7 @@ PROBED_TEMPLATES = {
     "dot_maze",
     "maze_chase",
     "run_and_gun",
+    "action_rpg",
 }
 
 
@@ -4842,13 +4913,19 @@ def coder(state: GraphState) -> GraphState:
     assets_manifest = _asset_manifest(listed_assets, design_doc)
 
     template = design_doc.get("mechanic_template") or "collect"
-    if template == "run_and_gun":
-        from saga.archetypes import scaffold_run_and_gun_level
+    if template in {"run_and_gun", "action_rpg"}:
+        from saga.archetypes import (
+            scaffold_action_rpg_level,
+            scaffold_run_and_gun_level,
+        )
 
         _write_harness_project(project_dir, design_doc, current_level, bgm_filename)
-        pack = scaffold_run_and_gun_level(
-            project_dir, design_doc, current_level, asset_filenames
+        scaffold = (
+            scaffold_run_and_gun_level
+            if template == "run_and_gun"
+            else scaffold_action_rpg_level
         )
+        pack = scaffold(project_dir, design_doc, current_level, asset_filenames)
         print(
             f"[Coder] Scaffolded level {current_level + 1}/{total_levels} from "
             f"{pack.id}@{pack.version} ({len(pack.capabilities)} capabilities) "

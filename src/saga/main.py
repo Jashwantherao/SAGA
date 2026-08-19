@@ -81,10 +81,13 @@ def assess_ship_status(result: dict) -> tuple[str, bool]:
         return "failed", False
 
     # Presentation warnings are normally shippable and remain visible in the
-    # ledger. A production run-and-gun build is the exception: placeholder
-    # geometry or a top-down/isometric background behind flat side-view play
-    # is a known prototype-quality defect, not a subjective polish note.
-    if (result.get("design_doc") or {}).get("mechanic_template") == "run_and_gun":
+    # ledger. Production archetype-pack builds are the exception: placeholder
+    # geometry or a perspective mismatch is a known prototype-quality defect,
+    # not a subjective polish note.
+    if (result.get("design_doc") or {}).get("mechanic_template") in {
+        "run_and_gun",
+        "action_rpg",
+    }:
         quality_failures = [
             note
             for item in by_index.values()
