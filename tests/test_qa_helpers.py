@@ -866,6 +866,27 @@ def test_video_review_gates_reversed_facing(monkeypatch):
     assert "faces opposite" in gating[0]
 
 
+def test_video_review_retries_transient_provider_failure(monkeypatch):
+    calls = []
+
+    def flaky_review(*_args):
+        calls.append(1)
+        if len(calls) == 1:
+            raise TimeoutError("provider is still processing")
+        return _video_verdict()
+
+    monkeypatch.setattr("saga.agents.qa_agent.VIDEO_REVIEW_ATTEMPTS", 2)
+    monkeypatch.setattr("saga.agents.qa_agent._video_raw", flaky_review)
+
+    result, gating, advisory, error = _video_review("game.mp4", {})
+
+    assert len(calls) == 2
+    assert result["status"] == "passed"
+    assert gating == []
+    assert advisory == []
+    assert error is None
+
+
 def test_video_visibility_overrules_false_missing_hero_screenshot():
     screenshot = ["Visual defect: the hero sprite is not visible on screen."]
 
@@ -912,10 +933,11 @@ def test_free_form_broken_visual_claim_is_advisory(monkeypatch):
         },
     )
 
-    gating, advisory = _vision_review("frame.png", {})
+    gating, advisory, evaluated = _vision_review("frame.png", {})
 
     assert gating == []
     assert advisory == ["Vision (advisory): the composition feels unfinished"]
+    assert evaluated is True
 
 
 def test_run_and_gun_placeholder_and_perspective_are_quality_gate_notes(monkeypatch):
@@ -931,7 +953,7 @@ def test_run_and_gun_placeholder_and_perspective_are_quality_gate_notes(monkeypa
         },
     )
 
-    gating, advisory = _vision_review(
+    gating, advisory, evaluated = _vision_review(
         "frame.png", {"mechanic_template": "run_and_gun"}
     )
 
@@ -940,6 +962,20 @@ def test_run_and_gun_placeholder_and_perspective_are_quality_gate_notes(monkeypa
         "Vision (quality gate): placeholder art: plain platform rectangles",
         "Vision (quality gate): perspective mismatch: diagonal train behind flat side-view play",
     ]
+    assert evaluated is True
+
+
+def test_unavailable_vision_provider_records_unevaluated(monkeypatch):
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._vision_raw",
+        lambda *_args: (_ for _ in ()).throw(TimeoutError("provider timeout")),
+    )
+
+    gating, advisory, evaluated = _vision_review("frame.png", {})
+
+    assert gating == []
+    assert advisory == []
+    assert evaluated is False
 
 
 def test_vision_prompt_distinguishes_gameplay_symbols_from_placeholders():

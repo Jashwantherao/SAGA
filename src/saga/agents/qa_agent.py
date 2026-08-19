@@ -47,6 +47,7 @@ VIDEO_MODEL = settings.video_model
 VIDEO_BASE_URL = settings.video_base_url
 VIDEO_KEY_ENV = settings.video_key_env
 VIDEO_TIMEOUT = settings.video_timeout
+VIDEO_REVIEW_ATTEMPTS = settings.video_review_attempts
 FFMPEG_EXE = settings.ffmpeg_exe
 VIDEO_CAPTURE_FPS = 30
 VIDEO_CAPTURE_MAX_FRAMES = 260
@@ -994,7 +995,10 @@ def _vision_raw(screenshot_path: str, design_doc) -> dict:
     return json.loads(resp["message"]["content"])
 
 
-def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[str]]:
+def _vision_review(
+    screenshot_path: str,
+    design_doc,
+) -> tuple[list[str], list[str], bool]:
     """Review the screenshot and split findings by who can actually fix them.
 
     Returns (gating, advisory). Gating findings are defects the Coder can
@@ -1004,14 +1008,16 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
     Asset Maker never produced a suitable sprite, so failing QA over it would
     spend retries on a problem no rewrite can solve.
 
-    Any failure (model unavailable, timeout, unparseable reply) returns no
-    findings at all - the vision pass must never fail a build by breaking.
+    The boolean says whether a model actually produced a verdict. Any failure
+    (model unavailable, timeout, unparseable reply) returns no findings and
+    ``False`` - the vision pass must never fail a build by breaking, but its
+    absence must not later be presented as measured visual quality.
     """
     try:
         data = _vision_raw(screenshot_path, design_doc)
     except Exception as e:
         print(f"[QA Agent] Vision review skipped ({type(e).__name__}: {e})")
-        return [], []
+        return [], [], False
 
     gating, advisory = [], []
     if data.get("hero_visible") is False:
@@ -1045,7 +1051,7 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
         advisory.append(
             f"{prefix}: perspective mismatch: {data['perspective_mismatch']}"
         )
-    return gating, advisory
+    return gating, advisory, True
 
 
 def _reconcile_visual_evidence(
@@ -1266,10 +1272,21 @@ def _video_review(
     design_doc,
 ) -> tuple[dict | None, list[str], list[str], str | None]:
     """Return structured result, gating defects, advisories, infrastructure error."""
-    try:
-        data = _video_raw(video_path, design_doc)
-    except Exception as exc:
-        return None, [], [], f"{type(exc).__name__}: {exc}"
+    last_error = None
+    for attempt in range(1, VIDEO_REVIEW_ATTEMPTS + 1):
+        try:
+            data = _video_raw(video_path, design_doc)
+            break
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            if attempt < VIDEO_REVIEW_ATTEMPTS:
+                print(
+                    f"[QA Agent] NVIDIA video verdict attempt {attempt}/"
+                    f"{VIDEO_REVIEW_ATTEMPTS} failed ({last_error}); retrying the "
+                    "same captured evidence"
+                )
+    else:
+        return None, [], [], last_error
     problems = _validate_video_verdict(data)
     if problems:
         return None, [], [], "; ".join(problems)
@@ -1318,6 +1335,7 @@ def _record_attempt(
     video_qa_result: dict | None = None,
     video_notes: list[str] | None = None,
     playability_result: dict | None = None,
+    vision_evaluated: bool | None = None,
     blocked: bool = False,
 ) -> list[dict]:
     """Return a new durable QA ledger with this attempt appended.
@@ -1362,6 +1380,7 @@ def _record_attempt(
             "video_qa_result": video_qa_result,
             "video_notes": video_notes,
             "playability_result": playability_result,
+            "vision_evaluated": vision_evaluated,
             "coder_model": state.get("coder_model"),
         }
     )
@@ -1381,6 +1400,7 @@ def _record_attempt(
         "video_qa_result": video_qa_result,
         "video_notes": video_notes,
         "playability_result": playability_result,
+        "vision_evaluated": vision_evaluated,
         "coder_model": state.get("coder_model"),
         "asset_replacements": asset_replacements,
     }
@@ -1403,6 +1423,7 @@ def _failed_attempt(
     gameplay_video_path: str | None = None,
     video_qa_result: dict | None = None,
     video_notes: list[str] | None = None,
+    vision_evaluated: bool | None = None,
     blocked: bool = False,
 ) -> GraphState:
     retry_count = state.get("retry_count") or 0
@@ -1412,6 +1433,7 @@ def _failed_attempt(
         "retry_count": retry_count + 1,
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes or [],
+        "vision_evaluated": vision_evaluated,
         "balance_notes": balance_notes or [],
         "objective_result": objective_result,
         "gameplay_video_path": gameplay_video_path,
@@ -1429,6 +1451,7 @@ def _failed_attempt(
             gameplay_video_path=gameplay_video_path,
             video_qa_result=video_qa_result,
             video_notes=video_notes,
+            vision_evaluated=vision_evaluated,
             blocked=blocked,
         ),
         "ship_blocked": blocked,
@@ -1727,10 +1750,11 @@ def qa_agent(state: GraphState) -> GraphState:
     # findings until the stronger temporal evidence can confirm or contradict
     # them. Free-form art/composition criticism is always advisory.
     vision_notes = []
+    vision_evaluated = False
     vision_gating = []
     vision_advisory = []
     if screenshot_path:
-        vision_gating, vision_advisory = _vision_review(
+        vision_gating, vision_advisory, vision_evaluated = _vision_review(
             screenshot_path, state.get("design_doc")
         )
         vision_notes = vision_gating + vision_advisory
@@ -1750,6 +1774,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 vision_notes=vision_notes,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
+                vision_evaluated=vision_evaluated,
             )
 
     # 7. Required gameplay video review when explicitly enabled. Unlike the
@@ -1775,6 +1800,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 vision_notes=vision_notes,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
+                vision_evaluated=vision_evaluated,
                 blocked=video_blocked,
             )
         print(f"[QA Agent] Gameplay video captured -> {gameplay_video_path}")
@@ -1794,6 +1820,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 balance_notes=balance_notes,
                 objective_result=objective_result,
                 gameplay_video_path=gameplay_video_path,
+                vision_evaluated=vision_evaluated,
                 blocked=True,
             )
         for note in video_gating + video_notes:
@@ -1811,6 +1838,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 gameplay_video_path=gameplay_video_path,
                 video_qa_result=video_qa_result,
                 video_notes=video_notes,
+                vision_evaluated=vision_evaluated,
             )
         print(
             f"[QA Agent] NVIDIA video QA passed: "
@@ -1840,6 +1868,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 gameplay_video_path=gameplay_video_path,
                 video_qa_result=video_qa_result,
                 video_notes=video_notes,
+                vision_evaluated=vision_evaluated,
             )
 
     # This is the only point in the pipeline where a script is known-good
@@ -1874,6 +1903,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "qa_errors": [],
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes,
+        "vision_evaluated": vision_evaluated,
         "balance_notes": balance_notes,
         "objective_result": objective_result,
         "gameplay_video_path": gameplay_video_path,
@@ -1892,6 +1922,7 @@ def qa_agent(state: GraphState) -> GraphState:
             video_qa_result=video_qa_result,
             video_notes=video_notes,
             playability_result=playability_result,
+            vision_evaluated=vision_evaluated,
         ),
         "ship_blocked": False,
         "system_build_results": system_build_results,

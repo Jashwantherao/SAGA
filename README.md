@@ -194,6 +194,7 @@ Every model is swappable via environment variable without touching code:
 | `SAGA_VISION_BACKEND` | `local` | `nvidia` routes screenshot review to a hosted VLM |
 | `SAGA_VISION_REMOTE_MODEL` | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | Hosted vision model |
 | `SAGA_VIDEO_QA` | unset | Set to `1` to require gameplay MP4 capture and NVIDIA video QA for every level |
+| `SAGA_VIDEO_REVIEW_ATTEMPTS` | `2` | Retry transient video-model failures against the same captured MP4 without rebuilding the game |
 | `SAGA_VIDEO_MODEL` | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | NVIDIA model used for gameplay video understanding |
 | `SAGA_VIDEO_TIMEOUT` | `120` | Hosted video-review timeout in seconds |
 | `SAGA_FFMPEG_EXE` | `ffmpeg` | FFmpeg executable used to convert Godot's AVI capture to MP4 |

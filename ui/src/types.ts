@@ -34,6 +34,7 @@ export type LevelAttempt = {
   video_qa_result?: VideoQaResult
   coder_model?: string
   playability_result?: PlayabilityResult
+  vision_evaluated?: boolean
 }
 
 export type PlayabilityResult = {
@@ -59,6 +60,7 @@ export type LevelResult = {
   vision_notes?: string[]
   video_notes?: string[]
   playability_result?: PlayabilityResult
+  vision_evaluated?: boolean
 }
 
 export type QualityDimension = {

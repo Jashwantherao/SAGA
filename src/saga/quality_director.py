@@ -133,8 +133,19 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
             "Repair sprite orientation or animation behavior without changing the input contract.",
         ))
     screenshot = level.get("screenshot_path")
-    if not screenshot:
-        visual_score -= 10
+    vision_evaluated = level.get("vision_evaluated")
+    if screenshot and vision_evaluated is False:
+        visual_score = min(visual_score, 70)
+        findings.append(_finding(
+            "visual_presentation", "qa_agent", "info", "vision_not_evaluated",
+            "Screenshot quality was not evaluated", "vision provider produced no verdict",
+            "Retry screenshot vision review before a final release decision.",
+        ))
+    elif screenshot and vision_evaluated is None:
+        # Backward-compatible ledgers predate explicit evidence provenance.
+        visual_score = min(visual_score, 90)
+    elif not screenshot:
+        visual_score = min(visual_score, 60)
         findings.append(_finding(
             "visual_presentation", "qa_agent", "info", "screenshot_missing",
             "No final gameplay screenshot was captured", "screenshot_path is empty",
@@ -195,7 +206,15 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
     dimensions = {
         "playability": {"score": playability_score, "weight": 25, "confidence": "measured" if playability else "inferred"},
         "objective": {"score": objective_score, "weight": 25, "confidence": "measured" if objective else "inferred"},
-        "visual_presentation": {"score": visual_score, "weight": 20, "confidence": "measured" if screenshot else "limited"},
+        "visual_presentation": {
+            "score": visual_score,
+            "weight": 20,
+            "confidence": (
+                "measured" if screenshot and vision_evaluated is True
+                else "inferred" if screenshot and vision_evaluated is None
+                else "not_evaluated"
+            ),
+        },
         "motion_presentation": {"score": motion_score, "weight": 15, "confidence": "measured" if video else "not_evaluated"},
         "balance": {"score": balance_score, "weight": 10, "confidence": "static_analysis"},
         "reliability": {"score": reliability_score, "weight": 5, "confidence": "measured"},

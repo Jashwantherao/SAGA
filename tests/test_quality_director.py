@@ -18,6 +18,7 @@ def _state(**level_overrides):
         },
         "objective_result": {"status": "passed", "completion_score": 1.0},
         "screenshot_path": "screenshot.png",
+        "vision_evaluated": True,
         "video_qa_result": {"status": "passed", "evidence": "clean motion"},
         "vision_notes": [],
         "video_notes": [],
@@ -62,6 +63,17 @@ def test_motion_orientation_defect_is_owned_by_coder():
     ))
 
     assert review["findings"][0]["owner"] == "coder"
+
+
+def test_skipped_vision_review_is_not_scored_as_measured_quality():
+    review = review_level(_state(vision_evaluated=False))
+
+    assert review["dimensions"]["visual_presentation"] == {
+        "score": 70,
+        "weight": 20,
+        "confidence": "not_evaluated",
+    }
+    assert any(item["code"] == "vision_not_evaluated" for item in review["findings"])
 
 
 def test_quality_director_requests_only_one_bounded_polish_retry():

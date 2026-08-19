@@ -94,6 +94,7 @@ class Settings:
     video_base_url: str
     video_key_env: str
     video_timeout: float
+    video_review_attempts: int
     ffmpeg_exe: str
 
     ollama_url: str
@@ -183,6 +184,7 @@ class Settings:
             ).rstrip("/"),
             video_key_env=_env("SAGA_VIDEO_KEY_ENV", "NVIDIA_API_KEY"),
             video_timeout=_float_env("SAGA_VIDEO_TIMEOUT", 120.0),
+            video_review_attempts=max(1, _int_env("SAGA_VIDEO_REVIEW_ATTEMPTS", 2)),
             ffmpeg_exe=_env("SAGA_FFMPEG_EXE", "ffmpeg"),
             ollama_url=_env("SAGA_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/"),
             comfyui_url=_env("SAGA_COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/"),
