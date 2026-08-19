@@ -122,6 +122,13 @@ RUN_AND_GUN_PROGRESSION = re.compile(
     r"upgrade=(true|false) save_reload=(true|false) carryover=(true|false) "
     r"corrupt_fallback=(true|false) schema=(true|false) currency=(\d+) xp=(\d+)"
 )
+ACTION_RPG_METRICS = re.compile(
+    r"\[ACTION_RPG_METRICS\] movement=(true|false) melee=(true|false) "
+    r"enemy_state=(true|false) pickup=(true|false) inventory=(true|false) "
+    r"dialogue=(true|false) quest=(true|false) room=(true|false) "
+    r"save=(true|false) loss=(true|false) restart=(true|false) "
+    r"boss_phase=(true|false) win=(true|false)"
+)
 CAMPAIGN_METRICS = re.compile(
     r"\[CAMPAIGN_METRICS\] scene=(true|false) stats=(true|false) "
     r"weapon=(true|false) reload=(true|false) corrupt=(true|false) "
@@ -131,6 +138,14 @@ RUN_AND_GUN_PLAYTHROUGH = re.compile(
     r"\[RUN_AND_GUN_PLAYTHROUGH\] status=(passed|failed) entered_level=(-?\d+) "
     r"shots=(\d+) jumps=(\d+) deaths=(\d+) checkpoint=(true|false) "
     r"weapon=(true|false) wave=(true|false) frames=(\d+) reason=([a-z0-9_]+)"
+)
+ACTION_RPG_PLAYTHROUGH = re.compile(
+    r"\[ACTION_RPG_PLAYTHROUGH\] status=(passed|failed) movement=(true|false) "
+    r"melee=(true|false) pickup=(true|false) inventory=(true|false) "
+    r"dialogue=(true|false) quest=(true|false) rooms=(true|false) "
+    r"checkpoint=(true|false) dash=(true|false) boss_phase=(true|false) "
+    r"win=(true|false) frames=(\d+) attacks=(\d+) interactions=(\d+) "
+    r"deaths=(\d+) reason=([a-z0-9_]+)"
 )
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
@@ -153,8 +168,8 @@ BENIGN_EXIT_NOISE = re.compile(
 
 HARNESS_SCRIPT_ERROR = re.compile(
     r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|capture_probe|herd_probe|screenshot|sfx|music|ambience|anim|game|"
-    r"run_and_gun_probe|run_and_gun_playthrough|campaign_probe|interlude|victory)\.gd|"
-    r"res://archetypes/run_and_gun/[^\s)]+\.gd",
+    r"run_and_gun_probe|action_rpg_probe|run_and_gun_playthrough|action_rpg_playthrough|campaign_probe|interlude|victory)\.gd|"
+    r"res://archetypes/(?:run_and_gun|action_rpg)/[^\s)]+\.gd",
     re.IGNORECASE,
 )
 
@@ -520,6 +535,28 @@ def _run_objective_probe(
             return result, [
                 "Run-and-gun progression: reward, duplicate protection, upgrade, persistence, carryover, corruption fallback, or schema verification failed."
             ], False
+    if template == "action_rpg":
+        rpg = ACTION_RPG_METRICS.search(output)
+        if not rpg:
+            return result, [
+                "QA infrastructure: action-RPG probe produced no capability metrics."
+            ], True
+        names = (
+            "movement_verified",
+            "melee_verified",
+            "enemy_state_verified",
+            "pickup_verified",
+            "inventory_verified",
+            "dialogue_verified",
+            "quest_verified",
+            "room_transition_verified",
+            "save_reload_verified",
+            "lose_verified",
+            "clean_restart",
+            "boss_phases_verified",
+            "boss_win_verified",
+        )
+        result.update({name: value == "true" for name, value in zip(names, rpg.groups())})
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -562,10 +599,14 @@ def _run_objective_probe(
                                 "Firing, checkpoint activation, player loss/restart, enemy defeat, boss damage and boss victory must all use the stable archetype interface."
                                 if template == "run_and_gun"
                                 else (
+                                "Movement, melee/stagger, pickup/inventory, dialogue/quest, room persistence, save/reload, loss/restart and both boss phases must all pass through the stable action-RPG interface."
+                                if template == "action_rpg"
+                                else (
                                 "Creatures must stay calm outside panic range, flee toward the "
                                 "goal when approached, settle permanently, and all settled must win."
                                 if template == "herd_to_goal"
                                 else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                                )
                                 )
                             )
                         )
@@ -593,7 +634,7 @@ def _run_objective_probe(
     if int(remaining) != 0 or int(collected) < int(total):
         item = (
             "milestones"
-            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal", "run_and_gun"}
+            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal", "run_and_gun", "action_rpg"}
             else "objective items"
         )
         return (
@@ -801,6 +842,33 @@ def _run_objective_probe(
             return result, ["Objective completion: run-and-gun pass omitted: " + ", ".join(missing) + "."], True
         if result["restart_status"] != "passed" or result["deaths"] != 1:
             return result, ["Objective completion: run-and-gun loss/restart accounting is inconsistent."], True
+    if template == "action_rpg":
+        flags = [
+            "movement_verified",
+            "melee_verified",
+            "enemy_state_verified",
+            "pickup_verified",
+            "inventory_verified",
+            "dialogue_verified",
+            "quest_verified",
+            "room_transition_verified",
+            "save_reload_verified",
+            "lose_verified",
+            "clean_restart",
+            "boss_phases_verified",
+            "boss_win_verified",
+        ]
+        missing = [name for name in flags if not result[name]]
+        if missing:
+            return result, [
+                "Objective completion: action-RPG pass omitted: "
+                + ", ".join(missing)
+                + "."
+            ], True
+        if result["restart_status"] != "passed" or result["deaths"] != 1:
+            return result, [
+                "Objective completion: action-RPG loss/restart accounting is inconsistent."
+            ], True
     return result, [], False
 
 
@@ -913,6 +981,97 @@ def _run_run_and_gun_playthrough(
     return result, [], False
 
 
+def _run_action_rpg_playthrough(
+    project_dir: str,
+    scene: str,
+) -> tuple[dict | None, list[str], bool]:
+    """Complete the RPG through the same input actions available to a player."""
+    probe = _run(
+        [
+            "--headless",
+            "--path",
+            project_dir,
+            scene,
+            "--quit-after",
+            "40000",
+            "--",
+            "--action-rpg-playthrough",
+        ],
+        timeout=180,
+    )
+    output = probe.stdout + probe.stderr
+    process_errors = _find_errors(output)
+    if probe.returncode != 0 or process_errors:
+        errors = process_errors or [
+            f"Action-RPG input playthrough exited with code {probe.returncode}"
+        ]
+        return None, errors, _has_harness_error(errors)
+    match = ACTION_RPG_PLAYTHROUGH.search(output)
+    if not match:
+        return None, [
+            "QA infrastructure: Action-RPG input playthrough produced no verdict."
+        ], True
+    (
+        status,
+        movement,
+        melee,
+        pickup,
+        inventory,
+        dialogue,
+        quest,
+        rooms,
+        checkpoint,
+        dash,
+        boss_phase,
+        win,
+        frames,
+        attacks,
+        interactions,
+        deaths,
+        reason,
+    ) = match.groups()
+    result = {
+        "status": status,
+        "normal_input_only": True,
+        "movement_verified": movement == "true",
+        "melee_verified": melee == "true",
+        "pickup_verified": pickup == "true",
+        "inventory_verified": inventory == "true",
+        "dialogue_verified": dialogue == "true",
+        "quest_verified": quest == "true",
+        "rooms_verified": rooms == "true",
+        "checkpoint_verified": checkpoint == "true",
+        "dash_verified": dash == "true",
+        "boss_phase_verified": boss_phase == "true",
+        "win_verified": win == "true",
+        "frames": int(frames),
+        "attacks": int(attacks),
+        "interactions": int(interactions),
+        "deaths": int(deaths),
+        "reason": reason,
+    }
+    missing = [
+        name
+        for name, value in result.items()
+        if name.endswith("_verified") and value is not True
+    ]
+    if (
+        status != "passed"
+        or missing
+        or result["attacks"] < 1
+        or result["interactions"] < 1
+        or result["deaths"] > 3
+    ):
+        detail = f"reason={reason}, deaths={deaths}/3"
+        if missing:
+            detail += ", missing=" + ",".join(missing)
+        return result, [
+            "Input-driven Action-RPG playthrough could not complete the quest and "
+            f"boss through normal controls ({detail})."
+        ], False
+    return result, [], False
+
+
 def _run_maze_objective_probe(
     project_dir: str,
     scene: str,
@@ -951,10 +1110,12 @@ def _vision_prompt(design_doc) -> str:
         "or simple visual effect as placeholder art merely because it uses clean "
         "geometric forms. Otherwise set it to null. Set looks_broken if a sprite is "
         "gigantic, cut off, or floating somewhere nonsensical, otherwise null. "
-        f"The mechanic template is {template!r}. For run_and_gun only, set "
+        f"The mechanic template is {template!r}. For run_and_gun, set "
         "perspective_mismatch to a short description when the gameplay is a flat "
         "side view but the background's main route is visibly top-down, isometric, "
-        "or diagonal; otherwise null. Do not count lightning, clouds, mountains, "
+        "or diagonal. For action_rpg, set it when the gameplay is top-down but the "
+        "background is visibly side-view, first-person, or strongly isometric; "
+        "otherwise null. Do not count lightning, clouds, mountains, "
         "or other obviously decorative distant scenery as a route."
     )
 
@@ -994,7 +1155,10 @@ def _vision_raw(screenshot_path: str, design_doc) -> dict:
     return json.loads(resp["message"]["content"])
 
 
-def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[str]]:
+def _vision_review_with_status(
+    screenshot_path: str,
+    design_doc,
+) -> tuple[list[str], list[str], bool]:
     """Review the screenshot and split findings by who can actually fix them.
 
     Returns (gating, advisory). Gating findings are defects the Coder can
@@ -1004,14 +1168,33 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
     Asset Maker never produced a suitable sprite, so failing QA over it would
     spend retries on a problem no rewrite can solve.
 
-    Any failure (model unavailable, timeout, unparseable reply) returns no
-    findings at all - the vision pass must never fail a build by breaking.
+    The third return value is truthful evidence that a complete structured
+    verdict was evaluated. A model failure still produces no speculative
+    findings, but packed-game release policy can distinguish that from a clean
+    visual review and keep the ship gate closed.
     """
     try:
         data = _vision_raw(screenshot_path, design_doc)
     except Exception as e:
         print(f"[QA Agent] Vision review skipped ({type(e).__name__}: {e})")
-        return [], []
+        return [], [], False
+
+    required_boolean_fields = (
+        "hero_visible",
+        "background_fills_screen",
+        "text_clipped",
+    )
+    invalid = [
+        field for field in required_boolean_fields
+        if not isinstance(data.get(field), bool)
+    ] if isinstance(data, dict) else list(required_boolean_fields)
+    if invalid:
+        print(
+            "[QA Agent] Vision review skipped (invalid structured verdict: "
+            + ", ".join(invalid)
+            + ")"
+        )
+        return [], [], False
 
     gating, advisory = [], []
     if data.get("hero_visible") is False:
@@ -1038,13 +1221,22 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
         advisory.append(f"Vision (advisory): {data['looks_broken']}")
     template = (design_doc or {}).get("mechanic_template", "")
     if data.get("placeholder_art"):
-        prefix = "Vision (quality gate)" if template == "run_and_gun" else "Vision (advisory)"
+        prefix = "Vision (quality gate)" if template in {"run_and_gun", "action_rpg"} else "Vision (advisory)"
         advisory.append(f"{prefix}: placeholder art: {data['placeholder_art']}")
     if data.get("perspective_mismatch"):
-        prefix = "Vision (quality gate)" if template == "run_and_gun" else "Vision (advisory)"
+        prefix = "Vision (quality gate)" if template in {"run_and_gun", "action_rpg"} else "Vision (advisory)"
         advisory.append(
             f"{prefix}: perspective mismatch: {data['perspective_mismatch']}"
         )
+    return gating, advisory, True
+
+
+def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[str]]:
+    """Compatibility wrapper for callers that only need visual findings."""
+    gating, advisory, _evaluated = _vision_review_with_status(
+        screenshot_path,
+        design_doc,
+    )
     return gating, advisory
 
 
@@ -1312,6 +1504,7 @@ def _record_attempt(
     errors: list[str] | None = None,
     screenshot_path: str | None = None,
     vision_notes: list[str] | None = None,
+    vision_evaluated: bool = False,
     balance_notes: list[str] | None = None,
     objective_result: dict | None = None,
     gameplay_video_path: str | None = None,
@@ -1356,6 +1549,7 @@ def _record_attempt(
             "errors": errors,
             "screenshot_path": screenshot_path,
             "vision_notes": vision_notes,
+            "vision_evaluated": vision_evaluated,
             "balance_notes": balance_notes,
             "objective_result": objective_result,
             "gameplay_video_path": gameplay_video_path,
@@ -1375,6 +1569,7 @@ def _record_attempt(
         "qa_errors": errors,
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes,
+        "vision_evaluated": vision_evaluated,
         "balance_notes": balance_notes,
         "objective_result": objective_result,
         "gameplay_video_path": gameplay_video_path,
@@ -1398,6 +1593,7 @@ def _failed_attempt(
     errors: list[str],
     screenshot_path: str | None = None,
     vision_notes: list[str] | None = None,
+    vision_evaluated: bool = False,
     balance_notes: list[str] | None = None,
     objective_result: dict | None = None,
     gameplay_video_path: str | None = None,
@@ -1412,6 +1608,7 @@ def _failed_attempt(
         "retry_count": retry_count + 1,
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes or [],
+        "vision_evaluated": vision_evaluated,
         "balance_notes": balance_notes or [],
         "objective_result": objective_result,
         "gameplay_video_path": gameplay_video_path,
@@ -1424,6 +1621,7 @@ def _failed_attempt(
             errors=errors,
             screenshot_path=screenshot_path,
             vision_notes=vision_notes,
+            vision_evaluated=vision_evaluated,
             balance_notes=balance_notes,
             objective_result=objective_result,
             gameplay_video_path=gameplay_video_path,
@@ -1462,7 +1660,7 @@ def qa_agent(state: GraphState) -> GraphState:
         return _failed_attempt(state, stage="safety", errors=[str(exc)])
 
     template = (state.get("design_doc") or {}).get("mechanic_template", "")
-    if template == "run_and_gun":
+    if template in {"run_and_gun", "action_rpg"}:
         asset_names = [Path(path).name.lower() for path in (state.get("sprite_paths") or [])]
         has_hero = any("hero_sprite" in name or name.startswith("hero") for name in asset_names)
         has_background = any(name.startswith(f"level_{current_level}_") for name in asset_names)
@@ -1471,6 +1669,16 @@ def qa_agent(state: GraphState) -> GraphState:
             missing_assets.append("authored hero sprite")
         if not has_background:
             missing_assets.append(f"level {current_level + 1} background")
+        if template == "action_rpg":
+            role_assets = {
+                "stalker enemy sprite": ("stalker", "enemy", "creature"),
+                "quest NPC sprite": ("hermit", "npc", "keeper"),
+                "forge boss sprite": ("boss", "warden", "golem"),
+                "spark or gear pickup sprite": ("key_item", "spark", "charm"),
+            }
+            for label, needles in role_assets.items():
+                if not any(any(needle in name for needle in needles) for name in asset_names):
+                    missing_assets.append(label)
         if missing_assets:
             errors = [
                 "Production art gate: missing " + ", ".join(missing_assets)
@@ -1610,6 +1818,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "dot_maze",
         "maze_chase",
         "run_and_gun",
+        "action_rpg",
     }:
         objective_result, objective_errors, objective_blocked = _run_objective_probe(
             project_dir,
@@ -1633,6 +1842,7 @@ def qa_agent(state: GraphState) -> GraphState:
             "survive_and_deplete": "hybrid milestones",
             "capture_zones": "capture milestones",
             "herd_to_goal": "herding milestones",
+            "action_rpg": "RPG system transitions",
         }.get(template, "pickups")
         print(
             f"[QA Agent] Objective: completed {objective_result['collected']}/"
@@ -1642,6 +1852,30 @@ def qa_agent(state: GraphState) -> GraphState:
             f"max_stall={objective_result['max_stall_frames']} frames)"
         )
         total_levels = len((state.get("design_doc") or {}).get("levels") or [{}])
+        if template == "action_rpg":
+            playthrough_result, playthrough_errors, playthrough_blocked = (
+                _run_action_rpg_playthrough(project_dir, scene)
+            )
+            objective_result["input_playthrough"] = playthrough_result
+            if playthrough_errors:
+                label = "BLOCKED" if playthrough_blocked else "FAILED"
+                print(f"[QA Agent] {label} input-driven Action-RPG: {playthrough_errors}")
+                return _failed_attempt(
+                    state,
+                    stage=(
+                        "playthrough_probe"
+                        if playthrough_blocked
+                        else "input_playthrough"
+                    ),
+                    errors=playthrough_errors,
+                    objective_result=objective_result,
+                    blocked=playthrough_blocked,
+                )
+            print(
+                "[QA Agent] Playthrough: normal inputs completed all three rooms, "
+                f"the hermit quest and boss in {playthrough_result['frames']} frames "
+                f"with {playthrough_result['deaths']} deaths"
+            )
         if template == "run_and_gun" and current_level == total_levels - 1:
             campaign_result, campaign_errors, campaign_blocked = _run_campaign_probe(
                 project_dir, "res://Level_0.tscn"
@@ -1729,8 +1963,9 @@ def qa_agent(state: GraphState) -> GraphState:
     vision_notes = []
     vision_gating = []
     vision_advisory = []
+    vision_evaluated = False
     if screenshot_path:
-        vision_gating, vision_advisory = _vision_review(
+        vision_gating, vision_advisory, vision_evaluated = _vision_review_with_status(
             screenshot_path, state.get("design_doc")
         )
         vision_notes = vision_gating + vision_advisory
@@ -1748,6 +1983,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=vision_gating,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
             )
@@ -1773,6 +2009,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=video_errors,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
                 blocked=video_blocked,
@@ -1791,6 +2028,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=[error],
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
                 gameplay_video_path=gameplay_video_path,
@@ -1806,6 +2044,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=video_gating,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
                 gameplay_video_path=gameplay_video_path,
@@ -1835,6 +2074,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=vision_gating,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
                 gameplay_video_path=gameplay_video_path,
@@ -1874,6 +2114,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "qa_errors": [],
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes,
+        "vision_evaluated": vision_evaluated,
         "balance_notes": balance_notes,
         "objective_result": objective_result,
         "gameplay_video_path": gameplay_video_path,
@@ -1886,6 +2127,7 @@ def qa_agent(state: GraphState) -> GraphState:
             stage="complete",
             screenshot_path=screenshot_path,
             vision_notes=vision_notes,
+            vision_evaluated=vision_evaluated,
             balance_notes=balance_notes,
             objective_result=objective_result,
             gameplay_video_path=gameplay_video_path,

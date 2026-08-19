@@ -28,6 +28,7 @@ export type LevelAttempt = {
   screenshot_path?: string
   gameplay_video_path?: string
   vision_notes?: string[]
+  vision_evaluated?: boolean
   balance_notes?: string[]
   video_notes?: string[]
   objective_result?: Record<string, unknown>
@@ -57,6 +58,7 @@ export type LevelResult = {
   objective_result?: Record<string, unknown>
   qa_errors?: string[]
   vision_notes?: string[]
+  vision_evaluated?: boolean
   video_notes?: string[]
   playability_result?: PlayabilityResult
 }

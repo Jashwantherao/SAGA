@@ -1,0 +1,32 @@
+{
+  "id": "action_rpg",
+  "version": 1,
+  "mechanic_template": "action_rpg",
+  "capabilities": [
+    "top_down_four_direction_movement",
+    "wall_and_playfield_collision",
+    "frontal_melee_combat",
+    "damage_invulnerability_and_restart",
+    "patrol_chase_attack_enemy_states",
+    "spark_and_item_pickups",
+    "inventory_panel_and_spending",
+    "npc_dialogue_and_movement_lock",
+    "quest_stage_and_ability_unlock",
+    "three_room_persistence",
+    "versioned_checkpoint_save",
+    "two_phase_boss",
+    "action_rpg_hud",
+    "deterministic_system_probe",
+    "level_completion"
+  ],
+  "required_files": [
+    "inventory.gd",
+    "progression_profile.gd",
+    "player_controller.gd",
+    "enemy.gd",
+    "pickup.gd",
+    "npc.gd",
+    "boss.gd",
+    "action_rpg_level.gd"
+  ]
+}

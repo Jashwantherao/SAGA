@@ -58,9 +58,11 @@ def load_pack(pack_id: str) -> ArchetypePack:
 
 
 def pack_for_template(template: str) -> ArchetypePack | None:
-    if template != "run_and_gun":
-        return None
-    return load_pack("run_and_gun")
+    pack_id = {
+        "run_and_gun": "run_and_gun",
+        "action_rpg": "action_rpg",
+    }.get(template)
+    return load_pack(pack_id) if pack_id else None
 
 
 def scaffold_pack(project_dir: str | Path, template: str) -> ArchetypePack | None:
@@ -438,5 +440,143 @@ def scaffold_run_and_gun_level(
     if pack is None:  # pragma: no cover - protected by the fixed template above
         raise ValueError("run_and_gun archetype is unavailable")
     adapter = build_run_and_gun_adapter(design_doc, level_index, asset_filenames)
+    (Path(project_dir) / f"Level_{level_index}.gd").write_text(adapter, encoding="utf-8")
+    return pack
+
+
+def validate_action_rpg_plan(plan: dict) -> list[str]:
+    """Reject an RPG shell that lacks a complete explore-to-boss loop."""
+    errors: list[str] = []
+    rooms = plan.get("rooms") or []
+    if len(rooms) != 3:
+        errors.append("action RPG v1 requires exactly three connected rooms")
+    if [room.get("index") for room in rooms] != [0, 1, 2]:
+        errors.append("room indices must be contiguous from zero")
+    total_sparks = sum(
+        int(pickup.get("amount") or 0)
+        for room in rooms
+        for pickup in (room.get("pickups") or [])
+        if pickup.get("kind") == "sparks"
+    )
+    quest_cost = int((plan.get("quest") or {}).get("spark_cost") or 0)
+    if quest_cost < 1 or total_sparks < quest_cost:
+        errors.append("reachable spark pickups must fund the quest")
+    if not any(room.get("npc") for room in rooms):
+        errors.append("at least one room must contain the quest NPC")
+    if not (rooms and rooms[-1].get("boss")):
+        errors.append("the final room must contain the boss")
+    if len(plan.get("quest_stages") or []) < 4:
+        errors.append("quest must expose collect, return, forge-open and complete stages")
+    return errors
+
+
+def build_action_rpg_plan(design_doc: dict, level_index: int) -> dict:
+    levels = design_doc.get("levels") or [{}]
+    level = levels[min(level_index, len(levels) - 1)]
+    intensity = max(1, min(10, int(level.get("intensity") or 5)))
+    identity = "|".join((
+        str(design_doc.get("title") or "Action RPG"),
+        str(level.get("name") or f"Level {level_index + 1}"),
+        str(level_index),
+    ))
+    seed = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    enemy_health = 2 + intensity // 3
+    plan = {
+        "schema_version": 1,
+        "seed": seed,
+        "quest_stages": ["collect_sparks", "return_to_hermit", "forge_open", "complete"],
+        "quest": {"spark_cost": 10, "reward": "spark_dash", "opens_room": 2},
+        "rooms": [
+            {
+                "index": 0,
+                "id": "hermit_court",
+                "name": "Hermit's Court",
+                "npc": "hermit",
+                "enemies": [{"id": "stalker_entry", "role": "stalker", "health": enemy_health}],
+                "pickups": [{"id": "entry_sparks", "kind": "sparks", "amount": 4}],
+            },
+            {
+                "index": 1,
+                "id": "rust_vault",
+                "name": "Rust Vault",
+                "enemies": [
+                    {"id": "stalker_vault_a", "role": "stalker", "health": enemy_health},
+                    {"id": "stalker_vault_b", "role": "stalker", "health": enemy_health},
+                ],
+                "pickups": [
+                    {"id": "vault_sparks", "kind": "sparks", "amount": 6},
+                    {"id": "ember_charm", "kind": "item", "amount": 1},
+                ],
+            },
+            {
+                "index": 2,
+                "id": "heart_forge",
+                "name": "Heart Forge",
+                "requires_quest_stage": "forge_open",
+                "boss": {"id": "forge_warden", "health": 10 + intensity, "phases": 2},
+                "enemies": [],
+                "pickups": [],
+            },
+        ],
+    }
+    errors = validate_action_rpg_plan(plan)
+    if errors:
+        raise ValueError("invalid action-RPG plan: " + "; ".join(errors))
+    return plan
+
+
+def build_action_rpg_adapter(
+    design_doc: dict,
+    level_index: int,
+    asset_filenames: list[str],
+) -> str:
+    levels = design_doc.get("levels") or [{}]
+    level = levels[min(level_index, len(levels) - 1)]
+    intensity = max(1, min(10, int(level.get("intensity") or 5)))
+    hero = _asset_with(asset_filenames, "hero_sprite", "hero")
+    background = _asset_with(asset_filenames, f"level_{level_index}_", "level_")
+    enemy = _asset_with(asset_filenames, "stalker", "enemy", "creature")
+    boss = _asset_with(asset_filenames, "boss", "warden", "golem") or enemy
+    npc = _asset_with(asset_filenames, "hermit", "npc", "keeper")
+    pickup = _asset_with(asset_filenames, "key_item", "spark", "charm")
+    plan = build_action_rpg_plan(design_doc, level_index)
+    definition = {
+        "pack_version": 1,
+        "title": str(design_doc.get("title") or "Action RPG"),
+        "level_name": str(level.get("name") or f"Level {level_index + 1}"),
+        "level_index": level_index,
+        "total_levels": len(levels),
+        "intensity": intensity,
+        "player_health": max(4, 7 - intensity // 3),
+        "move_speed": 175.0 + intensity * 3.0,
+        "room_plan": plan,
+        "assets": {
+            "hero": f"res://assets/{hero}" if hero else "",
+            "background": f"res://assets/{background}" if background else "",
+            "enemy": f"res://assets/{enemy}" if enemy else "",
+            "boss": f"res://assets/{boss}" if boss else "",
+            "npc": f"res://assets/{npc}" if npc else "",
+            "pickup": f"res://assets/{pickup}" if pickup else "",
+        },
+    }
+    payload = json.dumps(definition, ensure_ascii=False, indent=2)
+    return (
+        'extends "res://archetypes/action_rpg/action_rpg_level.gd"\n\n'
+        "# Game-specific adapter. Stable RPG systems live in the versioned pack.\n"
+        "func level_definition() -> Dictionary:\n"
+        f"\treturn JSON.parse_string({json.dumps(payload)})\n"
+    )
+
+
+def scaffold_action_rpg_level(
+    project_dir: str | Path,
+    design_doc: dict,
+    level_index: int,
+    asset_filenames: list[str],
+) -> ArchetypePack:
+    pack = scaffold_pack(project_dir, "action_rpg")
+    if pack is None:  # pragma: no cover - protected by the fixed template above
+        raise ValueError("action_rpg archetype is unavailable")
+    adapter = build_action_rpg_adapter(design_doc, level_index, asset_filenames)
     (Path(project_dir) / f"Level_{level_index}.gd").write_text(adapter, encoding="utf-8")
     return pack

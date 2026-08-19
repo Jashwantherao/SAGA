@@ -11,6 +11,7 @@ from saga.agents.qa_agent import (
     _validate_video_verdict,
     _vision_prompt,
     _vision_review,
+    _vision_review_with_status,
     _video_review,
     qa_agent,
 )
@@ -916,6 +917,21 @@ def test_free_form_broken_visual_claim_is_advisory(monkeypatch):
 
     assert gating == []
     assert advisory == ["Vision (advisory): the composition feels unfinished"]
+
+
+def test_invalid_visual_verdict_is_recorded_as_not_evaluated(monkeypatch):
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._vision_raw",
+        lambda *_args: {"hero_visible": True},
+    )
+
+    gating, advisory, evaluated = _vision_review_with_status(
+        "frame.png", {"mechanic_template": "action_rpg"}
+    )
+
+    assert gating == []
+    assert advisory == []
+    assert evaluated is False
 
 
 def test_run_and_gun_placeholder_and_perspective_are_quality_gate_notes(monkeypatch):
