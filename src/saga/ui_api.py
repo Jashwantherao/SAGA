@@ -40,11 +40,12 @@ from saga.workspace import RUNS_ROOT
 
 API_HOST = "127.0.0.1"
 API_PORT = 8765
+MAX_IDEA_LENGTH = 4000
 RUN_LINE = re.compile(r"Run workspace:\s*(.+)$")
 
 
 class GenerationRequest(BaseModel):
-    idea: str = Field(min_length=3, max_length=500)
+    idea: str = Field(min_length=3, max_length=MAX_IDEA_LENGTH)
     levels: int = Field(default=1, ge=1, le=5)
     skip_preflight: bool = False
 

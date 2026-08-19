@@ -1,6 +1,6 @@
 {
   "id": "run_and_gun",
-  "version": 3,
+  "version": 6,
   "mechanic_template": "run_and_gun",
   "capabilities": [
     "side_view_movement",
@@ -8,9 +8,12 @@
     "ranged_combat",
     "enemy_patrol_and_chase",
     "damage_and_lives",
+    "damage_invulnerability_and_knockback",
+    "coyote_time_and_jump_buffer",
     "checkpoint_respawn",
     "multi_phase_boss",
     "camera_follow",
+    "styled_environment_geometry",
     "combat_hud",
     "encounter_layout_grammar",
     "hazards_and_recovery",
@@ -18,6 +21,12 @@
     "role_specific_enemy_behavior",
     "threat_budgeted_waves",
     "distinct_boss_attack_phases",
+    "route_gated_boss_shield",
+    "input_driven_playthrough_gate",
+    "persistent_campaign_profile",
+    "earned_upgrade_choice",
+    "versioned_atomic_save",
+    "duplicate_reward_protection",
     "level_completion"
   ],
   "required_files": [
@@ -29,6 +38,7 @@
     "hazard.gd",
     "pickup.gd",
     "weapon_pickup.gd",
+    "progression_profile.gd",
     "run_and_gun_level.gd"
   ]
 }

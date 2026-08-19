@@ -17,6 +17,7 @@ var checkpoint: SagaRunAndGunCheckpoint
 var player_sprite: Sprite2D
 var status_label: Label
 var objective_label: Label
+var upgrade_layer: CanvasLayer
 var kills := 0
 var total_enemies := 0
 var checkpoint_active := false
@@ -29,6 +30,7 @@ func level_definition() -> Dictionary:
 func _ready() -> void:
 	add_to_group("saga_run_and_gun_level")
 	_definition = level_definition()
+	CampaignProfile.begin_level(int(_definition.get("level_index", 0)))
 	_build_background()
 	_build_world()
 	_build_player()
@@ -41,16 +43,23 @@ func _ready() -> void:
 
 func _process(_delta: float) -> void:
 	_maybe_trigger_wave()
+	var route_clear := kills >= total_enemies and completed_waves >= wave_definitions.size()
+	if is_instance_valid(boss):
+		boss.set_shielded(not route_clear)
 	if not is_instance_valid(status_label):
 		return
 	var weapon := player.weapon_snapshot()
 	var ammo_text := "INF" if int(weapon.get("ammo", -1)) < 0 else str(weapon.get("ammo", 0))
-	status_label.text = "HP %d/%d   %s %s   CHECKPOINT %s" % [
+	var campaign := CampaignProfile.snapshot()
+	status_label.text = "HP %d/%d   %s %s   CREDITS %d   CHECKPOINT %s" % [
 		player.health, player.max_health, str(weapon.get("id", "pulse")).to_upper(), ammo_text,
+		int(campaign.get("currency", 0)),
 		"ACTIVE" if checkpoint_active else "--"
 	]
-	objective_label.text = "TARGETS %d/%d   WAVES %d/%d   BOSS %d/%d" % [
-		kills, total_enemies, completed_waves, wave_definitions.size(), boss.health if is_instance_valid(boss) else 0,
+	objective_label.text = "TARGETS %d/%d   WAVES %d/%d   BOSS %s %d/%d" % [
+		kills, total_enemies, completed_waves, wave_definitions.size(),
+		"SHIELDED" if not route_clear else "OPEN",
+		boss.health if is_instance_valid(boss) else 0,
 		boss.max_health if is_instance_valid(boss) else int(_definition.get("boss_health", 1))
 	]
 	if state == "over" and Input.is_action_just_pressed("ui_accept"):
@@ -65,22 +74,48 @@ func _encounter_plan() -> Dictionary:
 func _combat_plan() -> Dictionary:
 	return _encounter_plan().get("combat_plan", {}) as Dictionary
 
+func _progression_plan() -> Dictionary:
+	return _definition.get("progression", {}) as Dictionary
+
 func _build_background() -> void:
 	var path := _asset("background")
 	if path == "":
 		RenderingServer.set_default_clear_color(Color("101827"))
+		_build_fallback_background()
 		return
 	var texture := load(path) as Texture2D
 	if texture == null:
 		return
-	var sprite := Sprite2D.new()
-	sprite.texture = texture
-	sprite.centered = true
-	sprite.position = Vector2(512, 288)
 	var size := texture.get_size()
-	sprite.scale = Vector2(1024.0 / maxf(size.x, 1.0), 576.0 / maxf(size.y, 1.0))
-	sprite.z_index = -100
-	add_child(sprite)
+	var world_width := float(_definition.get("world_width", 2000.0))
+	var tile_count := ceili(world_width / 1024.0) + 1
+	for index in tile_count:
+		var sprite := Sprite2D.new()
+		sprite.texture = texture
+		sprite.centered = true
+		sprite.position = Vector2(512.0 + index * 1024.0, 288)
+		sprite.scale = Vector2(1025.0 / maxf(size.x, 1.0), 576.0 / maxf(size.y, 1.0))
+		sprite.z_index = -100
+		add_child(sprite)
+
+func _build_fallback_background() -> void:
+	var width := float(_definition.get("world_width", 2000.0))
+	var sky := Polygon2D.new()
+	sky.polygon = PackedVector2Array([Vector2(0, 0), Vector2(width, 0), Vector2(width, 576), Vector2(0, 576)])
+	sky.color = Color("101827")
+	sky.z_index = -110
+	add_child(sky)
+	for layer in 3:
+		var ridge := Polygon2D.new()
+		var points := PackedVector2Array([Vector2(0, 576)])
+		var base_y := 360.0 + layer * 58.0
+		for x in range(0, int(width) + 180, 180):
+			points.append(Vector2(x, base_y - float((x / 180 + layer) % 3) * 34.0))
+		points.append(Vector2(width, 576))
+		ridge.polygon = points
+		ridge.color = [Color("18283a"), Color("1d3145"), Color("22394d")][layer]
+		ridge.z_index = -105 + layer
+		add_child(ridge)
 
 func _solid_rect(position: Vector2, size: Vector2, color: Color) -> StaticBody2D:
 	var body := StaticBody2D.new()
@@ -93,12 +128,56 @@ func _solid_rect(position: Vector2, size: Vector2, color: Color) -> StaticBody2D
 	collision.shape = rectangle
 	body.add_child(collision)
 	var visual := Polygon2D.new()
-	visual.polygon = PackedVector2Array([
-		Vector2(-size.x / 2.0, -size.y / 2.0), Vector2(size.x / 2.0, -size.y / 2.0),
-		Vector2(size.x / 2.0, size.y / 2.0), Vector2(-size.x / 2.0, size.y / 2.0)
-	])
-	visual.color = color
+	if size.y <= 30.0:
+		visual.polygon = PackedVector2Array([
+			Vector2(-size.x / 2.0, -size.y / 2.0), Vector2(size.x / 2.0, -size.y / 2.0),
+			Vector2(size.x / 2.0, -size.y / 2.0 + 8.0), Vector2(-size.x / 2.0, -size.y / 2.0 + 8.0)
+		])
+	else:
+		visual.polygon = PackedVector2Array([
+			Vector2(-size.x / 2.0, -size.y / 2.0), Vector2(size.x / 2.0, -size.y / 2.0),
+			Vector2(size.x / 2.0, size.y / 2.0), Vector2(-size.x / 2.0, size.y / 2.0)
+		])
+	visual.color = color.darkened(0.22)
 	body.add_child(visual)
+	var top_trim := Polygon2D.new()
+	top_trim.polygon = PackedVector2Array([
+		Vector2(-size.x / 2.0, -size.y / 2.0), Vector2(size.x / 2.0, -size.y / 2.0),
+		Vector2(size.x / 2.0, -size.y / 2.0 + 5.0), Vector2(-size.x / 2.0, -size.y / 2.0 + 5.0)
+	])
+	top_trim.color = Color("f3a33a")
+	body.add_child(top_trim)
+	var lower_trim := Line2D.new()
+	lower_trim.points = PackedVector2Array([
+		Vector2(-size.x / 2.0, size.y / 2.0 - 3.0), Vector2(size.x / 2.0, size.y / 2.0 - 3.0)
+	])
+	lower_trim.width = 3.0
+	lower_trim.default_color = Color("6d8294") if size.y <= 30.0 else Color("132235")
+	body.add_child(lower_trim)
+	for panel_x in range(int(-size.x / 2.0) + 48, int(size.x / 2.0), 96):
+		var seam := Line2D.new()
+		if size.y <= 30.0:
+			seam.points = PackedVector2Array([
+				Vector2(panel_x - 48.0, -size.y / 2.0 + 7.0),
+				Vector2(panel_x, size.y / 2.0 - 3.0),
+				Vector2(panel_x + 48.0, -size.y / 2.0 + 7.0)
+			])
+		else:
+			seam.points = PackedVector2Array([
+				Vector2(panel_x, -size.y / 2.0 + 7.0), Vector2(panel_x, size.y / 2.0 - 5.0)
+			])
+		seam.width = 2.0
+		seam.default_color = Color("536f85") if size.y <= 30.0 else Color(0.08, 0.16, 0.24, 0.72)
+		body.add_child(seam)
+	if size.y <= 30.0:
+		for support_x in [-size.x * 0.32, size.x * 0.32]:
+			var support := Polygon2D.new()
+			support.polygon = PackedVector2Array([
+				Vector2(support_x - 9.0, size.y / 2.0), Vector2(support_x + 9.0, size.y / 2.0),
+				Vector2(support_x + 4.0, size.y / 2.0 + 28.0), Vector2(support_x - 4.0, size.y / 2.0 + 28.0)
+			])
+			support.color = Color("172a3e")
+			body.add_child(support)
 	add_child(body)
 	return body
 
@@ -147,6 +226,7 @@ func _build_player() -> void:
 		"health": _definition.get("player_health", 5),
 		"world_limit": _definition.get("world_width", 2000.0),
 	})
+	CampaignProfile.apply_to_player(player)
 	player.died.connect(_on_player_died)
 	var camera := Camera2D.new()
 	camera.position = Vector2(180, -80)
@@ -242,8 +322,16 @@ func _spawn_wave(wave: Dictionary) -> void:
 	active_wave_definition = wave
 	active_wave_enemies.clear()
 	player.set_arena_lock(float(wave.get("lock_start", 24.0)), float(wave.get("lock_end", _definition.get("world_width", 2000.0))))
+	var safe_gap := 210.0
+	var lock_start := float(wave.get("lock_start", 24.0))
+	var lock_end := float(wave.get("lock_end", _definition.get("world_width", 2000.0)))
 	for member_value in wave.get("members", []) as Array:
-		_spawn_enemy(member_value as Dictionary, true)
+		var member := (member_value as Dictionary).duplicate()
+		var spawn_x := float(member.get("x", lock_end - 100.0))
+		if absf(spawn_x - player.global_position.x) < safe_gap:
+			spawn_x = clampf(player.global_position.x + safe_gap, lock_start + 70.0, lock_end - 70.0)
+		member["x"] = spawn_x
+		_spawn_enemy(member, true)
 
 func _maybe_trigger_wave(force: bool = false) -> void:
 	if state != "playing" or not active_wave_definition.is_empty() or pending_wave_index >= wave_definitions.size():
@@ -286,20 +374,23 @@ func _build_hud() -> void:
 	add_child(canvas)
 	var panel := ColorRect.new()
 	panel.position = Vector2(14, 12)
-	panel.size = Vector2(620, 76)
+	panel.size = Vector2(670, 76)
 	panel.color = Color(0.02, 0.04, 0.08, 0.84)
 	canvas.add_child(panel)
 	status_label = Label.new()
 	status_label.position = Vector2(28, 22)
-	status_label.add_theme_font_size_override("font_size", 18)
+	status_label.add_theme_font_size_override("font_size", 16)
 	canvas.add_child(status_label)
 	objective_label = Label.new()
 	objective_label.position = Vector2(28, 50)
-	objective_label.add_theme_font_size_override("font_size", 17)
+	objective_label.add_theme_font_size_override("font_size", 15)
 	canvas.add_child(objective_label)
 	var controls := Label.new()
-	controls.position = Vector2(700, 22)
-	controls.text = "%s   ARROWS move/jump   ENTER fire   TAB switch" % str(_encounter_plan().get("layout_id", "route")).to_upper()
+	controls.position = Vector2(690, 22)
+	controls.size = Vector2(320, 48)
+	controls.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	controls.add_theme_font_size_override("font_size", 13)
+	controls.text = "%s\nARROWS move/jump  ENTER fire  TAB gun" % str(_encounter_plan().get("layout_id", "route")).to_upper()
 	canvas.add_child(controls)
 
 func _on_player_died() -> void:
@@ -313,17 +404,82 @@ func _on_enemy_died(enemy: Node) -> void:
 	Sfx.play("hit")
 
 func _on_boss_died(_enemy: Node) -> void:
-	state = "won"
 	player.can_control = false
-	objective_label.text = "SECTOR CLEAR"
+	var progression := _progression_plan()
+	CampaignProfile.award_level(
+		str(progression.get("reward_id", "level_reward")),
+		int(progression.get("currency_reward", 20)),
+		int(progression.get("xp_reward", 30))
+	)
 	Sfx.play("win")
+	if bool(_definition.get("has_next_level", false)):
+		state = "upgrade"
+		objective_label.text = "SECTOR CLEAR — CHOOSE AN UPGRADE"
+		_show_upgrade_choices()
+	else:
+		state = "won"
+		objective_label.text = "SECTOR CLEAR"
+		_complete_level()
+
+func _complete_level() -> void:
 	if not _completion_sent:
 		_completion_sent = true
 		Game.level_complete()
 
+func _show_upgrade_choices() -> void:
+	if is_instance_valid(upgrade_layer):
+		upgrade_layer.queue_free()
+	upgrade_layer = CanvasLayer.new()
+	upgrade_layer.layer = 20
+	add_child(upgrade_layer)
+	var backdrop := ColorRect.new()
+	backdrop.position = Vector2(170, 165)
+	backdrop.size = Vector2(684, 235)
+	backdrop.color = Color(0.02, 0.03, 0.08, 0.96)
+	upgrade_layer.add_child(backdrop)
+	var title := Label.new()
+	title.position = Vector2(235, 205)
+	title.text = "CHOOSE YOUR CAMPAIGN UPGRADE"
+	title.add_theme_font_size_override("font_size", 25)
+	upgrade_layer.add_child(title)
+	var cost := int(_progression_plan().get("upgrade_cost", 10))
+	var choices := Label.new()
+	choices.position = Vector2(225, 265)
+	choices.text = "[1] FIREPOWER  +1 damage\n[2] MOBILITY   +8%% speed\n[3] VITALITY   +2 max health\n\nCost: %d credits" % cost
+	choices.add_theme_font_size_override("font_size", 19)
+	upgrade_layer.add_child(choices)
+
+func _choose_upgrade(track: String) -> bool:
+	if state != "upgrade":
+		return false
+	var cost := int(_progression_plan().get("upgrade_cost", 10))
+	if not CampaignProfile.purchase_upgrade(track, cost):
+		return false
+	CampaignProfile.apply_to_player(player)
+	if is_instance_valid(upgrade_layer):
+		upgrade_layer.queue_free()
+	state = "won"
+	objective_label.text = "%s UPGRADED — DEPLOYING" % track.to_upper()
+	_complete_level()
+	return true
+
+func _unhandled_input(event: InputEvent) -> void:
+	if state != "upgrade" or not event is InputEventKey:
+		return
+	var key_event := event as InputEventKey
+	if not key_event.pressed or key_event.echo:
+		return
+	if key_event.keycode == KEY_1:
+		_choose_upgrade("firepower")
+	elif key_event.keycode == KEY_2:
+		_choose_upgrade("mobility")
+	elif key_event.keycode == KEY_3:
+		_choose_upgrade("vitality")
+
 func restart_from_checkpoint() -> void:
 	state = "playing"
 	player.reset_at_checkpoint()
+	CampaignProfile.apply_to_player(player)
 	if not active_wave_definition.is_empty():
 		var wave := active_wave_definition.duplicate(true)
 		for enemy in active_wave_enemies:
@@ -338,6 +494,8 @@ func qa_snapshot() -> Dictionary:
 	var plan := _encounter_plan()
 	var combat := _combat_plan()
 	var weapon := player.weapon_snapshot()
+	var campaign := CampaignProfile.snapshot()
+	var upgrades := campaign.get("upgrades", {}) as Dictionary
 	return {
 		"state": state,
 		"player_health": player.health,
@@ -370,6 +528,15 @@ func qa_snapshot() -> Dictionary:
 		"threat_budget_spent": int(combat.get("threat_budget_spent", 0)),
 		"boss_phase": boss.phase if is_instance_valid(boss) else 0,
 		"boss_pattern_projectiles": boss.attack_pattern_projectiles() if is_instance_valid(boss) else 0,
+		"profile_schema_version": int(campaign.get("schema_version", -1)),
+		"campaign_currency": int(campaign.get("currency", 0)),
+		"campaign_xp": int(campaign.get("xp", 0)),
+		"claimed_rewards": (campaign.get("claimed_rewards", []) as Array).size(),
+		"firepower_level": int(upgrades.get("firepower", 0)),
+		"mobility_level": int(upgrades.get("mobility", 0)),
+		"vitality_level": int(upgrades.get("vitality", 0)),
+		"campaign_last_level": int(campaign.get("last_level", -1)),
+		"campaign_load_status": str(campaign.get("last_load_status", "")),
 	}
 
 func qa_fire() -> void:
@@ -396,6 +563,42 @@ func qa_set_boss_phase(phase: int) -> void:
 	if is_instance_valid(boss):
 		boss.qa_set_phase(phase)
 
+func qa_progression_reset() -> void:
+	CampaignProfile.reset_profile(false)
+	CampaignProfile.begin_level(int(_definition.get("level_index", 0)))
+	CampaignProfile.apply_to_player(player)
+
+func qa_progression_award() -> void:
+	var progression := _progression_plan()
+	CampaignProfile.award_level(
+		str(progression.get("reward_id", "level_reward")),
+		int(progression.get("currency_reward", 20)),
+		int(progression.get("xp_reward", 30))
+	)
+
+func qa_progression_buy(track: String) -> void:
+	CampaignProfile.purchase_upgrade(track, int(_progression_plan().get("upgrade_cost", 10)))
+	CampaignProfile.apply_to_player(player)
+
+func qa_progression_save() -> void:
+	CampaignProfile.save_profile()
+
+func qa_progression_zero_memory() -> void:
+	CampaignProfile.qa_zero_memory()
+
+func qa_progression_load() -> void:
+	CampaignProfile.load_profile()
+	CampaignProfile.apply_to_player(player)
+
+func qa_progression_begin_next_level() -> void:
+	CampaignProfile.begin_level(int(_definition.get("level_index", 0)) + 1)
+
+func qa_progression_corrupt() -> void:
+	CampaignProfile.qa_corrupt_save()
+
+func qa_select_upgrade(track: String) -> void:
+	_choose_upgrade(track)
+
 func qa_activate_checkpoint() -> void:
 	checkpoint.activate(player)
 
@@ -413,4 +616,4 @@ func qa_defeat_enemy() -> void:
 
 func qa_defeat_boss() -> void:
 	if is_instance_valid(boss):
-		boss.take_damage(boss.health)
+		boss.qa_force_damage(boss.health)

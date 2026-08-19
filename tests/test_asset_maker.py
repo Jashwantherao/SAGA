@@ -42,6 +42,23 @@ def test_asset_plan_keeps_batch_seeds_when_filtered():
     }
 
 
+def test_run_and_gun_background_uses_side_view_not_top_down():
+    doc = _doc()
+    doc["mechanic_template"] = "run_and_gun"
+
+    background_prompt = next(
+        request[0] for request in _asset_requests(doc) if request[1] == "level_0_bg"
+    )
+
+    assert "strict 2D side-view orthographic" in background_prompt
+    assert "horizontal ground and skyline" in background_prompt
+    assert "no top-down view" in background_prompt
+    assert "camera facing straight down" not in background_prompt
+    assert "empty foreground" in background_prompt
+    assert "no platforms" in background_prompt
+    assert "a bright room" not in background_prompt
+
+
 def test_targeted_repair_replaces_only_requested_file_and_records_it(tmp_path, monkeypatch):
     asset_dir = tmp_path / "assets"
     asset_dir.mkdir()
@@ -137,4 +154,3 @@ def test_global_art_style_is_not_accepted_as_a_targeted_repair():
     result = _sanitize(decision, {"design_doc": _doc()}, retry_count=1)
 
     assert result["action"] == "fix"
-

@@ -53,6 +53,7 @@ class Settings:
     designer_backend: str
     designer_model: str
     designer_remote_model: str
+    designer_timeout: float
 
     director_backend: str
     director_model: str | None
@@ -126,6 +127,7 @@ class Settings:
                 "hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q3_K_S",
             ),
             designer_remote_model=_env("SAGA_DESIGNER_REMOTE_MODEL", "deepseek-v4-pro"),
+            designer_timeout=_float_env("SAGA_DESIGNER_TIMEOUT", 180.0),
             director_backend=_env("SAGA_DIRECTOR_BACKEND", "local").lower(),
             director_model=_optional_env("SAGA_DIRECTOR_MODEL"),
             director_remote_model=_env("SAGA_DIRECTOR_REMOTE_MODEL", "deepseek-v4-pro"),

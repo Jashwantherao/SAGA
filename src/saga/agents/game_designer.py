@@ -134,7 +134,7 @@ SYSTEM_PROMPT = (
     "dot_maze (eat every dot in a dense maze while ghosts patrol and one hunts "
     "you, with rare power pickups that briefly turn the tables - prefer it for "
     "classic chase-and-chomp arcade fantasies), run_and_gun (a side-view action "
-    "game built around jumping, three collectible weapons, mixed-role combat waves, checkpoints and a "
+    "game built around jumping, three collectible weapons, mixed-role combat waves, checkpoints, persistent between-level upgrades and a "
     "multi-phase boss - prefer it for commando, blaster, siege or action-platform "
     "fantasies), maze_chase (navigate walled "
     "corridors collecting items while dodging a "
@@ -151,7 +151,7 @@ SYSTEM_PROMPT = (
     "and zone fuel. maze_chase: patroller speed and route coverage, pickup "
     "placement depth, lives. dot_maze: ghost speeds (patrollers and hunter), "
     "power-pickup duration, dot count, lives. run_and_gun: threat budget, enemy "
-    "role mix, weapon-cache placement, player health, checkpoint spacing and boss phases. "
+    "role mix, weapon-cache placement, player health, checkpoint spacing, upgrade rewards and boss phases. "
     "collect: pickup count and how "
     "far apart they sit. "
     "ordered_switches: sequence length and switch spacing. herd_to_goal: flee "
@@ -378,7 +378,14 @@ def _design_remote(user_prompt: str, level_count: int | None = None) -> dict:
         },
         {"role": "user", "content": user_prompt},
     ]
-    doc = _parse_json_lenient(chat(messages, model=REMOTE_MODEL, json_mode=True))
+    doc = _parse_json_lenient(
+        chat(
+            messages,
+            model=REMOTE_MODEL,
+            json_mode=True,
+            timeout=settings.designer_timeout,
+        )
+    )
 
     problems = _validate(doc, level_count)
     if problems:
@@ -393,7 +400,14 @@ def _design_remote(user_prompt: str, level_count: int | None = None) -> dict:
                 ),
             }
         )
-        doc = _parse_json_lenient(chat(messages, model=REMOTE_MODEL, json_mode=True))
+        doc = _parse_json_lenient(
+            chat(
+                messages,
+                model=REMOTE_MODEL,
+                json_mode=True,
+                timeout=settings.designer_timeout,
+            )
+        )
         problems = _validate(doc, level_count)
         if problems:
             raise ValueError(f"Remote designer produced an invalid design doc: {problems}")

@@ -74,6 +74,26 @@ def assess_ship_status(result: dict) -> tuple[str, bool]:
     if not result.get("qa_passed") or not all_passed:
         return "failed", False
 
+    quality_report = result.get("quality_report")
+    if quality_report and not (quality_report.get("gate") or {}).get("passed"):
+        if quality_report.get("status") == "blocked":
+            return "blocked", False
+        return "failed", False
+
+    # Presentation warnings are normally shippable and remain visible in the
+    # ledger. A production run-and-gun build is the exception: placeholder
+    # geometry or a top-down/isometric background behind flat side-view play
+    # is a known prototype-quality defect, not a subjective polish note.
+    if (result.get("design_doc") or {}).get("mechanic_template") == "run_and_gun":
+        quality_failures = [
+            note
+            for item in by_index.values()
+            for note in (item.get("vision_notes") or [])
+            if str(note).startswith("Vision (quality gate):")
+        ]
+        if quality_failures:
+            return "failed", False
+
     has_warnings = bool(unconfirmed_systems(result)) or any(
         (item.get("vision_notes") or [])
         or (item.get("balance_notes") or [])
@@ -277,8 +297,19 @@ def main() -> None:
     # again from the updated durable ledger.
     ship_status, ship_ready = assess_ship_status(result)
     level_results = result.get("level_results") or []
+    quality_report = result.get("quality_report")
+    quality_report_path = Path(result["run_dir"]) / "quality_report.json"
+    if quality_report:
+        quality_report_path.write_text(
+            json.dumps(quality_report, indent=2), encoding="utf-8"
+        )
+        print(
+            f"Quality report: {quality_report_path} "
+            f"({quality_report.get('overall_score')}/100)",
+            file=sys.stderr,
+        )
     manifest = {
-        "manifest_version": 14,
+        "manifest_version": 15,
         "run_dir": result["run_dir"],
         "idea": args.idea,
         "title": (result.get("design_doc") or {}).get("title"),
@@ -295,6 +326,9 @@ def main() -> None:
         "current_level": result.get("current_level"),
         "retry_count": sum(item.get("retry_count") or 0 for item in level_results),
         "level_results": level_results,
+        "quality_results": result.get("quality_results") or [],
+        "quality_report": quality_report,
+        "quality_report_path": str(quality_report_path) if quality_report else None,
         "godot_project_path": result.get("godot_project_path"),
         "sprite_paths": result.get("sprite_paths") or [],
         "asset_replacements": result.get("asset_replacements") or [],

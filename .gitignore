@@ -9,6 +9,8 @@ wheels/
 
 # Virtual environments
 .venv*/
+.runtime/
+.tmp/
 
 # Project-local frontend and Rust toolchains/caches
 .tooling/

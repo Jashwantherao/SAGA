@@ -20,6 +20,7 @@ ENV_FIELDS = {
     "designer_backend": "SAGA_DESIGNER_BACKEND",
     "designer_model": "SAGA_DESIGNER_MODEL",
     "designer_remote_model": "SAGA_DESIGNER_REMOTE_MODEL",
+    "designer_timeout": "SAGA_DESIGNER_TIMEOUT",
     "director_backend": "SAGA_DIRECTOR_BACKEND",
     "director_model": "SAGA_DIRECTOR_MODEL",
     "director_remote_model": "SAGA_DIRECTOR_REMOTE_MODEL",
@@ -55,6 +56,7 @@ DEFAULTS = {
     "designer_backend": "local",
     "designer_model": "hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q3_K_S",
     "designer_remote_model": "deepseek-v4-pro",
+    "designer_timeout": "180",
     "director_backend": "local",
     "director_model": "",
     "director_remote_model": "deepseek-v4-pro",
@@ -105,6 +107,7 @@ class StudioSettingsUpdate(BaseModel):
     designer_backend: Literal["local", "deepseek", "openai", "remote", "claude"]
     designer_model: str = Field(min_length=1, max_length=250)
     designer_remote_model: str = Field(min_length=1, max_length=250)
+    designer_timeout: float = Field(default=180, ge=30, le=1800)
     director_backend: Literal[
         "local", "deepseek", "openai", "remote", "claude", "deterministic"
     ]
@@ -172,7 +175,7 @@ def read_studio_settings() -> dict[str, Any]:
             result[field] = raw.lower() in {"1", "true", "yes", "on"}
         elif field in {"incremental_max_systems", "incremental_max_attempts"}:
             result[field] = int(raw)
-        elif field == "coder_timeout":
+        elif field in {"coder_timeout", "designer_timeout"}:
             result[field] = float(raw)
         else:
             result[field] = raw

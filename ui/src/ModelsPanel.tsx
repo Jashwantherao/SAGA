@@ -3,7 +3,7 @@ import { useEffect, useId, useState } from 'react'
 const API = 'http://127.0.0.1:8765/api'
 
 type Settings = {
-  designer_backend: string; designer_model: string; designer_remote_model: string
+  designer_backend: string; designer_model: string; designer_remote_model: string; designer_timeout: number
   director_backend: string; director_model: string; director_remote_model: string
   architect_backend: string; architect_model: string; architect_base_url: string
   coder_backend: string; coder_model: string; coder_remote_model: string; coder_timeout: number; dotmaze_model: string
@@ -26,7 +26,7 @@ const backendOptions: Record<string, { value: string; label: string }[]> = {
   ],
   director: [
     { value: 'deterministic', label: 'Deterministic policy' },
-    { value: 'local', label: 'Local Â· Ollama' },
+    { value: 'local', label: 'Local · Ollama' },
     { value: 'deepseek', label: 'DeepSeek API' },
     { value: 'openai', label: 'Custom OpenAI API' },
     { value: 'claude', label: 'Anthropic Claude' },
@@ -95,9 +95,14 @@ export default function ModelsPanel() {
 
   if (!settings) return <div className="panel settings-loading">Loading configured providers and models…</div>
 
+  const configuredProviders = Object.values(settings.api_keys).filter(Boolean).length
+
   return <div className="models-layout">
     <section className="agent-settings">
       <div className="settings-section-title"><p className="eyebrow">AGENT ROUTING</p><h2>Choose the right brain for each job</h2><p>Local for cost and privacy; hosted models where quality matters most.</p></div>
+      <div className="routing-summary">
+        <span><b>6</b> studio roles</span><span><b>{configuredProviders}/3</b> hosted providers</span><span><b>{catalog.local.length}</b> local models</span>
+      </div>
       <AgentModel title="Game Designer" description="Design document, mechanics and level arc" backend={settings.designer_backend} options={backendOptions.standard} model={settings.designer_backend === 'local' ? settings.designer_model : settings.designer_remote_model} models={modelsFor(settings.designer_backend)} onBackend={(value) => update('designer_backend', value)} onModel={(value) => update(settings.designer_backend === 'local' ? 'designer_model' : 'designer_remote_model', value)} />
       <AgentModel title="Studio Director" description="QA triage and repair routing" backend={settings.director_backend} options={backendOptions.director} model={settings.director_backend === 'local' ? settings.director_model : settings.director_remote_model} models={modelsFor(settings.director_backend)} modelPlaceholder={settings.director_backend === 'local' ? 'Inherit Coder model' : undefined} onBackend={(value) => update('director_backend', value)} onModel={(value) => update(settings.director_backend === 'local' ? 'director_model' : 'director_remote_model', value)} />
       <AgentModel title="Systems Architect" description="Blueprint, dependencies and acceptance contracts" backend={settings.architect_backend} options={backendOptions.architect} model={settings.architect_model} models={modelsFor(settings.architect_backend)} onBackend={(value) => update('architect_backend', value)} onModel={(value) => update('architect_model', value)} featured />
@@ -117,6 +122,7 @@ export default function ModelsPanel() {
       <section className="panel provider-card">
         <p className="eyebrow">SPECIALIZED MODELS</p><h2>QA and heavy templates</h2>
         <label>Dot-maze local model<ModelInput value={settings.dotmaze_model} models={catalog.local} onChange={(value) => update('dotmaze_model', value)} /></label>
+        <label>Hosted Designer timeout (seconds)<input type="number" min="30" max="1800" value={settings.designer_timeout} onChange={(event) => update('designer_timeout', Number(event.target.value))} /></label>
         <label>Hosted Coder timeout (seconds)<input type="number" min="30" max="1800" value={settings.coder_timeout} onChange={(event) => update('coder_timeout', Number(event.target.value))} /></label>
         <label>NVIDIA base URL<input value={settings.vision_base_url} onChange={(event) => update('vision_base_url', event.target.value)} /></label>
         <label>Systems Architect base URL<input value={settings.architect_base_url} onChange={(event) => update('architect_base_url', event.target.value)} /></label>
@@ -135,7 +141,8 @@ export default function ModelsPanel() {
 }
 
 function AgentModel({ title, description, backend, options, model, models, onBackend, onModel, modelPlaceholder, featured }: { title: string; description: string; backend: string; options: { value: string; label: string }[]; model: string; models: string[]; onBackend: (value: string) => void; onModel: (value: string) => void; modelPlaceholder?: string; featured?: boolean }) {
-  return <article className={`agent-model-card ${featured ? 'featured' : ''}`}><div className="agent-identity"><span>{title.slice(0, 1)}</span><div><h3>{title}{featured && <b>PRIMARY</b>}</h3><p>{description}</p></div></div><label><small>Backend</small><select value={backend} onChange={(event) => onBackend(event.target.value)}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label><small>Model</small><ModelInput value={model} models={models} placeholder={modelPlaceholder} onChange={onModel} /></label></article>
+  const roleCode = title.split(' ').map((word) => word[0]).join('').slice(0, 2)
+  return <article className={`agent-model-card ${featured ? 'featured' : ''}`}><div className="agent-identity"><span>{roleCode}</span><div><h3>{title}{featured && <b>PRIMARY</b>}</h3><p>{description}</p></div></div><label><small>Backend</small><select value={backend} onChange={(event) => onBackend(event.target.value)}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label><small>Model</small><ModelInput value={model} models={models} placeholder={modelPlaceholder} onChange={onModel} /></label></article>
 }
 
 function ModelInput({ value, models, onChange, placeholder }: { value: string; models: string[]; onChange: (value: string) => void; placeholder?: string }) {

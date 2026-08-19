@@ -195,12 +195,33 @@ def _asset_requests(design_doc: dict) -> list[tuple]:
         )
     background_seed = 3 + len(design_doc.get("extra_sprites") or [])
     for index, level in enumerate(design_doc["levels"]):
+        if design_doc.get("mechanic_template") == "run_and_gun":
+            background_subject = (
+                f"distant atmospheric backdrop for {level.get('name', 'the stage')} "
+                f"in a {design_doc.get('genre', 'side-view action game')}, using only "
+                "non-interactive far scenery, sky, clouds, weather, and distant "
+                "silhouettes, empty foreground, no floor, no platforms, no roads, "
+                "no rails, no vehicles, no trains, no buildings in the foreground, "
+                "no people, no characters, no creatures, no weapons, no pickups"
+            )
+            viewpoint = (
+                "strict 2D side-view orthographic platformer background, camera facing "
+                "horizontally at the side of the level, horizontal ground and skyline, "
+                "parallel side elevation, layered parallax scenery, no top-down view, "
+                "no isometric angle, no diagonal travel path, no vanishing-point floor, "
+                "no characters, no enemies, no UI, no text, background scenery only"
+            )
+        else:
+            background_subject = level["description"]
+            viewpoint = (
+                "strict top-down orthographic view, camera facing straight down at 90 "
+                "degrees, flat floor plan, no perspective, no horizon, no vanishing "
+                "point, no camera tilt, no isometric angle, walls and objects shown "
+                "from directly above only"
+            )
         requests.append(
             (
-                f"{level['description']}, {art_style}, game background, strict top-down "
-                f"orthographic view, camera facing straight down at 90 degrees, flat floor "
-                f"plan, no perspective, no horizon, no vanishing point, no camera tilt, "
-                f"no isometric angle, walls and objects shown from directly above only",
+                f"{background_subject}, {art_style}, game background, {viewpoint}",
                 f"level_{index}_bg", VIEWPORT_WIDTH, VIEWPORT_HEIGHT, False,
                 background_seed + index,
             )

@@ -121,6 +121,16 @@ class GraphState(TypedDict, total=False):
     # when the graph advances. Each entry contains every attempt plus the
     # level's final status and artifacts, and is written verbatim to run.json.
     level_results: list[dict]
+    # Quality Director v1: every technically passing level receives a
+    # deterministic evidence-based review. Reviews are durable so a polish
+    # retry cannot erase the original finding; quality_report is the latest
+    # aggregate used by the ship gate and UI.
+    quality_results: list[dict]
+    quality_report: Optional[dict]
+    quality_repair_requested: bool
+    quality_repair_owner: Optional[str]
+    quality_reasset_field: Optional[str]
+    quality_reasset_value: Optional[str]
     # A broken QA harness is different from generated code that needs repair.
     # When a required probe cannot produce a verdict, stop the graph and
     # report "blocked" instead of spending Coder retries or claiming a pass.
