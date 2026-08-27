@@ -90,7 +90,7 @@ func _process(_delta: float) -> void:
 		if player.position.x >= 970.0:
 			transition_room(1)
 		elif player.position.x <= 54.0:
-			if room_index == 2 and is_instance_valid(boss):
+			if room_index == _last_room_index() and is_instance_valid(boss):
 				# The forge is a committed boss arena. Letting the west edge
 				# transition during a dodge silently unloads the boss and strands
 				# the quest in an unwinnable state.
@@ -116,6 +116,15 @@ func _ensure_input_actions() -> void:
 
 func _asset(name: String) -> String:
 	return str((_definition.get("assets", {}) as Dictionary).get(name, ""))
+
+func _rooms() -> Array:
+	return ((_definition.get("room_plan", {}) as Dictionary).get("rooms", []) as Array)
+
+func _room_count() -> int:
+	return maxi(1, _rooms().size())
+
+func _last_room_index() -> int:
+	return _room_count() - 1
 
 func _attach_asset(node: Node2D, asset_name: String, max_size: float) -> bool:
 	var path := _asset(asset_name)
@@ -287,7 +296,7 @@ func _build_hud() -> void:
 
 func _restore_or_begin() -> void:
 	var profile := ActionRpgProfile.snapshot()
-	room_index = clampi(int(profile.get("room_index", 0)), 0, 2)
+	room_index = clampi(int(profile.get("room_index", 0)), 0, _last_room_index())
 	player.health = clampi(int(profile.get("hero_hp", player.max_health)), 1, player.max_health)
 	inventory.restore({"sparks": profile.get("sparks", 0), "items": profile.get("items", {})})
 	quest_stage = str(profile.get("quest_stage", "collect_sparks"))
@@ -313,11 +322,11 @@ func _clear_room_entities() -> void:
 
 func _load_room(index: int) -> void:
 	_clear_room_entities()
-	room_index = clampi(index, 0, 2)
-	var palette := [Color("172a35"), Color("2b2436"), Color("351f22")]
-	RenderingServer.set_default_clear_color(palette[room_index])
+	room_index = clampi(index, 0, _last_room_index())
+	var palette := [Color("172a35"), Color("2b2436"), Color("20352f"), Color("272642"), Color("34301f"), Color("351f22")]
+	RenderingServer.set_default_clear_color(palette[room_index % palette.size()])
 	_build_room_decor()
-	var rooms := ((_definition.get("room_plan", {}) as Dictionary).get("rooms", []) as Array)
+	var rooms := _rooms()
 	var room_data: Dictionary = rooms[room_index] if room_index < rooms.size() else {}
 	_build_room_geometry(room_data)
 	var enemy_positions := [Vector2(390, 190), Vector2(650, 390), Vector2(520, 420)]
@@ -343,28 +352,29 @@ func _load_room(index: int) -> void:
 	if room_data.has("boss") and (forge_door_open or quest_stage in ["forge_open", "complete"]):
 		var boss_data := room_data.get("boss", {}) as Dictionary
 		_spawn_boss(_vector_from(boss_data.get("position", []), Vector2(760, 300)), boss_data)
-	elif room_index == 2 and not forge_door_open:
+	elif room_index == _last_room_index() and not forge_door_open:
 		_spawn_npc(Vector2(820, 290))
 	_update_hud()
 
 func _build_room_decor() -> void:
 	for child in room_decor.get_children():
 		child.queue_free()
-	var colors := [Color("365469"), Color("5a4563"), Color("6b4037")]
+	var colors := [Color("365469"), Color("5a4563"), Color("3e6657"), Color("4d4770"), Color("665c35"), Color("6b4037")]
 	for index in range(5):
 		var rune := Polygon2D.new()
 		var x := 125.0 + float(index) * 185.0
 		var y := 150.0 + float((index + room_index) % 3) * 130.0
 		rune.polygon = PackedVector2Array([Vector2(-24, -4), Vector2(0, -18), Vector2(24, -4), Vector2(0, 18)])
 		rune.position = Vector2(x, y)
-		rune.color = Color(colors[room_index], 0.42)
+		rune.color = Color(colors[room_index % colors.size()], 0.42)
 		room_decor.add_child(rune)
 	var rooms := ((_definition.get("room_plan", {}) as Dictionary).get("rooms", []) as Array)
 	if room_index < rooms.size():
 		var theme_id := str((rooms[room_index] as Dictionary).get("theme_id", "ember_ruins"))
 		var theme_colors := {
 			"ember_ruins": Color("d87a45"), "moon_archive": Color("82a7e8"),
-			"verdant_foundry": Color("62bd8a"), "storm_crypt": Color("ac88df")
+			"verdant_foundry": Color("62bd8a"), "storm_crypt": Color("ac88df"),
+			"sunken_sanctum": Color("52c5c7"), "glass_wilds": Color("c6d66a")
 		}
 		for index in range(4):
 			var mote := Polygon2D.new()
@@ -582,10 +592,10 @@ func toggle_inventory() -> bool:
 
 func transition_room(direction: int) -> bool:
 	var target := room_index + direction
-	if target < 0 or target > 2:
+	if target < 0 or target >= _room_count():
 		player.position.x = clampf(player.position.x, 40.0, 984.0)
 		return false
-	if target == 2 and quest_stage not in ["forge_open", "complete"]:
+	if target == _last_room_index() and quest_stage not in ["forge_open", "complete"]:
 		player.position.x = 960.0
 		return false
 	room_index = target
@@ -765,13 +775,13 @@ func qa_verify_dialogue_quest() -> Dictionary:
 	}
 
 func qa_verify_room_persistence() -> bool:
-	if "stalker_vault_a" not in cleared_enemies:
-		cleared_enemies.append("stalker_vault_a")
+	if "foe_1_0" not in cleared_enemies:
+		cleared_enemies.append("foe_1_0")
 	if "vault_sparks" not in collected_pickups:
 		collected_pickups.append("vault_sparks")
 	room_index = 1
 	_load_room(1)
-	var enemy_stayed_cleared := not enemies.any(func(enemy): return enemy.enemy_id == "stalker_vault_a")
+	var enemy_stayed_cleared := not enemies.any(func(enemy): return enemy.enemy_id == "foe_1_0")
 	var pickup_stayed_collected := not pickups.any(func(pickup): return pickup.pickup_id == "vault_sparks")
 	var moved := transition_room(1)
 	return moved and room_index == 2 and forge_door_open and enemy_stayed_cleared and pickup_stayed_collected
@@ -830,8 +840,8 @@ func qa_verify_boss_phases_and_win() -> Dictionary:
 	var clean_profile := _profile_snapshot()
 	clean_profile["boss_defeated"] = false
 	ActionRpgProfile.checkpoint_memory(clean_profile)
-	room_index = 2
-	_load_room(2)
+	room_index = _last_room_index()
+	_load_room(room_index)
 	if not is_instance_valid(boss):
 		return {"boss_phase": false, "win": false}
 	boss.take_damage(ceili(float(boss.max_health) / 2.0))

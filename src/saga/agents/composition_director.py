@@ -24,6 +24,55 @@ def _write_json(path: Path, value: dict) -> None:
     )
 
 
+def _compile_action_rpg_design(spec: dict, reviewed_design: dict) -> dict:
+    """Materialize GameSpec-authored content into the stable pack's input.
+
+    GameSpec remains the authority for identity, catalog, world and rules.  A
+    DesignDoc-shaped view is emitted only because asset/audio agents still use
+    those well-established field names.  No content is invented here.
+    """
+    compiled = copy.deepcopy(reviewed_design)
+    identity = spec["identity"]
+    presentation = spec["presentation"]
+    content = spec["content"]
+    compiled.update(
+        {
+            "title": identity["title"],
+            "genre": identity["genre"],
+            "mechanic_template": "action_rpg",
+            "hero_description": content["hero"]["description"],
+            "core_mechanics": list(identity["core_loop"]),
+            "story_premise": identity["premise"],
+            "theme_thread": identity["theme_thread"],
+            "win_condition": spec["rules"]["win"]["description"],
+            "lose_condition": spec["rules"]["lose"]["description"],
+            "levels": [
+                {
+                    "name": zone["name"],
+                    "description": zone["description"],
+                    "outro_beat": zone["outro_beat"],
+                    "intensity": zone["intensity"],
+                    "pressure_notes": zone["pacing_notes"],
+                }
+                for zone in spec["world"]["zones"]
+            ],
+            "art_style": presentation["art_style"],
+            "audio_mood": presentation["audio_mood"],
+            "extra_sprites": [
+                {"name": actor["id"], "description": actor["description"]}
+                for actor in content["actors"]
+            ],
+        }
+    )
+    if content["items"]:
+        item = content["items"][0]
+        compiled["key_item"] = {
+            "description": item["description"],
+            "role": "pickup",
+        }
+    return compiled
+
+
 def composition_director(state: GraphState) -> GraphState:
     """Validate and lock the exact capability assembly for this run.
 
@@ -50,17 +99,22 @@ def composition_director(state: GraphState) -> GraphState:
         source = "supplied" if supplied is not None else "translated"
         raise ValueError(f"{source} GameSpec is invalid: {'; '.join(problems)}")
 
+    compiled_design = None
     if supplied is not None:
         design = state.get("design_doc")
         if not design:
             raise ValueError("a supplied GameSpec requires its reviewed DesignDoc")
         expected = translate_legacy_design(design)
         if canonical_game_spec(spec) != canonical_game_spec(expected):
-            raise ValueError(
-                "supplied GameSpec does not match the DesignDoc translation. "
-                "Composition Kernel v1 will not claim custom content that the "
-                "current builders do not yet consume"
-            )
+            template = (spec.get("legacy") or {}).get("mechanic_template")
+            if template != "action_rpg" or design.get("mechanic_template") != "action_rpg":
+                raise ValueError(
+                    "supplied GameSpec does not match the DesignDoc translation; "
+                    "direct custom GameSpec content is currently supported only "
+                    "by the Action-RPG stable pack"
+                )
+            compiled_design = _compile_action_rpg_design(spec, design)
+            status = "fixed_compiled"
 
     assembly_lock = resolve_game_spec(spec)
     run_dir = Path(state["run_dir"])
@@ -76,10 +130,13 @@ def composition_director(state: GraphState) -> GraphState:
         f"[Composition Director/{status}] locked {component_count} capabilities "
         f"as {assembly_lock['assembly_hash'][:12]} -> {assembly_lock_path}"
     )
-    return {
+    result = {
         "game_spec": spec,
         "game_spec_status": status,
         "game_spec_errors": [],
         "assembly_lock": assembly_lock,
         "assembly_hash": assembly_lock["assembly_hash"],
     }
+    if compiled_design is not None:
+        result["design_doc"] = compiled_design
+    return result

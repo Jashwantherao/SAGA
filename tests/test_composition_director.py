@@ -92,21 +92,40 @@ def test_supplied_legacy_spec_cannot_lock_a_different_game_than_coder_builds(tmp
     assert not (tmp_path / "assembly.lock.json").exists()
 
 
-def test_supplied_spec_cannot_claim_content_current_builders_ignore(tmp_path):
+def test_supplied_action_rpg_spec_is_compiled_into_builder_content(tmp_path):
     design = _design("action_rpg", levels=1)
     supplied = translate_legacy_design(design)
     supplied["world"]["zones"][0]["description"] = "A different unbuilt world."
+    supplied["world"]["zones"][0]["name"] = "The Player-Authored Vault"
 
-    with pytest.raises(ValueError, match="will not claim custom content"):
+    result = composition_director(
+        {
+            "run_dir": str(tmp_path),
+            "design_doc": design,
+            "game_spec": supplied,
+        }
+    )
+
+    assert result["game_spec_status"] == "fixed_compiled"
+    assert result["design_doc"]["levels"][0] == {
+        "name": "The Player-Authored Vault",
+        "description": "A different unbuilt world.",
+        "outro_beat": supplied["world"]["zones"][0]["outro_beat"],
+        "intensity": supplied["world"]["zones"][0]["intensity"],
+        "pressure_notes": supplied["world"]["zones"][0]["pacing_notes"],
+    }
+    assert json.loads((tmp_path / "game_spec.json").read_text(encoding="utf-8")) == supplied
+
+
+def test_custom_game_spec_stays_blocked_for_a_legacy_generated_pack(tmp_path):
+    design = _design("collect", levels=1)
+    supplied = translate_legacy_design(design)
+    supplied["world"]["zones"][0]["description"] = "Content its builder cannot consume."
+
+    with pytest.raises(ValueError, match="supported only by the Action-RPG"):
         composition_director(
-            {
-                "run_dir": str(tmp_path),
-                "design_doc": design,
-                "game_spec": supplied,
-            }
+            {"run_dir": str(tmp_path), "design_doc": design, "game_spec": supplied}
         )
-
-    assert not (tmp_path / "game_spec.json").exists()
 
 
 def test_invalid_supplied_spec_fails_before_writing_misleading_artifacts(tmp_path):

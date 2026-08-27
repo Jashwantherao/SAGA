@@ -59,7 +59,7 @@ that QA passed.
 Stable pack failures are terminal after their first authoritative result. They
 do not loop through a Coder that does not own the failing implementation.
 
-## Compatibility and next milestone
+## Compatibility and Encounter Compiler
 
 All eleven existing mechanic templates compile through the kernel today. The
 nine classic templates are represented by compatibility components; Action-RPG
@@ -68,13 +68,17 @@ keeps existing games reproducible while allowing the architecture to migrate
 incrementally.
 
 In v1, a supplied `--game-spec` must be paired with the reviewed
-`--design-doc` from which it was translated and must match that translation.
-Current builders still consume DesignDoc content, so accepting edited GameSpec
-content would create a false contract. Custom GameSpec-authored content becomes
-valid only when the next compiler consumes it directly.
+`--design-doc` from which it was translated. Compatibility packs still require
+an exact translation because their builders consume DesignDoc. Action-RPG is
+the first native consumer: its Composition Director compiles the supplied
+GameSpec identity, actors, items, world, presentation, and rules back into the
+reviewed build contract so downstream content cannot silently ignore it.
 
-The next milestone is the Encounter and Progression Compiler: a seeded world,
-quest, and encounter grammar that varies topology, roles, beats, rewards, and
-pacing while reusing these locked mechanics. That is where SAGA moves beyond
-fixed three-room or fixed-wave reskins without returning to generated gameplay
-monoliths.
+Encounter and Progression Compiler v1 is now delivered for Action-RPG and
+experience-scored stage search is delivered for Run-and-Gun. A seed-stable
+Candidate Studio varies topology, roles, beats, rewards and pacing, evaluates
+four player personas, selects the strongest candidate, and permits only bounded
+ContentIR edits such as moving recovery, separating a reward, or clearing a
+speed lane. The stable Godot packs consume that selected plan unchanged. The
+run manifest retains every score, signature, repair and telemetry value so QA
+and benchmarks judge the exact game that was built.

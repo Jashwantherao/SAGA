@@ -14,7 +14,7 @@ from collections import defaultdict
 from saga.state import GraphState
 
 
-REPORT_VERSION = 3
+REPORT_VERSION = 4
 MINIMUM_SCORE = 80
 MINIMUM_DIMENSION_SCORE = 45
 MAX_POLISH_REPAIRS_PER_LEVEL = 1
@@ -246,6 +246,58 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
                         actions[name],
                     ))
 
+    persona_score = 100
+    persona_results = objective.get("persona_results") or {}
+    persona_enabled = template in PACKED_VISUAL_TEMPLATES and (
+        template == "action_rpg" or bool(persona_results)
+    )
+    if persona_enabled:
+        telemetry = objective.get("content_telemetry") or {}
+        expected_personas = {"achiever", "explorer", "survivor", "speedrunner"}
+        if set(persona_results) != expected_personas:
+            persona_score = 0
+            findings.append(_finding(
+                "persona_playtests", "experience_director", "high", "persona_evidence_missing",
+                "The generated world lacks complete persona evidence",
+                f"reported personas: {sorted(persona_results)}",
+                "Run achiever, explorer, survivor and speedrunner critics before selection.",
+            ))
+        else:
+            failed_personas = [
+                name for name, verdict in persona_results.items()
+                if not bool(verdict.get("passed"))
+            ]
+            persona_score = _clamp(
+                100 * (len(expected_personas) - len(failed_personas)) / len(expected_personas)
+            )
+            for name in failed_personas:
+                findings.append(_finding(
+                    "persona_playtests", "experience_director", "high",
+                    f"persona_{name}_failed", f"The {name} route failed its experience contract",
+                    str(persona_results[name]),
+                    "Edit only the failed route or reward, then rescore every persona.",
+                ))
+        empty_rooms = int(telemetry.get("empty_room_count") or 0)
+        if empty_rooms > 0:
+            persona_score = min(persona_score, 60)
+            findings.append(_finding(
+                "persona_playtests", "composition_director", "medium", "empty_travel",
+                "The compiled journey contains empty travel",
+                f"empty_room_count={empty_rooms}",
+                "Add a discovery, encounter, narrative beat or recovery decision to every room.",
+            ))
+        if int(telemetry.get("actual_rooms_total") or 0) and (
+            int(telemetry.get("actual_rooms_visited") or 0)
+            != int(telemetry.get("actual_rooms_total") or 0)
+        ):
+            persona_score = 0
+            findings.append(_finding(
+                "persona_playtests", "qa_agent", "critical", "world_not_fully_traversed",
+                "Normal-input QA did not traverse the complete compiled world",
+                str(telemetry),
+                "Repair navigation or progression and rerun the full input playthrough.",
+            ))
+
     balance_notes = [str(note) for note in (level.get("balance_notes") or [])]
     balance_score = _clamp(100 - 20 * len(balance_notes))
     for note in balance_notes:
@@ -273,23 +325,30 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
 
     packed = template in PACKED_VISUAL_TEMPLATES
     dimensions = {
-        "playability": {"score": playability_score, "weight": 20 if packed else 25, "confidence": "measured" if playability else "inferred"},
-        "objective": {"score": objective_score, "weight": 20 if packed else 25, "confidence": "measured" if objective else "inferred"},
+        "playability": {"score": playability_score, "weight": 18 if persona_enabled else (20 if packed else 25), "confidence": "measured" if playability else "inferred"},
+        "objective": {"score": objective_score, "weight": 18 if persona_enabled else (20 if packed else 25), "confidence": "measured" if objective else "inferred"},
         "visual_presentation": {
             "score": visual_score,
-            "weight": 15 if packed else 20,
+            "weight": 14 if persona_enabled else (15 if packed else 20),
             "confidence": "measured" if screenshot and vision_evaluated else "not_evaluated",
         },
-        "motion_presentation": {"score": motion_score, "weight": 10 if packed else 15, "confidence": "measured" if video else "not_evaluated"},
+        "motion_presentation": {"score": motion_score, "weight": 8 if persona_enabled else (10 if packed else 15), "confidence": "measured" if video else "not_evaluated"},
         **({
             "player_experience": {
                 "score": experience_score,
-                "weight": 25,
+                "weight": 22 if persona_enabled else 25,
                 "confidence": "measured" if video else "not_evaluated",
             }
         } if packed else {}),
-        "balance": {"score": balance_score, "weight": 5 if packed else 10, "confidence": "static_analysis"},
-        "reliability": {"score": reliability_score, "weight": 5, "confidence": "measured"},
+        **({
+            "persona_playtests": {
+                "score": persona_score,
+                "weight": 12,
+                "confidence": "measured" if objective.get("persona_results") else "not_evaluated",
+            }
+        } if persona_enabled else {}),
+        "balance": {"score": balance_score, "weight": 4 if persona_enabled else (5 if packed else 10), "confidence": "static_analysis"},
+        "reliability": {"score": reliability_score, "weight": 4 if persona_enabled else 5, "confidence": "measured"},
     }
     overall = round(sum(
         item["score"] * item["weight"] / 100 for item in dimensions.values()

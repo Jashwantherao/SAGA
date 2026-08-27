@@ -14,7 +14,7 @@ from saga.archetypes import (
     pack_for_template,
     validate_action_rpg_plan,
 )
-from saga.experience import score_action_rpg_candidate
+from saga.experience import repair_action_rpg_candidate, score_action_rpg_candidate
 from saga.blueprint import validate_blueprint
 
 
@@ -82,19 +82,20 @@ def test_action_rpg_pack_manifest_and_plan_are_versioned_and_complete():
     plan = build_action_rpg_plan(_design(), 0)
 
     assert pack_for_template("action_rpg") == pack
-    assert pack.version == 3
+    assert pack.version == 4
     assert pack.mechanic_template == "action_rpg"
-    assert "three_room_persistence" in pack.capabilities
+    assert "variable_world_persistence" in pack.capabilities
+    assert "four_persona_experience_critics" in pack.capabilities
+    assert "bounded_content_repair" in pack.capabilities
     assert "versioned_checkpoint_save" in pack.capabilities
     assert "two_phase_boss" in pack.capabilities
     assert "progression_profile.gd" in pack.required_files
     assert "action_rpg_level.gd" in pack.required_files
     assert validate_action_rpg_plan(plan) == []
-    assert [room["id"] for room in plan["rooms"]] == [
-        "hermit_court",
-        "rust_vault",
-        "heart_forge",
-    ]
+    assert 4 <= len(plan["rooms"]) <= 6
+    assert plan["rooms"][0]["id"] == "hermit_court"
+    assert plan["rooms"][1]["id"] == "rust_vault"
+    assert plan["rooms"][-1]["id"] == "heart_forge"
     assert sum(
         pickup["amount"]
         for room in plan["rooms"]
@@ -102,7 +103,8 @@ def test_action_rpg_pack_manifest_and_plan_are_versioned_and_complete():
         if pickup["kind"] == "sparks"
     ) == 10
     assert plan["rooms"][-1]["boss"]["phases"] == 2
-    assert plan["schema_version"] == 2
+    assert plan["schema_version"] == 3
+    assert plan["compiler"]["id"] == "encounter_progression"
     assert plan["experience_search"]["candidates_evaluated"] == 24
     assert plan["experience_search"]["score"] >= 78
     assert len({
@@ -110,7 +112,12 @@ def test_action_rpg_pack_manifest_and_plan_are_versioned_and_complete():
         for room in plan["rooms"]
         for enemy in room.get("enemies", [])
     }) >= 3
-    assert len({room["layout_id"] for room in plan["rooms"]}) == 3
+    assert len({room["layout_id"] for room in plan["rooms"]}) >= 4
+    assert all(
+        verdict["passed"]
+        for verdict in plan["experience_search"]["personas"].values()
+    )
+    assert plan["experience_search"]["telemetry"]["room_count"] == len(plan["rooms"])
     assert any(
         pickup["kind"] == "health"
         for room in plan["rooms"][:-1]
@@ -148,6 +155,30 @@ def test_action_rpg_experience_search_is_repeatable_but_not_a_fixed_game():
     assert score_action_rpg_candidate(first)["passed"] is True
 
 
+def test_candidate_studio_repairs_only_failed_experience_evidence():
+    plan = build_action_rpg_plan(_design(), 0)
+    for room in plan["rooms"]:
+        room["pickups"] = [
+            pickup
+            for pickup in room.get("pickups", [])
+            if pickup.get("kind") not in {"health"}
+            and not str(pickup.get("id") or "").startswith("optional_relic_")
+        ]
+    before = score_action_rpg_candidate(plan)
+
+    repaired, ledger = repair_action_rpg_candidate(plan, before)
+    after = score_action_rpg_candidate(repaired)
+
+    assert before["passed"] is False
+    assert {edit["owner"] for edit in ledger} <= {"progression", "encounter", "world"}
+    assert any(
+        str(pickup.get("id") or "").startswith("optional_relic_")
+        for room in repaired["rooms"]
+        for pickup in room.get("pickups", [])
+    )
+    assert after["score"] >= before["score"]
+
+
 def test_action_rpg_quality_gate_rejects_role_and_layout_monotony():
     plan = build_action_rpg_plan(_design(), 0)
     for room in plan["rooms"]:
@@ -158,7 +189,7 @@ def test_action_rpg_quality_gate_rejects_role_and_layout_monotony():
     errors = validate_action_rpg_plan(plan)
 
     assert "action RPG encounters require at least three enemy roles" in errors
-    assert "each action RPG room requires a distinct spatial layout" in errors
+    assert "action RPG journey requires at least four spatial layouts" in errors
     assert "action RPG experience score is below the playable quality floor" in errors
 
 
@@ -182,7 +213,7 @@ def test_action_rpg_plan_validator_rejects_cosmetic_rpg_shell():
 
     errors = validate_action_rpg_plan(plan)
 
-    assert "action RPG v2 requires exactly three connected rooms" in errors
+    assert "action RPG v4 requires four to six connected rooms" in errors
     assert "the final room must contain the boss" in errors
     assert "quest must expose collect, return, forge-open and complete stages" in errors
 
@@ -206,7 +237,7 @@ def test_action_rpg_adapter_is_compact_versioned_and_uses_authored_assets():
     assert "extra_rust_stalker.png" in script
     assert "extra_ember_hermit.png" in script
     assert "extra_forge_warden.png" in script
-    assert '\\"pack_version\\": 3' in script
+    assert '\\"pack_version\\": 4' in script
     assert '\\"room_plan\\"' in script
     assert [
         description
@@ -263,7 +294,8 @@ def test_coder_scaffolds_action_rpg_without_model_call(tmp_path, monkeypatch):
         }
     )
 
-    assert result["coder_model"] == "archetype/action_rpg@3"
+    assert result["coder_model"] == "archetype/action_rpg@4"
+    assert result["content_plan"]["experience_search"]["personas"]["explorer"]["passed"] is True
     assert (project / "Level_0.gd").is_file()
     assert (project / "archetypes" / "action_rpg" / "boss.gd").is_file()
     project_config = (project / "project.godot").read_text(encoding="utf-8")
@@ -287,6 +319,7 @@ def test_action_rpg_input_playthrough_parser_requires_every_observed_system(monk
     output = (
         "[ACTION_RPG_PLAYTHROUGH] status=passed movement=true melee=true "
         "pickup=true inventory=true dialogue=true quest=true rooms=true "
+        "rooms_visited=5 rooms_total=5 "
         "checkpoint=true dash=true boss_phase=true win=true frames=2400 "
         "attacks=30 interactions=2 deaths=1 reason=none"
     )
@@ -305,6 +338,7 @@ def test_action_rpg_input_playthrough_parser_requires_every_observed_system(monk
     assert result["status"] == "passed"
     assert result["normal_input_only"] is True
     assert result["boss_phase_verified"] is True
+    assert result["rooms_visited"] == result["rooms_total"] == 5
     assert result["deaths"] == 1
 
 
@@ -312,6 +346,7 @@ def test_action_rpg_input_playthrough_parser_rejects_missing_transition(monkeypa
     output = (
         "[ACTION_RPG_PLAYTHROUGH] status=failed movement=true melee=true "
         "pickup=true inventory=true dialogue=true quest=true rooms=true "
+        "rooms_visited=4 rooms_total=5 "
         "checkpoint=true dash=false boss_phase=false win=false frames=12000 "
         "attacks=20 interactions=2 deaths=3 reason=timeout_boss"
     )
@@ -394,7 +429,8 @@ def test_action_rpg_room_transitions_are_reachable_before_boundary_collisions():
 
     assert "player.position.x >= 970.0" in source
     assert "player.position.x <= 54.0" in source
-    assert "room_index == 2 and is_instance_valid(boss)" in source
+    assert "room_index == _last_room_index() and is_instance_valid(boss)" in source
+    assert "target >= _room_count()" in source
 
 
 def test_action_rpg_production_gate_requires_authored_role_art(tmp_path):

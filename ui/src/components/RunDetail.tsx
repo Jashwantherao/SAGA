@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { artifactUrl, formatBytes, formatDate, getJSON, statusLabel } from '../api'
-import type { ArtDirection, AssetContractResult, CapabilityCoverage, DesignDoc, LevelAttempt, LevelResult, QualityReport, RunFiles, SagaRun, SystemBuildResult, VideoQaResult } from '../types'
+import type { ArtDirection, AssetContractResult, CapabilityCoverage, ContentPlan, DesignDoc, LevelAttempt, LevelResult, QualityReport, RunFiles, SagaRun, SystemBuildResult, VideoQaResult } from '../types'
 import Icon from './Icon'
 
 type Tab = 'qa' | 'assets' | 'design'
@@ -120,6 +120,7 @@ export default function RunDetail({ run, onClose, onOpen, onDelete, deletable }:
         {tab === 'qa' && (
           <>
             {detail.quality_report && <QualityReportCard report={detail.quality_report} />}
+            {detail.content_plan && <CandidateStudioCard plan={detail.content_plan} />}
             <QaLedger run={detail} levels={levels} />
           </>
         )}
@@ -138,6 +139,45 @@ export default function RunDetail({ run, onClose, onOpen, onDelete, deletable }:
         </div>
       )}
     </div>
+  )
+}
+
+function CandidateStudioCard({ plan }: { plan: ContentPlan }) {
+  const search = plan.experience_search || {}
+  const personas = Object.entries(search.personas || {})
+  const telemetry = search.telemetry || {}
+  const clean = personas.length === 4 && personas.every(([, result]) => result.passed)
+  const scope = (plan.rooms?.length || 0) > 0
+    ? `${plan.rooms!.length} rooms`
+    : telemetry.stage_width
+      ? `stage ${Math.round(telemetry.stage_width)} px wide`
+      : 'content plan'
+  return (
+    <section className={`quality-report ${clean ? 'passed' : 'failed'}`}>
+      <div className="quality-score">
+        <strong>{Math.round(search.score || 0)}</strong><span>/100</span>
+        <small>CONTENT SCORE</small>
+      </div>
+      <div className="quality-body">
+        <div className="quality-head">
+          <div>
+            <p className="eyebrow">CANDIDATE STUDIO · ENCOUNTER &amp; PROGRESSION</p>
+            <h3>{scope} selected from {search.candidates_evaluated || 0} candidates</h3>
+          </div>
+          <span className={`status ${clean ? 'passed' : 'failed'}`}>{clean ? 'Personas passed' : 'Critic failed'}</span>
+        </div>
+        <div className="detail-chips">
+          {personas.map(([name, result]) => <span className="chip" key={name}>{result.passed ? '✓' : '✗'} {name}</span>)}
+          <span className="chip">{search.repairs_evaluated || 0} bounded repairs</span>
+          {search.selected_signature && <span className="chip mono">{search.selected_signature}</span>}
+        </div>
+        <div className="metric-chips">
+          {['room_count', 'encounter_count', 'enemy_count', 'optional_discoveries', 'estimated_completion_seconds'].map((name) => (
+            telemetry[name] !== undefined && <span key={name}><small>{name.replaceAll('_', ' ')}</small><b>{telemetry[name]}</b></span>
+          ))}
+        </div>
+      </div>
+    </section>
   )
 }
 

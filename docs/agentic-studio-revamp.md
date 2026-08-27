@@ -68,7 +68,7 @@ repair can enter SAGA's experience memory.
 
 ## Delivered first vertical slice
 
-Action-RPG pack v3 now compiles each brief into an `experience_contract`,
+Action-RPG pack v4 now compiles each brief into an `experience_contract`,
 generates 24 deterministic candidates, scores them, and ships only the selected
 candidate. The score covers enemy-role diversity, spatial variety, escalating
 pressure, safe placements, quest reachability, optional exploration reward,
@@ -87,15 +87,29 @@ and deterministic gameplay SFX. Quality Report v3 separately requires visible
 evidence for animation, combat feedback, encounter readability, and presentation
 tier, preventing a clean-but-static prototype from scoring 100/100.
 
-## Next vertical slices
+## Delivered third vertical slice: Encounter and Progression Compiler
 
-1. Add telemetry-backed achiever, explorer, survivor and speedrunner playtests.
-2. Generalize Candidate Studio ContentIR and critics across run-and-gun, creature
-   collection, capture zones and survival packs.
-3. Add bounded edit tools so critics revise weak candidates instead of merely
-   selecting the best first generation.
-4. Benchmark quality with blind human ratings, completion telemetry, novelty,
-   repair count, cost and latency—not pass rate alone.
+Action-RPG now searches 24 seeded 4–6-room worlds instead of reskinning one
+three-room shell. Topology, room theme and layout, encounter roles, pressure,
+recovery, optional discovery, quest funding and the speed lane all vary while
+stable mechanics remain locked. Run-and-Gun searches 16 scored stage plans.
+
+Achiever, explorer, survivor and speedrunner critics must all pass. Runtime QA
+then records actual traversal and completion telemetry, so a promising static
+plan cannot hide a broken game. Failed Action-RPG metrics invoke a small,
+allow-listed ContentIR repair—move recovery, separate the optional reward, or
+clear the speed lane—followed by a complete rescore. No critic may rewrite
+runtime code or declare its own repair successful.
+
+The benchmark now ranks models using the truthful ship score, Quality Director
+score, content score, persona pass rate, repair count, latency and an optional
+model-blind human score. The rater scores playability, fun, visual coherence and
+originality before the private identity key is opened.
+
+The remaining generalization work is to give creature collection, capture zones
+and survival their own editable ContentIR grammars. Their objective evidence is
+already normalized into the same four-persona schema, but their layouts are not
+yet candidate-searched.
 
 ## Delivered second vertical slice: Art Director v1
 

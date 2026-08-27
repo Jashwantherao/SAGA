@@ -14,6 +14,7 @@ from saga.archetypes import (
     load_pack,
     pack_for_template,
     scaffold_pack,
+    score_run_and_gun_candidate,
     validate_run_and_gun_encounter_plan,
 )
 from saga.blueprint import validate_blueprint
@@ -66,11 +67,13 @@ def test_run_and_gun_is_a_valid_design_and_multi_system_blueprint():
 def test_pack_manifest_names_every_required_capability_file():
     pack = load_pack("run_and_gun")
 
-    assert pack.version == 6
+    assert pack.version == 7
     assert pack.mechanic_template == "run_and_gun"
     assert "checkpoint_respawn" in pack.capabilities
     assert "multi_phase_boss" in pack.capabilities
     assert "encounter_layout_grammar" in pack.capabilities
+    assert "experience_scored_stage_search" in pack.capabilities
+    assert "four_persona_experience_critics" in pack.capabilities
     assert "three_weapon_arsenal" in pack.capabilities
     assert "threat_budgeted_waves" in pack.capabilities
     assert "persistent_campaign_profile" in pack.capabilities
@@ -91,7 +94,7 @@ def test_scaffolder_copies_only_versioned_pack_files(tmp_path):
     destination = tmp_path / "archetypes" / "run_and_gun"
 
     assert pack is not None
-    assert json.loads((destination / "manifest.json").read_text())["version"] == 6
+    assert json.loads((destination / "manifest.json").read_text())["version"] == 7
     assert {path.name for path in destination.glob("*.gd")} == {
         path for path in pack.required_files
     }
@@ -115,7 +118,7 @@ def test_adapter_is_small_versioned_and_uses_authored_assets():
     assert "run_and_gun_level.gd" in script
     assert "extra_enemy_guard.png" in script
     assert "extra_sector_boss.png" in script
-    assert '\\"pack_version\\": 6' in script
+    assert '\\"pack_version\\": 7' in script
     assert '\\"progression\\"' in script
     assert '\\"encounter_plan\\"' in script
     assert [
@@ -148,7 +151,7 @@ def test_coder_scaffolds_pack_without_a_model_call(tmp_path, monkeypatch):
         "tune_notes": [],
     })
 
-    assert result["coder_model"] == "archetype/run_and_gun@6"
+    assert result["coder_model"] == "archetype/run_and_gun@7"
     assert (project / "Level_0.gd").is_file()
     assert (project / "archetypes" / "run_and_gun" / "boss.gd").is_file()
     assert 'CampaignProfile="*res://archetypes/run_and_gun/progression_profile.gd"' in (
@@ -183,6 +186,13 @@ def test_encounter_plan_is_deterministic_varied_and_structurally_valid():
         wave["threat_budget"] for wave in combat["waves"]
     )
     assert combat["threat_budget_spent"] <= combat["threat_budget_limit"]
+    assert first["schema_version"] == 2
+    assert first["experience_search"]["candidates_evaluated"] == 16
+    assert score_run_and_gun_candidate(first)["passed"] is True
+    assert all(
+        verdict["passed"]
+        for verdict in first["experience_search"]["personas"].values()
+    )
     assert first["seed"] != alternate["seed"]
     assert (first["layout_id"], first["platforms"]) != (
         alternate["layout_id"], alternate["platforms"]

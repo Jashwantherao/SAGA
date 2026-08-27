@@ -1,6 +1,6 @@
 # SAGA model-quality benchmark
 
-This benchmark compares coder models while holding the design document, game case, deterministic Systems Architect contract, local repair director, asset pipeline, deterministic QA, and NVIDIA video reviewer constant. It reports truthful ship rate, first-pass completion, objective performance, repair behavior, advisories, wall time, and code-size diagnostics. Coder suites default the architect to `deterministic` so an extra Nemotron call cannot change the input under test; full-studio suites may opt into a model architect explicitly.
+This benchmark compares coder models while holding the design document, game case, deterministic Systems Architect contract, local repair director, asset pipeline, deterministic QA, and NVIDIA video reviewer constant. It reports truthful ship rate, first-pass completion, objective performance, Quality Director and content scores, four-persona coverage, repair behavior, advisories, wall time, and code-size diagnostics. Coder suites default the architect to `deterministic` so an extra Nemotron call cannot change the input under test; full-studio suites may opt into a model architect explicitly.
 
 No API secret is stored in a suite or result. Profiles contain only the name of the environment variable that already holds a key.
 
@@ -33,7 +33,21 @@ Start with one identical simple case across all six profiles:
   --output-dir output\benchmarks\coder-pilot-v1
 ```
 
-The output directory is resumable. Running the same command again skips completed jobs. It contains per-job pipeline logs and manifests plus `results.json`, `results.csv`, and `leaderboard.md`.
+The output directory is resumable. Running the same command again skips completed jobs. It contains per-job pipeline logs and manifests plus `results.json`, `results.csv`, `leaderboard.md`, a model-free `blind_playtest.csv`, and a separate private `blind_identity_key.json`.
+
+Have the player fill the four 1–5 columns in `blind_playtest.csv` without seeing
+the identity key, then lock the ratings into the leaderboard:
+
+```powershell
+.\.venv\Scripts\python.exe -m saga.benchmark benchmarks\quality_pilot.json `
+  --max-runs 6 `
+  --output-dir output\benchmarks\coder-pilot-v1 `
+  --human-ratings output\benchmarks\coder-pilot-v1\blind_playtest.csv
+```
+
+Human score is the mean of playability, fun, visual coherence and originality,
+normalized to 100. When present it is the first leaderboard sort key; automated
+correctness remains visible and still controls SAGA's release gate.
 
 ## Full matrix
 

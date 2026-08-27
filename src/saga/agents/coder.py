@@ -2803,7 +2803,7 @@ func _physics_process(_delta: float) -> void:
 				_release_movement()
 				_pulse_counted("rpg_interact", 14, true)
 		"travel_to_forge":
-			if room == 2:
+			if room == _last_room(level):
 				_stage = "boss"
 			elif room == 0:
 				_navigate(player, Vector2(990, 270))
@@ -2813,6 +2813,11 @@ func _physics_process(_delta: float) -> void:
 				_try_dash()
 		"boss":
 			_fight_boss(player)
+
+func _last_room(level: Node) -> int:
+	var definition := level.get("_definition") as Dictionary
+	var room_plan := definition.get("room_plan", {}) as Dictionary
+	return maxi(0, (room_plan.get("rooms", []) as Array).size() - 1)
 
 func _nearest_enemy(player: Node2D) -> Node2D:
 	var nearest: Node2D = null
@@ -2983,22 +2988,28 @@ func _release_all() -> void:
 		Input.action_release(action)
 
 func _metrics(status: String, reason: String) -> void:
-	var rooms := _visited.size() >= 3
+	var levels := get_tree().get_nodes_in_group("saga_action_rpg_level")
+	var rooms_total := 0
+	if not levels.is_empty():
+		rooms_total = _last_room(levels[0]) + 1
+	var rooms := rooms_total >= 4 and _visited.size() >= rooms_total
 	var won := status == "passed"
-	print("[ACTION_RPG_PLAYTHROUGH] status=%s movement=%s melee=%s pickup=%s inventory=%s dialogue=%s quest=%s rooms=%s checkpoint=%s dash=%s boss_phase=%s win=%s frames=%d attacks=%d interactions=%d deaths=%d reason=%s" % [
+	print("[ACTION_RPG_PLAYTHROUGH] status=%s movement=%s melee=%s pickup=%s inventory=%s dialogue=%s quest=%s rooms=%s rooms_visited=%d rooms_total=%d checkpoint=%s dash=%s boss_phase=%s win=%s frames=%d attacks=%d interactions=%d deaths=%d reason=%s" % [
 		status, str(_movement).to_lower(), str(_melee).to_lower(), str(_pickup).to_lower(),
 		str(_inventory).to_lower(), str(_dialogue).to_lower(), str(_quest).to_lower(),
-		str(rooms).to_lower(), str(_checkpoint).to_lower(), str(_dash).to_lower(),
+		str(rooms).to_lower(), _visited.size(), rooms_total, str(_checkpoint).to_lower(), str(_dash).to_lower(),
 		str(_boss_phase).to_lower(), str(won).to_lower(), _frame, _attacks,
 		_interactions, _deaths, reason
 	])
 
 func _pass() -> void:
 	var missing := []
+	var levels := get_tree().get_nodes_in_group("saga_action_rpg_level")
+	var rooms_total := _last_room(levels[0]) + 1 if not levels.is_empty() else 0
 	var checks := {
 		"movement": _movement, "melee": _melee, "pickup": _pickup,
 		"inventory": _inventory, "dialogue": _dialogue, "quest": _quest,
-		"rooms": _visited.size() >= 3, "checkpoint": _checkpoint,
+		"rooms": rooms_total >= 4 and _visited.size() >= rooms_total, "checkpoint": _checkpoint,
 		"dash": _dash, "boss_phase": _boss_phase
 	}
 	for key in checks:
@@ -5484,7 +5495,27 @@ def coder(state: GraphState) -> GraphState:
             if template == "run_and_gun"
             else scaffold_action_rpg_level
         )
-        pack = scaffold(project_dir, design_doc, current_level, asset_filenames)
+        content_plan = None
+        if template in {"action_rpg", "run_and_gun"}:
+            from saga.archetypes import (
+                build_action_rpg_plan,
+                build_run_and_gun_encounter_plan,
+            )
+
+            content_plan = (
+                build_action_rpg_plan(design_doc, current_level)
+                if template == "action_rpg"
+                else build_run_and_gun_encounter_plan(design_doc, current_level)
+            )
+            pack = scaffold(
+                project_dir,
+                design_doc,
+                current_level,
+                asset_filenames,
+                plan=content_plan,
+            )
+        else:
+            pack = scaffold(project_dir, design_doc, current_level, asset_filenames)
         print(
             f"[Coder] Scaffolded level {current_level + 1}/{total_levels} from "
             f"{pack.id}@{pack.version} ({len(pack.capabilities)} capabilities) "
@@ -5497,6 +5528,8 @@ def coder(state: GraphState) -> GraphState:
             "repair_rejected": False,
             "repair_validation_errors": [],
         }
+        if content_plan is not None:
+            result["content_plan"] = content_plan
         if not state.get("qa_errors") and not state.get("tune_notes"):
             result["coder_prompt"] = (
                 f"Archetype {pack.id}@{pack.version}; level "

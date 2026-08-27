@@ -167,6 +167,29 @@ export type QualityReport = {
   gate: { passed: boolean; minimum_score: number; reasons: string[] }
 }
 
+export type PersonaResult = {
+  passed?: boolean
+  [key: string]: unknown
+}
+
+export type ContentPlan = {
+  schema_version?: number
+  seed?: string
+  compiler?: { id?: string; version?: number; candidate_index?: number }
+  rooms?: { id?: string; name?: string; beat?: string; optional_discovery?: boolean }[]
+  experience_search?: {
+    algorithm_version?: number
+    candidates_evaluated?: number
+    repairs_evaluated?: number
+    selected_candidate?: number
+    selected_after_repair?: boolean
+    selected_signature?: string
+    score?: number
+    personas?: Record<string, PersonaResult>
+    telemetry?: Record<string, number>
+  }
+}
+
 export type SystemBuildResult = {
   level_index: number
   system_id: string
@@ -191,6 +214,7 @@ export type SagaRun = {
   retry_count?: number
   coder_model?: string
   assembly_hash?: string
+  content_plan?: ContentPlan
   art_direction?: ArtDirection
   art_direction_status?: string
   asset_contract_results?: AssetContractResult[]

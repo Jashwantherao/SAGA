@@ -150,6 +150,7 @@ ACTION_RPG_PLAYTHROUGH = re.compile(
     r"\[ACTION_RPG_PLAYTHROUGH\] status=(passed|failed) movement=(true|false) "
     r"melee=(true|false) pickup=(true|false) inventory=(true|false) "
     r"dialogue=(true|false) quest=(true|false) rooms=(true|false) "
+    r"rooms_visited=(\d+) rooms_total=(\d+) "
     r"checkpoint=(true|false) dash=(true|false) boss_phase=(true|false) "
     r"win=(true|false) frames=(\d+) attacks=(\d+) interactions=(\d+) "
     r"deaths=(\d+) reason=([a-z0-9_]+)"
@@ -1027,6 +1028,8 @@ def _run_action_rpg_playthrough(
         dialogue,
         quest,
         rooms,
+        rooms_visited,
+        rooms_total,
         checkpoint,
         dash,
         boss_phase,
@@ -1047,6 +1050,8 @@ def _run_action_rpg_playthrough(
         "dialogue_verified": dialogue == "true",
         "quest_verified": quest == "true",
         "rooms_verified": rooms == "true",
+        "rooms_visited": int(rooms_visited),
+        "rooms_total": int(rooms_total),
         "checkpoint_verified": checkpoint == "true",
         "dash_verified": dash == "true",
         "boss_phase_verified": boss_phase == "true",
@@ -2071,11 +2076,31 @@ def qa_agent(state: GraphState) -> GraphState:
             f"max_stall={objective_result['max_stall_frames']} frames)"
         )
         total_levels = len((state.get("design_doc") or {}).get("levels") or [{}])
+        content_plan = state.get("content_plan") or {}
+        candidate_studio = content_plan.get("experience_search") or {}
+        if candidate_studio:
+            objective_result["candidate_studio"] = candidate_studio
+            objective_result["persona_results"] = candidate_studio.get("personas") or {}
+            objective_result["content_telemetry"] = candidate_studio.get("telemetry") or {}
+        else:
+            from saga.experience import evaluate_objective_personas
+
+            persona_evidence = evaluate_objective_personas(template, objective_result)
+            objective_result["persona_results"] = persona_evidence["personas"]
+            objective_result["content_telemetry"] = persona_evidence["telemetry"]
         if template == "action_rpg":
             playthrough_result, playthrough_errors, playthrough_blocked = (
                 _run_action_rpg_playthrough(project_dir, scene)
             )
             objective_result["input_playthrough"] = playthrough_result
+            if candidate_studio:
+                objective_result["content_telemetry"] = {
+                    **(candidate_studio.get("telemetry") or {}),
+                    "actual_completion_frames": playthrough_result.get("frames"),
+                    "actual_deaths": playthrough_result.get("deaths"),
+                    "actual_rooms_visited": playthrough_result.get("rooms_visited"),
+                    "actual_rooms_total": playthrough_result.get("rooms_total"),
+                }
             if playthrough_errors:
                 label = "BLOCKED" if playthrough_blocked else "FAILED"
                 print(f"[QA Agent] {label} input-driven Action-RPG: {playthrough_errors}")
@@ -2092,7 +2117,8 @@ def qa_agent(state: GraphState) -> GraphState:
                     blocked=playthrough_blocked,
                 )
             print(
-                "[QA Agent] Playthrough: normal inputs completed all three rooms, "
+                "[QA Agent] Playthrough: normal inputs completed all "
+                f"{playthrough_result['rooms_total']} compiled rooms, "
                 f"the hermit quest and boss in {playthrough_result['frames']} frames "
                 f"with {playthrough_result['deaths']} deaths"
             )

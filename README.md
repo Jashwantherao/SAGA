@@ -129,7 +129,7 @@ Generated sprites are single still images — there is no sprite sheet anywhere 
 
 The Game Designer picks whichever of these best fits the one-line idea, instead of defaulting to "collect":
 
-`collect` · `survive_hazards` · `ordered_switches` · `depletion` · `herd_to_goal` · `capture_zones` · `survive_and_deplete` (escalating drain + finite-fuel refill zones + roaming hazards) · `maze_chase` (walled corridors via axis-separated collision, pickups, a patrolling hazard) · `dot_maze` (a dense corridor maze, dots, patrollers, a hunter and power reversal) · `run_and_gun` (side-view running/jumping, projectiles, patrol/chase enemies, checkpoint respawn and a multi-phase boss) · `action_rpg` (top-down exploration, frontal melee, inventory, NPC dialogue, a persistent quest, three rooms, checkpoint saving and a two-phase boss)
+`collect` · `survive_hazards` · `ordered_switches` · `depletion` · `herd_to_goal` · `capture_zones` · `survive_and_deplete` (escalating drain + finite-fuel refill zones + roaming hazards) · `maze_chase` (walled corridors via axis-separated collision, pickups, a patrolling hazard) · `dot_maze` (a dense corridor maze, dots, patrollers, a hunter and power reversal) · `run_and_gun` (side-view running/jumping, projectiles, patrol/chase enemies, checkpoint respawn and a multi-phase boss) · `action_rpg` (top-down exploration, frontal melee, inventory, NPC dialogue, a persistent quest, a compiled 4–6-room journey, checkpoint saving and a two-phase boss)
 
 The nine classic templates each have a worked few-shot example in `coder.py`, since showing a local model a complete example of the structure it's asked to produce remains its biggest reliability lever. The dedicated examples expose the stable mechanic state required by autonomous QA, including switch sequence, territory ownership, and permanent creature settlement. `dot_maze`'s few-shot is the largest (244 lines) and routes to a bigger model via `TEMPLATE_MODEL_OVERRIDES` - the 14B reliably dropped variable declarations at that length. `run_and_gun` and `action_rpg` deliberately bypass that monolithic path and scaffold the packs below.
 
@@ -141,7 +141,7 @@ manifest and ten reusable Godot modules live under
 stable engine code owns player physics, firing, projectile collision, enemy
 patrol/chase, health and loss, checkpoint respawn, camera/HUD, boss phases and
 level completion. Pack v6 compiles each brief into a reproducible encounter
-plan: one of three stage topologies, traversal platforms, five paced encounter
+plan: Candidate Studio searches 16 deterministic variations across three stage topologies, traversal platforms, five paced encounter
 beats, differentiated enemy roles, hazards, recovery pickups, checkpoint
 placement and a separate boss arena. The plan is validated before Godot runs.
 Its Combat Director adds pulse, spread and explosive weapon patterns, collectible
@@ -157,9 +157,11 @@ The deterministic blueprint exposes the runtime capabilities as separate,
 dependency-ordered systems. QA calls a stable pack interface and refuses to
 ship unless all seven core transitions, the encounter-structure contract, ten
 combat-depth assertions and seven progression/persistence assertions pass.
-`action_rpg` is the second capability family. Pack v1 lives under
+`action_rpg` is the second capability family. Pack v4 lives under
 `src/saga/archetype_packs/action_rpg/` and compiles a brief into a validated,
-reproducible three-room adventure. Stable modules own four-direction movement
+reproducible 4–6-room adventure. Candidate Studio searches 24 world and encounter
+plans, runs four persona critics, applies only bounded data edits, and records the
+selected signature, repair ledger, and pacing telemetry. Stable modules own four-direction movement
 and collision, Z-key frontal melee, patrol/chase/attack/stagger enemy states,
 spark and gear pickups, a C-key inventory, X-key NPC dialogue, a ten-spark quest
 that unlocks Shift dash and the forge, persistent defeated/collected state,
@@ -395,6 +397,10 @@ What happens, in order: Studio Director allocates an isolated `output/runs/<run-
 
 Final output reports sprite/BGM paths, the generated Godot project path, aggregate QA status, the latest screenshot, the latest mechanic-specific gameplay completion score, and—when enabled—the gameplay MP4. The isolated run directory also contains `design_doc.json`, `blueprint.json`, `game_spec.json`, `assembly.lock.json`, `quality_report.json`, and a machine-readable versioned `run.json` manifest. Its `level_results` ledger retains every QA attempt, error, retry, advisory, objective metric, normal-input playthrough result, per-capability proof matrix, screenshot, video path, structured NVIDIA verdict, and whether screenshot vision actually returned a valid verdict; `quality_results` preserves each pre/post-polish review, while `quality_report` exposes the current 0–100 score, evidence confidence, findings, ownership, repair plan, and gate decision. The UI describes a passing automated build as a **release candidate**, not a finished game. `ship_ready` is true only when every designed level has a recorded clean pass, every locked capability has passing evidence, and the Quality Director gate is open. Packed games additionally need structured video proof of real pose animation, readable encounter composition, visible combat feedback, and a cohesive non-prototype presentation. They also fail when `vision_evaluated` is false—a screenshot file is not treated as proof that visual review succeeded, and infrastructure-only findings do not waste a Coder retry. When the Studio Director identifies an art-side defect, Asset Maker regenerates only the named hero pose set, key item, extra sprite, or current-level background. The replaced file is backed up under `assets/revisions/`, and the old/new paths plus the Director's evidence are retained in both the affected level ledger and manifest. Advisory-only builds are labelled `passed_with_warnings`, and a required QA probe that cannot produce a verdict is labelled `blocked` rather than silently passing.
 
+Manifest v19 also retains the exact selected `content_plan`: candidate scores,
+persona verdicts, pacing telemetry, stable content signature and bounded repair
+ledger. The UI exposes this under **Candidate Studio** in the QA view.
+
 To play the result:
 ```sh
 "D:\Godot\Godot_v4.7-stable_win64_console.exe" --path output\runs\<run-id>\godot_project
@@ -420,14 +426,15 @@ settled, a completion score of 100, and zero QA retries. Screenshot review found
 no gating defect; NVIDIA Nemotron video QA verified visible animated movement,
 correct facing, a readable HUD, and a stable scene. The v11 run manifest ended
 with `status=passed` and `ship_ready=true`. The repository suite currently has
-**401 passing tests** plus clean frontend type-check, build, and lint runs.
+more than **420 passing tests** plus a clean frontend production build.
 
 ## Known limitations
 
 SAGA's creation layer is being rebuilt around an experience-first candidate
 studio; see [the research-backed revamp](docs/agentic-studio-revamp.md). The
-Action-RPG pack is the first vertical slice: it searches and scores 24 authored
-room/encounter candidates per brief instead of emitting the old fixed shell.
+Action-RPG and Run-and-Gun now use the experience-first Candidate Studio. The
+former searches 24 variable world/encounter plans; the latter searches 16 stage
+plans. Both publish four-persona evidence instead of accepting one happy path.
 
 - Generic autoplay still finds only the movement floor, but every one of SAGA's nine mechanic templates now also has a deterministic objective solver. Resource, territory, sequence, survival, maze, collection, and herding QA measure live behavior rather than trusting advertised rates or labels. The original motivating failure—a herding game whose creatures could never actually be pushed into the goal—is now explicitly gated through real flee displacement, goal progress, permanent settlement, and win verification.
 - Gameplay video QA observes the full deterministic right/down/left/up autoplay sequence, not an expert playthrough. It can catch temporal presentation defects such as reversed facing, rigid sliding, jitter and disappearing objects, but it cannot prove a template-specific objective is winnable; that remains the mechanic solver's job. The gate is opt-in because it uploads the generated MP4 to the configured NVIDIA endpoint.

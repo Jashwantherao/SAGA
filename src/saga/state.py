@@ -74,6 +74,9 @@ class GraphState(TypedDict, total=False):
     game_spec_errors: Optional[list[str]]
     assembly_lock: Optional[dict]
     assembly_hash: Optional[str]
+    # Encounter and Progression Compiler: selected, scored ContentIR for the
+    # current level, including persona evidence and bounded repair provenance.
+    content_plan: Optional[dict]
     # Art Director v1: a deterministic camera, palette, silhouette, scale and
     # layer-separation bible shared by image generation and visual QA.
     art_direction: Optional[dict]

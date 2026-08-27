@@ -178,7 +178,9 @@ def validate_run_and_gun_encounter_plan(plan: dict) -> list[str]:
     return errors
 
 
-def build_run_and_gun_encounter_plan(design_doc: dict, level_index: int) -> dict:
+def _run_and_gun_candidate(
+    design_doc: dict, level_index: int, candidate_index: int
+) -> dict:
     """Create deterministic authored-feeling stage structure from the brief.
 
     The plan is data, not generated GDScript. A stable digest selects one of
@@ -193,6 +195,7 @@ def build_run_and_gun_encounter_plan(design_doc: dict, level_index: int) -> dict
         str(level.get("name") or f"Level {level_index + 1}"),
         str(level.get("description") or ""),
         str(level_index),
+        str(candidate_index),
     ))
     digest = hashlib.sha256(identity.encode("utf-8")).digest()
     layout_id = RUN_AND_GUN_LAYOUTS[digest[0] % len(RUN_AND_GUN_LAYOUTS)]
@@ -338,7 +341,12 @@ def build_run_and_gun_encounter_plan(design_doc: dict, level_index: int) -> dict
     }
 
     plan = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "compiler": {
+            "id": "encounter_progression",
+            "version": 1,
+            "candidate_index": candidate_index,
+        },
         "layout_id": layout_id,
         "seed": digest.hex()[:16],
         "world_width": world_width,
@@ -363,10 +371,103 @@ def build_run_and_gun_encounter_plan(design_doc: dict, level_index: int) -> dict
     return plan
 
 
+def score_run_and_gun_candidate(plan: dict) -> dict:
+    combat = plan.get("combat_plan") or {}
+    waves = combat.get("waves") or []
+    roles = set(combat.get("enemy_roles") or [])
+    checkpoint = float(plan.get("checkpoint_x") or 0.0)
+    boss_start = float((plan.get("boss_arena") or {}).get("start") or 0.0)
+    recovery = [
+        float(item.get("x") or 0.0)
+        for item in plan.get("pickups") or []
+        if item.get("kind") == "health"
+    ]
+    platform_x = sorted(float(item.get("x") or 0.0) for item in plan.get("platforms") or [])
+    gaps = [later - earlier for earlier, later in zip(platform_x, platform_x[1:])]
+    max_gap = max(gaps, default=999.0)
+    hazard_distances = [
+        min(abs(float(item.get("x") or 0.0) - point) for point in (0.0, checkpoint, boss_start))
+        for item in plan.get("hazards") or []
+    ]
+    fair_hazards = all(distance >= 90.0 for distance in hazard_distances)
+    preboss_recovery = any(checkpoint - 180.0 <= point < boss_start for point in recovery)
+    threat_limit = int(combat.get("threat_budget_limit") or 0)
+    threat_spent = int(combat.get("threat_budget_spent") or 0)
+    metrics = {
+        "role_diversity": min(1.0, len(roles) / 4.0),
+        "route_continuity": min(1.0, 280.0 / max(280.0, max_gap)),
+        "hazard_fairness": 1.0 if fair_hazards else 0.0,
+        "survivor_recovery": 1.0 if preboss_recovery else 0.0,
+        "pressure_use": min(1.0, (threat_spent / max(1, threat_limit)) / 0.65),
+        "weapon_expression": min(1.0, len(combat.get("weapon_pickups") or []) / 2.0),
+    }
+    weights = {
+        "role_diversity": 20, "route_continuity": 20, "hazard_fairness": 18,
+        "survivor_recovery": 16, "pressure_use": 14, "weapon_expression": 12,
+    }
+    score = round(sum(metrics[name] * weight for name, weight in weights.items()), 1)
+    personas = {
+        "achiever": {"passed": len(waves) >= 2 and boss_start > checkpoint, "waves": len(waves)},
+        "explorer": {"passed": len(combat.get("weapon_pickups") or []) >= 2, "weapon_caches": len(combat.get("weapon_pickups") or [])},
+        "survivor": {"passed": preboss_recovery and fair_hazards, "preboss_recovery": preboss_recovery},
+        "speedrunner": {"passed": max_gap <= 360.0, "largest_route_gap": round(max_gap, 1)},
+    }
+    return {
+        "score": score,
+        "metrics": metrics,
+        "personas": personas,
+        "telemetry": {
+            "stage_width": plan.get("world_width"),
+            "encounter_count": len(plan.get("enemy_spawns") or []) + len(waves),
+            "enemy_count": len(plan.get("enemy_spawns") or []) + sum(len(wave.get("members") or []) for wave in waves),
+            "optional_discoveries": len(combat.get("weapon_pickups") or []),
+            "largest_route_gap": round(max_gap, 1),
+            "threat_budget_used": threat_spent,
+            "threat_budget_limit": threat_limit,
+        },
+        "passed": score >= 78 and all(item["passed"] for item in personas.values()),
+    }
+
+
+def build_run_and_gun_encounter_plan(
+    design_doc: dict, level_index: int, candidate_count: int = 16
+) -> dict:
+    """Search several safe stage candidates and retain critic provenance."""
+    if candidate_count < 2:
+        raise ValueError("run-and-gun candidate search requires at least two candidates")
+    ranked = []
+    for candidate_index in range(candidate_count):
+        plan = _run_and_gun_candidate(design_doc, level_index, candidate_index)
+        result = score_run_and_gun_candidate(plan)
+        signature = hashlib.sha256(
+            json.dumps(plan, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:16]
+        ranked.append((bool(result["passed"]), float(result["score"]), signature, plan, result))
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    passed, score, signature, selected, result = ranked[0]
+    selected["experience_search"] = {
+        "algorithm_version": 2,
+        "candidates_evaluated": candidate_count,
+        "repairs_evaluated": 0,
+        "selected_candidate": selected["compiler"]["candidate_index"],
+        "selected_after_repair": False,
+        "selected_signature": signature,
+        "score": score,
+        "metrics": result["metrics"],
+        "personas": result["personas"],
+        "telemetry": result["telemetry"],
+        "runner_up_score": ranked[1][1],
+    }
+    if not passed:
+        raise ValueError("no run-and-gun candidate passed the experience floor")
+    return selected
+
+
 def build_run_and_gun_adapter(
     design_doc: dict,
     level_index: int,
     asset_filenames: list[str],
+    plan: dict | None = None,
 ) -> str:
     """Render the tiny game-specific layer consumed by the stable pack."""
     levels = design_doc.get("levels") or [{}]
@@ -383,9 +484,9 @@ def build_run_and_gun_adapter(
     flyer = _asset_with(asset_filenames, "flyer", "flying", "aerial", "drone") or enemy
     boss = _asset_with(asset_filenames, "boss", "commander", "titan") or enemy
     checkpoint = _asset_with(asset_filenames, "key_item", "checkpoint", "beacon")
-    encounter_plan = build_run_and_gun_encounter_plan(design_doc, level_index)
+    encounter_plan = plan or build_run_and_gun_encounter_plan(design_doc, level_index)
     definition = {
-        "pack_version": 6,
+        "pack_version": 7,
         "title": str(design_doc.get("title") or "Run and Gun"),
         "level_name": str(level.get("name") or f"Level {level_index + 1}"),
         "level_index": level_index,
@@ -435,11 +536,14 @@ def scaffold_run_and_gun_level(
     design_doc: dict,
     level_index: int,
     asset_filenames: list[str],
+    plan: dict | None = None,
 ) -> ArchetypePack:
     pack = scaffold_pack(project_dir, "run_and_gun")
     if pack is None:  # pragma: no cover - protected by the fixed template above
         raise ValueError("run_and_gun archetype is unavailable")
-    adapter = build_run_and_gun_adapter(design_doc, level_index, asset_filenames)
+    adapter = build_run_and_gun_adapter(
+        design_doc, level_index, asset_filenames, plan=plan
+    )
     (Path(project_dir) / f"Level_{level_index}.gd").write_text(adapter, encoding="utf-8")
     return pack
 
@@ -448,9 +552,9 @@ def validate_action_rpg_plan(plan: dict) -> list[str]:
     """Reject an RPG shell that lacks a complete explore-to-boss loop."""
     errors: list[str] = []
     rooms = plan.get("rooms") or []
-    if len(rooms) != 3:
-        errors.append("action RPG v2 requires exactly three connected rooms")
-    if [room.get("index") for room in rooms] != [0, 1, 2]:
+    if not 4 <= len(rooms) <= 6:
+        errors.append("action RPG v4 requires four to six connected rooms")
+    if [room.get("index") for room in rooms] != list(range(len(rooms))):
         errors.append("room indices must be contiguous from zero")
     total_sparks = sum(
         int(pickup.get("amount") or 0)
@@ -480,10 +584,24 @@ def validate_action_rpg_plan(plan: dict) -> list[str]:
         }
         if len(roles) < 3:
             errors.append("action RPG encounters require at least three enemy roles")
-        if len({str(room.get("layout_id") or "") for room in rooms}) < 3:
-            errors.append("each action RPG room requires a distinct spatial layout")
+        if len({str(room.get("layout_id") or "") for room in rooms}) < 4:
+            errors.append("action RPG journey requires at least four spatial layouts")
         if not score_action_rpg_candidate(plan)["passed"]:
             errors.append("action RPG experience score is below the playable quality floor")
+    if int(plan.get("schema_version") or 0) >= 3:
+        compiler = plan.get("compiler") or {}
+        if compiler.get("id") != "encounter_progression":
+            errors.append("action RPG v4 requires the encounter progression compiler")
+        world = plan.get("world_graph") or {}
+        edges = world.get("edges") or []
+        if len(edges) != max(0, len(rooms) - 1):
+            errors.append("world graph must connect every authored room")
+        search = plan.get("experience_search") or {}
+        personas = search.get("personas") or {}
+        if set(personas) != {"achiever", "explorer", "survivor", "speedrunner"}:
+            errors.append("all four persona critics must report evidence")
+        elif not all(bool(item.get("passed")) for item in personas.values()):
+            errors.append("every persona critic must pass before selection")
     return errors
 
 
@@ -501,6 +619,7 @@ def build_action_rpg_adapter(
     design_doc: dict,
     level_index: int,
     asset_filenames: list[str],
+    plan: dict | None = None,
 ) -> str:
     levels = design_doc.get("levels") or [{}]
     level = levels[min(level_index, len(levels) - 1)]
@@ -521,9 +640,12 @@ def build_action_rpg_adapter(
         role: _asset_with(asset_filenames, role) or enemy
         for role in ("stalker", "sentinel", "skirmisher", "bruiser", "guard")
     }
-    plan = build_action_rpg_plan(design_doc, level_index)
+    plan = plan or build_action_rpg_plan(design_doc, level_index)
+    errors = validate_action_rpg_plan(plan)
+    if errors:
+        raise ValueError("invalid action-RPG plan: " + "; ".join(errors))
     definition = {
-        "pack_version": 3,
+        "pack_version": 4,
         "title": str(design_doc.get("title") or "Action RPG"),
         "level_name": str(level.get("name") or f"Level {level_index + 1}"),
         "level_index": level_index,
@@ -559,10 +681,13 @@ def scaffold_action_rpg_level(
     design_doc: dict,
     level_index: int,
     asset_filenames: list[str],
+    plan: dict | None = None,
 ) -> ArchetypePack:
     pack = scaffold_pack(project_dir, "action_rpg")
     if pack is None:  # pragma: no cover - protected by the fixed template above
         raise ValueError("action_rpg archetype is unavailable")
-    adapter = build_action_rpg_adapter(design_doc, level_index, asset_filenames)
+    adapter = build_action_rpg_adapter(
+        design_doc, level_index, asset_filenames, plan=plan
+    )
     (Path(project_dir) / f"Level_{level_index}.gd").write_text(adapter, encoding="utf-8")
     return pack

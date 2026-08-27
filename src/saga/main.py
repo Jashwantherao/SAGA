@@ -379,7 +379,7 @@ def main() -> None:
             file=sys.stderr,
         )
     manifest = {
-        "manifest_version": 18,
+        "manifest_version": 19,
         "run_dir": result["run_dir"],
         "idea": args.idea,
         "title": (result.get("design_doc") or {}).get("title"),
@@ -397,6 +397,7 @@ def main() -> None:
             str(assembly_lock_path) if result.get("assembly_lock") else None
         ),
         "assembly_hash": result.get("assembly_hash"),
+        "content_plan": result.get("content_plan"),
         "art_direction_path": str(art_direction_path) if result.get("art_direction") else None,
         "art_direction": result.get("art_direction"),
         "art_direction_status": result.get("art_direction_status"),

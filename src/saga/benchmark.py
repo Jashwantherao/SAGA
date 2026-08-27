@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import subprocess
@@ -96,6 +97,94 @@ def _script_metrics(manifest: dict) -> dict:
     return {"gdscript_lines": lines, "gdscript_functions": functions}
 
 
+def _content_metrics(manifest: dict) -> dict:
+    """Return experience evidence without rewarding code volume."""
+    plan = manifest.get("content_plan") or {}
+    search = plan.get("experience_search") or {}
+    personas = search.get("personas") or {}
+    repairs = search.get("repairs") or search.get("selected_repairs") or []
+    quality_report = manifest.get("quality_report") or {}
+    return {
+        "director_score": float(quality_report.get("overall_score") or 0),
+        "content_score": float(search.get("score") or 0),
+        "persona_pass_rate": round(
+            sum(bool(item.get("passed")) for item in personas.values())
+            / max(1, len(personas)), 3
+        ),
+        "candidate_count": int(search.get("candidates_evaluated") or 0),
+        "content_repairs": len(repairs),
+        "content_signature": str(search.get("selected_signature") or ""),
+    }
+
+
+def _candidate_id(job_id: str) -> str:
+    return hashlib.sha256(f"saga-blind-v1:{job_id}".encode()).hexdigest()[:10]
+
+
+HUMAN_RATING_FIELDS = ("playability", "fun", "visual_coherence", "originality")
+
+
+def apply_human_ratings(results: list[dict], ratings_path: Path) -> list[dict]:
+    """Attach 1-5 blind ratings keyed only by the anonymous candidate ID."""
+    with ratings_path.open(newline="", encoding="utf-8-sig") as handle:
+        ratings = {row["candidate_id"]: row for row in csv.DictReader(handle)}
+    enriched = []
+    for original in results:
+        result = dict(original)
+        row = ratings.get(result.get("candidate_id", ""))
+        if row:
+            values = []
+            for field in HUMAN_RATING_FIELDS:
+                try:
+                    value = float(row[field])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"candidate {result['candidate_id']} has an invalid {field} rating"
+                    ) from exc
+                if not 1 <= value <= 5:
+                    raise ValueError(f"{field} ratings must be between 1 and 5")
+                values.append(value)
+            result["human_score"] = round(mean(values) * 20, 1)
+            result["human_ratings"] = {
+                field: value for field, value in zip(HUMAN_RATING_FIELDS, values)
+            }
+            result["human_notes"] = row.get("notes", "").strip()
+        enriched.append(result)
+    return enriched
+
+
+def write_blind_packet(results: list[dict], root: Path) -> None:
+    """Create a rater sheet that deliberately excludes model/provider identity."""
+    columns = ["candidate_id", "case", *HUMAN_RATING_FIELDS, "notes"]
+    packet_path = root / "blind_playtest.csv"
+    existing = {}
+    if packet_path.exists():
+        with packet_path.open(newline="", encoding="utf-8-sig") as handle:
+            existing = {row["candidate_id"]: row for row in csv.DictReader(handle)}
+    with packet_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        for result in sorted(results, key=lambda item: item["candidate_id"]):
+            writer.writerow(existing.get(result["candidate_id"], {
+                "candidate_id": result["candidate_id"],
+                "case": result["case"],
+            }))
+    # Keep the identity key separate from the rater-facing sheet.
+    key = [
+        {
+            "candidate_id": result["candidate_id"],
+            "profile": result["profile"],
+            "provider": result["provider"],
+            "model": result["model"],
+            "manifest_path": result.get("manifest_path"),
+        }
+        for result in results
+    ]
+    (root / "blind_identity_key.json").write_text(
+        json.dumps(key, indent=2), encoding="utf-8"
+    )
+
+
 def score(manifest: dict) -> tuple[float, dict]:
     component_names = (
         "ship", "level_pass_rate", "first_pass_rate", "objective", "video",
@@ -137,6 +226,7 @@ def extract_result(job: Job, output_root: Path, elapsed: float, exit_code: int, 
     attempts = [attempt for level in levels for attempt in (level.get("attempts") or [])]
     return {
         "job_id": job.job_id,
+        "candidate_id": _candidate_id(job.job_id),
         "profile": job.profile["id"],
         "provider": job.profile.get("provider", "unknown"),
         "model": job.profile.get("model", "unknown"),
@@ -157,6 +247,7 @@ def extract_result(job: Job, output_root: Path, elapsed: float, exit_code: int, 
         "advisory_count": sum(len(manifest.get(key) or []) for key in ("vision_notes", "balance_notes", "video_notes")),
         "manifest_path": str(manifest_path) if manifest_path else None,
         "error": error,
+        **_content_metrics(manifest),
         **_script_metrics(manifest),
     }
 
@@ -222,6 +313,8 @@ def write_reports(results: list[dict], root: Path) -> None:
         "profile", "provider", "model", "case", "repetition", "status", "ship_ready",
         "quality_score", "elapsed_seconds", "first_pass_levels", "retries",
         "repair_gate_rejections", "advisory_count", "gdscript_lines", "gdscript_functions",
+        "director_score", "content_score", "persona_pass_rate", "candidate_count",
+        "content_repairs", "content_signature", "human_score",
     ]
     with (root / "results.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
@@ -240,20 +333,46 @@ def write_reports(results: list[dict], root: Path) -> None:
             "quality": mean(item["quality_score"] for item in items),
             "median_seconds": median(item["elapsed_seconds"] for item in items),
             "mean_retries": mean(item["retries"] for item in items),
+            "mean_content_repairs": mean(item.get("content_repairs", 0) for item in items),
+            "director_score": mean(item.get("director_score", 0) for item in items),
+            "content_score": mean(item.get("content_score", 0) for item in items),
+            "persona_rate": mean(item.get("persona_pass_rate", 0) for item in items) * 100,
+            "human_score": (
+                mean(item["human_score"] for item in items if "human_score" in item)
+                if any("human_score" in item for item in items) else None
+            ),
         })
-    rows.sort(key=lambda item: (-item["quality"], -item["ship_rate"], item["median_seconds"]))
+    rows.sort(key=lambda item: (
+        -(item["human_score"] if item["human_score"] is not None else -1),
+        -item["quality"], -item["ship_rate"], item["median_seconds"],
+    ))
     lines = [
         "# SAGA model-quality benchmark", "",
-        "The composite score rewards truthful shipping, deterministic level completion, first-pass success, objective completion, video evidence, repair efficiency, and low advisory counts. Code size is reported but never rewarded.", "",
-        "| Rank | Profile | Model | Runs | Ship rate | Quality | Median time | Mean retries |",
-        "|---:|---|---|---:|---:|---:|---:|---:|",
+        "The automated score rewards truthful shipping, deterministic completion, first-pass success, objective and video evidence, repair efficiency, persona coverage, and content quality. Human ratings are collected model-blind and outrank automation when present. Code size is reported but never rewarded.", "",
+        "| Rank | Profile | Model | Runs | Ship | Auto | Director | Content | Personas | Human | Median time | Content repairs | Pipeline retries |",
+        "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for rank, row in enumerate(rows, 1):
         lines.append(
             f"| {rank} | {row['profile']} | `{row['model']}` | {row['runs']} | "
-            f"{row['ship_rate']:.0f}% | {row['quality']:.1f} | {row['median_seconds']:.1f}s | {row['mean_retries']:.2f} |"
+            f"{row['ship_rate']:.0f}% | {row['quality']:.1f} | {row['director_score']:.1f} | "
+            f"{row['content_score']:.1f} | {row['persona_rate']:.0f}% | "
+            f"{row['human_score']:.1f} | " if row["human_score"] is not None else
+            f"| {rank} | {row['profile']} | `{row['model']}` | {row['runs']} | "
+            f"{row['ship_rate']:.0f}% | {row['quality']:.1f} | {row['director_score']:.1f} | "
+            f"{row['content_score']:.1f} | {row['persona_rate']:.0f}% | — | "
         )
+        lines[-1] += (
+            f"{row['median_seconds']:.1f}s | {row['mean_content_repairs']:.2f} | "
+            f"{row['mean_retries']:.2f} |"
+        )
+    lines += [
+        "", "## Blind playtest", "",
+        "Give `blind_playtest.csv` to the player and keep `blind_identity_key.json` private until every rating is locked. Rate playability, fun, visual coherence, and originality from 1 to 5.",
+    ]
     (root / "leaderboard.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if all(result.get("candidate_id") for result in results):
+        write_blind_packet(results, root)
 
 
 def main() -> None:
@@ -266,6 +385,10 @@ def main() -> None:
     parser.add_argument("--max-minutes", type=float, default=90)
     parser.add_argument("--timeout-minutes", type=float, default=30)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--human-ratings", type=Path,
+        help="completed blind_playtest.csv with 1-5 ratings",
+    )
     args = parser.parse_args()
     if args.max_runs < 1 or args.max_minutes <= 0 or args.timeout_minutes <= 0:
         parser.error("run and time limits must be positive")
@@ -296,6 +419,8 @@ def main() -> None:
         result = run_job(job, suite_path, root, args.timeout_minutes)
         results = [item for item in results if item.get("job_id") != result["job_id"]]
         results.append(result)
+        if args.human_ratings:
+            results = apply_human_ratings(results, args.human_ratings)
         write_reports(results, root)
     print(f"Leaderboard: {root / 'leaderboard.md'}")
 

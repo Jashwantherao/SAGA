@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "action_rpg",
-  "version": 3,
+  "version": 4,
   "mechanic_template": "action_rpg",
   "capabilities": [
     "top_down_four_direction_movement",
@@ -14,8 +14,10 @@
     "inventory_panel_and_spending",
     "npc_dialogue_and_movement_lock",
     "quest_stage_and_ability_unlock",
-    "three_room_persistence",
-    "experience_scored_room_search",
+    "variable_world_persistence",
+    "encounter_progression_candidate_search",
+    "four_persona_experience_critics",
+    "bounded_content_repair",
     "versioned_checkpoint_save",
     "two_phase_boss",
     "action_rpg_hud",
