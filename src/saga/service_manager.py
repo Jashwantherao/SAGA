@@ -100,12 +100,19 @@ def _pids_on_port(port: int) -> set[int]:
 def _belongs_to_service(process: psutil.Process, definition: ServiceDefinition) -> bool:
     try:
         command = " ".join(process.cmdline()).lower().replace("\\", "/")
+        working_directory = process.cwd().lower().replace("\\", "/")
     except (psutil.AccessDenied, psutil.NoSuchProcess):
         return False
     if definition.name == "ollama":
         return "ollama" in command
     if definition.name == "comfyui":
-        return "main.py" in command and "comfyui" in command
+        # Sandboxed launchers can replace the configured Python executable in
+        # cmdline(), leaving only ``python main.py ...``. The process cwd is
+        # therefore part of the identity contract; without it the UI's
+        # restart button reported success but left the old server running.
+        return "main.py" in command and (
+            "comfyui" in command or "comfyui" in working_directory
+        )
     return "musicgen_server.py" in command
 
 

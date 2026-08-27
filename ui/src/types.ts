@@ -13,11 +13,54 @@ export type VideoQaResult = {
   player_motion?: string
   movement_facing?: string
   animation?: string
+  combat_feedback?: string
+  encounter_readability?: string
+  presentation_tier?: string
   hud_readable?: boolean
   scene_stable?: boolean
   code_defects?: string[]
   art_advisories?: string[]
   evidence?: string
+}
+
+export type CapabilityProbeResult = {
+  id?: string
+  status?: 'passed' | 'failed' | 'missing' | string
+  observed?: boolean
+  value?: unknown
+  declared?: boolean
+  configured?: boolean
+  exercised?: boolean
+  passed?: boolean
+}
+
+export type CapabilityCoverageEntry = {
+  mode?: string
+  capability_id?: string
+  version?: number
+  status?: 'passed' | 'failed' | 'blocked' | string
+  declared?: boolean
+  configured?: boolean
+  exercised?: boolean
+  observed?: boolean
+  passed?: boolean
+  probes?: CapabilityProbeResult[]
+}
+
+export type CapabilityCoverage = {
+  coverage_version?: number
+  assembly_hash?: string
+  status?: 'passed' | 'failed' | 'blocked' | string
+  capabilities_total?: number
+  capabilities_passed?: number
+  missing_evidence?: string[]
+  failed_evidence?: string[]
+  capabilities?: CapabilityCoverageEntry[]
+}
+
+export type ObjectiveResult = Record<string, unknown> & {
+  capability_coverage?: CapabilityCoverage
+  input_playthrough?: Record<string, unknown>
 }
 
 export type LevelAttempt = {
@@ -31,10 +74,34 @@ export type LevelAttempt = {
   vision_evaluated?: boolean
   balance_notes?: string[]
   video_notes?: string[]
-  objective_result?: Record<string, unknown>
+  objective_result?: ObjectiveResult
   video_qa_result?: VideoQaResult
   coder_model?: string
   playability_result?: PlayabilityResult
+  art_direction_hash?: string
+}
+
+export type ArtDirection = {
+  art_direction_version?: number
+  identity_hash?: string
+  rendering_language?: string
+  camera_contract?: {
+    projection?: string
+    camera?: string
+    gameplay_plane?: string
+    forbidden?: string[]
+  }
+  palette?: Record<string, string>
+  coherence_rules?: string[]
+  asset_contracts?: { logical_name?: string; role?: string }[]
+}
+
+export type AssetContractResult = {
+  logical_name?: string
+  path?: string
+  status?: string
+  errors?: string[]
+  observed?: { size?: number[]; mode?: string; alpha_coverage?: number }
 }
 
 export type PlayabilityResult = {
@@ -55,7 +122,7 @@ export type LevelResult = {
   attempts?: LevelAttempt[]
   screenshot_path?: string
   gameplay_video_path?: string
-  objective_result?: Record<string, unknown>
+  objective_result?: ObjectiveResult
   qa_errors?: string[]
   vision_notes?: string[]
   vision_evaluated?: boolean
@@ -123,6 +190,10 @@ export type SagaRun = {
   updated_at: string
   retry_count?: number
   coder_model?: string
+  assembly_hash?: string
+  art_direction?: ArtDirection
+  art_direction_status?: string
+  asset_contract_results?: AssetContractResult[]
   screenshot_path?: string
   gameplay_video_path?: string
   bgm_path?: string

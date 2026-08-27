@@ -18,10 +18,19 @@ func _ready() -> void:
 	collision.shape = shape
 	add_child(collision)
 	var visual := Polygon2D.new()
+	visual.name = "FallbackVisual"
 	visual.polygon = PackedVector2Array([Vector2(0, -13), Vector2(11, 0), Vector2(0, 13), Vector2(-11, 0)])
-	visual.color = Color("ffd56b")
+	var colors := {"sparks": Color("ffd56b"), "health": Color("73e0b0"), "item": Color("a98beb")}
+	visual.color = colors.get(kind, colors["item"])
 	add_child(visual)
 	body_entered.connect(_on_body_entered)
+
+func _process(_delta: float) -> void:
+	var sprite := get_node_or_null("AuthoredSprite") as Sprite2D
+	if is_instance_valid(sprite):
+		var phase := Time.get_ticks_msec() * 0.005 + float(get_instance_id() % 17)
+		sprite.position.y = -6.0 + sin(phase) * 4.0
+		sprite.rotation = sin(phase * 0.55) * 0.08
 
 func configure(data: Dictionary) -> void:
 	pickup_id = str(data.get("id", pickup_id))

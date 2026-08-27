@@ -17,6 +17,8 @@ still exercises gameplay), Sfx autoload calls, and a CPUParticles2D ambient
 effect.
 """
 
+import hashlib
+import json
 import re
 import shutil
 from pathlib import Path
@@ -403,9 +405,10 @@ func flash(sprite: Node2D, color: Color = Color(1, 0.4, 0.4)) -> void:
 # what happens.
 #
 # Two signals, both template-agnostic. Something in the scene must MOVE when a
-# direction is held, and the status Label - which every template is already
-# required to show game state in - must eventually say something different.
-# A game failing either is inert regardless of what it was trying to be.
+# direction is held, and a real HUD must expose a visible, nonempty Label at
+# HUD/HUDStatus. The probe observes the same control during both the baseline
+# and input windows. Text changes remain advisory because ordered puzzles may
+# be fully playable without random movement advancing their state.
 #
 # Deliberately not a win condition: reaching an objective needs skill this
 # cannot fake, so absence of progress here is not evidence of an unwinnable
@@ -416,31 +419,77 @@ const SETTLE_FRAMES := 20
 const BASELINE_FRAMES := 40
 const HOLD_FRAMES := 45
 const DIRECTIONS := ["ui_right", "ui_down", "ui_left", "ui_up"]
+const HUD_LAYER_NAME := "HUD"
+const HUD_CONTROL_NAME := "HUDStatus"
 
 var _frame := 0
 var _leg := -1
 var _held := ""
 var _labels := {}
+var _hud_states := {}
+var _hud_baseline := {}
+var _hud_input := {}
 var _previous := {}
 var _idle_motion := 0.0
 var _input_motion := 0.0
 var _active := false
+var _presentation := false
 
 func _ready() -> void:
-	_active = "--autoplay" in OS.get_cmdline_user_args()
+	var arguments := OS.get_cmdline_user_args()
+	_presentation = "--presentation-capture" in arguments
+	_active = "--autoplay" in arguments or _presentation
 	if _active:
 		process_priority = 500
 
-func _collect(node: Node, labels: Array, movers: Array) -> void:
+func _has_named_hud_ancestor(node: Node) -> bool:
+	var ancestor := node.get_parent()
+	while ancestor != null:
+		if ancestor is CanvasLayer:
+			return str(ancestor.name) == HUD_LAYER_NAME
+		ancestor = ancestor.get_parent()
+	return false
+
+func _is_visible_hud_control(node: Label) -> bool:
+	if str(node.name) != HUD_CONTROL_NAME or not _has_named_hud_ancestor(node):
+		return false
+	if not node.is_visible_in_tree() or node.text.strip_edges().is_empty():
+		return false
+	# CanvasItem exposes modulation as properties in Godot 4; Label has no
+	# callable accessor for a combined global modulation value.
+	if node.modulate.a <= 0.01 or node.self_modulate.a <= 0.01:
+		return false
+	var rect := node.get_global_rect()
+	return rect.size.x > 0.0 and rect.size.y > 0.0 and rect.intersects(node.get_viewport_rect())
+
+func _collect(node: Node, labels: Array, hud_controls: Array, movers: Array) -> void:
 	if node is Label:
 		labels.append(node)
+		if _is_visible_hud_control(node):
+			hud_controls.append(node)
 	elif node is Node2D and not (node is Sprite2D):
 		# Sprite2D is excluded on purpose: the Anim autoload writes a bob and a
 		# lean into every animated sprite's local position every frame, so
 		# measuring sprites measures the animation rather than the game.
 		movers.append(node)
 	for child in node.get_children():
-		_collect(child, labels, movers)
+		_collect(child, labels, hud_controls, movers)
+
+func _observe_hud(controls: Array, phase: int) -> void:
+	for control in controls:
+		var id: int = control.get_instance_id()
+		_hud_states[control.text] = true
+		if phase == 1:
+			_hud_baseline[id] = true
+		elif phase == 2:
+			_hud_input[id] = true
+
+func _persistent_hud_count() -> int:
+	var count := 0
+	for id in _hud_baseline:
+		if _hud_input.has(id):
+			count += 1
+	return count
 
 func _accumulate(movers: Array) -> float:
 	var total := 0.0
@@ -459,12 +508,17 @@ func _process(_delta: float) -> void:
 	if root == null:
 		return
 	var labels: Array = []
+	var hud_controls: Array = []
 	var movers: Array = []
-	_collect(root, labels, movers)
+	_collect(root, labels, hud_controls, movers)
 	for l in labels:
 		_labels[l.text] = true
 
 	_frame += 1
+	if _frame > SETTLE_FRAMES + 1 and _frame < SETTLE_FRAMES + BASELINE_FRAMES:
+		_observe_hud(hud_controls, 1)
+	elif _frame >= SETTLE_FRAMES + BASELINE_FRAMES:
+		_observe_hud(hud_controls, 2)
 	if _frame < SETTLE_FRAMES:
 		_accumulate(movers)
 		return
@@ -495,15 +549,21 @@ func _process(_delta: float) -> void:
 			return
 		_held = DIRECTIONS[_leg]
 		Input.action_press(_held)
+	if _presentation:
+		if _frame % 24 < 5:
+			Input.action_press("rpg_attack")
+		else:
+			Input.action_release("rpg_attack")
 
 func _report() -> void:
 	_active = false
 	if _held != "":
 		Input.action_release(_held)
+	Input.action_release("rpg_attack")
 	# Per-frame rates, since the two windows are different lengths.
 	var idle_rate := _idle_motion / float(BASELINE_FRAMES)
 	var input_rate := _input_motion / float(HOLD_FRAMES * DIRECTIONS.size())
-	print("[AUTOPLAY] idle_rate=%.3f input_rate=%.3f label_states=%d" % [idle_rate, input_rate, _labels.size()])
+	print("[AUTOPLAY] idle_rate=%.3f input_rate=%.3f label_states=%d hud_controls=%d hud_states=%d" % [idle_rate, input_rate, _labels.size(), _persistent_hud_count(), _hud_states.size()])
 	get_tree().quit()
 """
 
@@ -2691,7 +2751,7 @@ func _physics_process(_delta: float) -> void:
 			if "entry_sparks" in collected:
 				_stage = "enter_vault"
 			else:
-				_navigate(player, Vector2(500, 330))
+				_navigate(player, _pickup_target(level, "entry_sparks", Vector2(500, 330)))
 		"enter_vault":
 			if room == 1:
 				_stage = "vault_sparks"
@@ -2701,12 +2761,12 @@ func _physics_process(_delta: float) -> void:
 			if "vault_sparks" in collected:
 				_stage = "vault_charm"
 			else:
-				_navigate(player, Vector2(500, 330))
+				_navigate(player, _pickup_target(level, "vault_sparks", Vector2(500, 330)))
 		"vault_charm":
 			if "ember_charm" in collected:
 				_stage = "inventory_open"
 			else:
-				_navigate(player, Vector2(600, 180))
+				_navigate(player, _pickup_target(level, "ember_charm", Vector2(600, 180)))
 		"inventory_open":
 			_release_movement()
 			if bool(level.get("inventory_open")):
@@ -2768,12 +2828,20 @@ func _nearest_enemy(player: Node2D) -> Node2D:
 
 func _defend(player: Node2D) -> bool:
 	var enemy := _nearest_enemy(player)
-	if not is_instance_valid(enemy) or player.global_position.distance_to(enemy.global_position) > 76.0:
+	if (
+		not is_instance_valid(enemy)
+		or player.global_position.distance_to(enemy.global_position) > 76.0
+		or not _line_clear(player.global_position, enemy.global_position)
+	):
 		return false
 	var before := int(enemy.get("health"))
 	_face_and_attack(player, enemy.global_position)
 	_melee = _melee or before < int(enemy.get("max_health"))
 	return true
+
+func _line_clear(origin: Vector2, target: Vector2) -> bool:
+	var query := PhysicsRayQueryParameters2D.create(origin, target, 1)
+	return get_tree().root.get_world_2d().direct_space_state.intersect_ray(query).is_empty()
 
 func _fight_boss(player: Node2D) -> void:
 	var bosses := get_tree().get_nodes_in_group("action_rpg_boss")
@@ -2806,14 +2874,74 @@ func _face_and_attack(player: Node2D, target: Vector2) -> void:
 	else:
 		Input.action_release("rpg_attack")
 
+func _pickup_target(level: Node, pickup_id: String, fallback: Vector2) -> Vector2:
+	for candidate in (level.get("pickups") as Array):
+		if is_instance_valid(candidate) and str(candidate.get("pickup_id")) == pickup_id:
+			return (candidate as Node2D).global_position
+	return fallback
+
 func _navigate(player: Node2D, target: Vector2) -> void:
-	var delta := target - player.global_position
-	if absf(delta.x) > 18.0:
-		_move_vector(Vector2(signf(delta.x), 0))
-	elif absf(delta.y) > 18.0:
-		_move_vector(Vector2(0, signf(delta.y)))
+	var waypoint := _navigation_waypoint(player, target)
+	var delta := waypoint - player.global_position
+	if delta.length() <= 18.0:
+		delta = target - player.global_position
+		if delta.length() <= 18.0:
+			_release_movement()
+			return
+	var desired := Vector2.ZERO
+	if absf(delta.x) >= absf(delta.y):
+		desired = Vector2(signf(delta.x), 0)
 	else:
-		_release_movement()
+		desired = Vector2(0, signf(delta.y))
+	# ContentIR layouts are intentionally varied. Probe the real collision shape
+	# and steer around it instead of relying on coordinates from the v1 room.
+	if player.has_method("test_move") and bool(player.call("test_move", player.transform, desired * 18.0)):
+		if absf(desired.x) > 0.0:
+			desired = Vector2(0, -1 if player.global_position.y < 288.0 else 1)
+		else:
+			desired = Vector2(-1 if player.global_position.x < 512.0 else 1, 0)
+		if bool(player.call("test_move", player.transform, desired * 18.0)):
+			desired = -desired
+	_move_vector(desired)
+
+func _navigation_waypoint(player: Node2D, target: Vector2) -> Vector2:
+	var levels := get_tree().get_nodes_in_group("saga_action_rpg_level")
+	if levels.is_empty():
+		return target
+	var level: Node = levels[0]
+	var definition := level.get("_definition") as Dictionary
+	var room_plan := definition.get("room_plan", {}) as Dictionary
+	var rooms := room_plan.get("rooms", []) as Array
+	var room_index := int(level.get("room_index"))
+	if room_index < 0 or room_index >= rooms.size():
+		return target
+	var grid := AStarGrid2D.new()
+	grid.region = Rect2i(2, 3, 29, 14)
+	grid.cell_size = Vector2(32, 32)
+	grid.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_NEVER
+	grid.update()
+	for obstacle_value in ((rooms[room_index] as Dictionary).get("obstacles", []) as Array):
+		var obstacle := obstacle_value as Dictionary
+		var center_value := obstacle.get("position", []) as Array
+		var size_value := obstacle.get("size", []) as Array
+		if center_value.size() < 2 or size_value.size() < 2:
+			continue
+		var center := Vector2(float(center_value[0]), float(center_value[1]))
+		var half_size := Vector2(float(size_value[0]), float(size_value[1])) * 0.5 + Vector2(24, 24)
+		for x in range(grid.region.position.x, grid.region.end.x):
+			for y in range(grid.region.position.y, grid.region.end.y):
+				var cell_center := Vector2(x * 32, y * 32)
+				if absf(cell_center.x - center.x) <= half_size.x and absf(cell_center.y - center.y) <= half_size.y:
+					grid.set_point_solid(Vector2i(x, y), true)
+	var start := Vector2i(clampi(roundi(player.global_position.x / 32.0), 2, 30), clampi(roundi(player.global_position.y / 32.0), 3, 16))
+	var finish := Vector2i(clampi(roundi(target.x / 32.0), 2, 30), clampi(roundi(target.y / 32.0), 3, 16))
+	grid.set_point_solid(start, false)
+	grid.set_point_solid(finish, false)
+	var path := grid.get_id_path(start, finish)
+	if path.size() < 2:
+		return target
+	var next: Vector2i = path[1]
+	return Vector2(next.x * 32, next.y * 32)
 
 func _move_vector(direction: Vector2) -> void:
 	_release_movement()
@@ -2972,14 +3100,14 @@ func _ready():
     add_child(particles)
 """
 
-# Harness-owned SFX autoload: loads the four synthesized cues written by
+# Harness-owned SFX autoload: loads the synthesized cues written by
 # saga.sfx and exposes Sfx.play(name). The LLM only ever calls play().
 SFX_GD = """extends Node
 
 var players = {}
 
 func _ready():
-    for sfx_name in ["pickup", "hit", "win", "lose"]:
+    for sfx_name in ["swing", "dash", "pickup", "hit", "phase", "win", "lose"]:
         var player = AudioStreamPlayer.new()
         player.stream = load("res://assets/sfx_%s.wav" % sfx_name)
         add_child(player)
@@ -3146,8 +3274,10 @@ SYSTEM_PROMPT_BASE = (
     "a CollisionShape2D child, and every interactive object (pickup, hazard, "
     "switch, creature, zone) is also an Area2D with a CollisionShape2D child, "
     "detected via the area_entered (and area_exited where needed) signals - "
-    "never use physics bodies. Show the game state in a Label on a "
-    "CanvasLayer, and implement the design brief's win condition and lose "
+    "never use physics bodies. Show the game state in a Label named exactly "
+    "`HUDStatus`, inside a CanvasLayer named exactly `HUD`; give it nonempty "
+    "text in _ready so the runtime HUD probe can observe it on screen. "
+    "Implement the design brief's win condition and lose "
     "condition exactly. Your script controls ONE level of a multi-level "
     "game - the design brief names your level and its position, so scale "
     "difficulty numbers up for later levels. Structure play as four states "
@@ -3409,10 +3539,13 @@ func _ready():
         _spawn_coin(pos)
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
+    status_label.text = "Coins: 0 / %d" % total_coins
 
     if DisplayServer.get_name() == "headless" or Game.level > 0:
         state = "playing"
@@ -3530,8 +3663,10 @@ func _ready():
         _spawn_switch(positions[index], index)
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -3670,8 +3805,10 @@ func _ready():
         _spawn_hazard(starts[i], dirs[i])
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -3816,8 +3953,10 @@ func _ready():
         _spawn_zone(pos)
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -3961,8 +4100,10 @@ func _ready():
         _spawn_creature(pos)
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -4117,8 +4258,10 @@ func _ready():
     add_child(patroller)
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -4302,8 +4445,10 @@ func _ready():
         _spawn_hazard(hazard_starts[i], hazard_headings[i])
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -4532,8 +4677,10 @@ func _ready():
     add_child(patroller)
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -4727,8 +4874,10 @@ func _ready():
     _spawn_ghost(Vector2(515, 280), Color(0.6, 1.3, 0.7), [])
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -5168,6 +5317,108 @@ def _objective_probe_for(project_dir, level_index: int, template: str):
     return run_probe
 
 
+def _assembly_contract(state: GraphState) -> str:
+    """Compact immutable composition context for generated-code builders."""
+    lock = state.get("assembly_lock") or {}
+    if not lock:
+        return ""
+    components = [
+        f"{component.get('id')}@{component.get('version')}"
+        for mode in lock.get("modes") or []
+        for component in mode.get("components") or []
+    ]
+    return (
+        "Immutable Game Assembly (do not add undeclared gameplay systems):\n"
+        f"- assembly_hash: {lock.get('assembly_hash')}\n"
+        f"- components: {', '.join(components)}\n"
+        f"- required QA evidence: {', '.join(lock.get('required_probes') or [])}\n"
+    )
+
+
+def _persist_assembly_lock(project_dir: Path, state: GraphState) -> None:
+    """Keep the exact runtime contract beside the project that QA executes."""
+    lock = state.get("assembly_lock")
+    if lock:
+        (project_dir / "assembly.lock.json").write_text(
+            json.dumps(lock, indent=2), encoding="utf-8"
+        )
+
+
+def _assert_pack_matches_assembly(
+    state: GraphState,
+    pack_id: str,
+    pack_root: Path | None = None,
+    pack_required_files: tuple[str, ...] | None = None,
+) -> None:
+    lock = state.get("assembly_lock") or {}
+    locked_manifests = {
+        component.get("manifest_id")
+        for mode in lock.get("modes") or []
+        for component in mode.get("components") or []
+    }
+    if locked_manifests and locked_manifests != {pack_id}:
+        raise ValueError(
+            f"assembly {lock.get('assembly_hash')} resolved manifests "
+            f"{sorted(locked_manifests)} but Coder selected pack {pack_id!r}"
+        )
+    if locked_manifests:
+        from saga.capabilities import profile_requests
+
+        expected_components = {
+            (request["id"], request["version"])
+            for request in profile_requests(pack_id)
+        }
+        locked_components = {
+            (component.get("id"), component.get("version"))
+            for mode in lock.get("modes") or []
+            for component in mode.get("components") or []
+        }
+        if locked_components != expected_components:
+            raise ValueError(
+                f"pack {pack_id!r} can currently scaffold only its complete profile; "
+                f"locked {sorted(locked_components)}, expected {sorted(expected_components)}"
+            )
+        if pack_required_files is not None:
+            locked_runtime_files = {
+                runtime_file
+                for mode in lock.get("modes") or []
+                for component in mode.get("components") or []
+                for runtime_file in component.get("runtime_files") or []
+            }
+            if locked_runtime_files != set(pack_required_files):
+                raise ValueError(
+                    f"pack {pack_id!r} copies files outside its locked components: "
+                    f"locked {sorted(locked_runtime_files)}, "
+                    f"pack {sorted(pack_required_files)}"
+                )
+    if pack_root is None:
+        return
+    resolved_root = pack_root.resolve()
+    for mode in lock.get("modes") or []:
+        for component in mode.get("components") or []:
+            if component.get("manifest_id") != pack_id:
+                continue
+            for runtime_file, expected_digest in (
+                component.get("runtime_digests") or {}
+            ).items():
+                runtime_path = (resolved_root / runtime_file).resolve()
+                if not runtime_path.is_relative_to(resolved_root):
+                    raise ValueError(
+                        f"locked runtime file escapes its pack: {runtime_file!r}"
+                    )
+                try:
+                    actual_digest = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+                except OSError as exc:
+                    raise ValueError(
+                        f"locked runtime file is unavailable: {runtime_path}: {exc}"
+                    ) from exc
+                if actual_digest != expected_digest:
+                    raise ValueError(
+                        f"locked runtime file changed after composition: {runtime_file!r} "
+                        f"expected {expected_digest}, got {actual_digest}"
+                    )
+
+
 def coder(state: GraphState) -> GraphState:
     design_doc = state["design_doc"]
     sprite_paths = state.get("sprite_paths") or []
@@ -5178,6 +5429,7 @@ def coder(state: GraphState) -> GraphState:
     project_dir = run_project_dir(state)
 
     project_dir.mkdir(parents=True, exist_ok=True)
+    _persist_assembly_lock(project_dir, state)
     assets_dir = project_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
 
@@ -5214,11 +5466,19 @@ def coder(state: GraphState) -> GraphState:
     template = design_doc.get("mechanic_template") or "collect"
     if template in {"run_and_gun", "action_rpg"}:
         from saga.archetypes import (
+            load_pack,
             scaffold_action_rpg_level,
             scaffold_run_and_gun_level,
         )
 
         _write_harness_project(project_dir, design_doc, current_level, bgm_filename)
+        locked_pack = load_pack(template)
+        _assert_pack_matches_assembly(
+            state,
+            locked_pack.id,
+            locked_pack.root,
+            locked_pack.required_files,
+        )
         scaffold = (
             scaffold_run_and_gun_level
             if template == "run_and_gun"
@@ -5240,7 +5500,8 @@ def coder(state: GraphState) -> GraphState:
         if not state.get("qa_errors") and not state.get("tune_notes"):
             result["coder_prompt"] = (
                 f"Archetype {pack.id}@{pack.version}; level "
-                f"{current_level + 1}; capabilities: {', '.join(pack.capabilities)}"
+                f"{current_level + 1}; capabilities: {', '.join(pack.capabilities)}; "
+                f"assembly: {(state.get('assembly_lock') or {}).get('assembly_hash', 'legacy')}"
             )
         return result
 
@@ -5263,6 +5524,7 @@ def coder(state: GraphState) -> GraphState:
     # which files exist) and tends to flail into fallback code instead.
     assets_line = f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
     blueprint_contract = _blueprint_contract(state)
+    assembly_contract = _assembly_contract(state)
     # Background knowledge leads; the script, the contract and the errors are
     # what the model must read most recently.
     skill_reference = _skill_reference(state)
@@ -5273,6 +5535,7 @@ def coder(state: GraphState) -> GraphState:
             f"{skill_reference}"
             f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
+            f"{assembly_contract}"
             f"{blueprint_contract}"
             f"Godot reported these errors:\n{errors_desc}\n"
         )
@@ -5284,6 +5547,7 @@ def coder(state: GraphState) -> GraphState:
             f"{skill_reference}"
             f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
+            f"{assembly_contract}"
             f"{blueprint_contract}"
             f"Apply these tuning changes:\n{notes_desc}\n"
         )
@@ -5322,6 +5586,7 @@ def coder(state: GraphState) -> GraphState:
             f"This is level {current_level + 1} of {total_levels}: "
             f"{level['name']}: {level['description']}\n"
             f"{difficulty_line}"
+            f"{assembly_contract}"
             f"{blueprint_contract}"
             f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
         )

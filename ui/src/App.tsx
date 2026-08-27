@@ -371,7 +371,7 @@ function StudioView({ health, loading, runs, job, history, isRunning, activeStag
       <section className="metrics">
         <Metric label="Studio health" value={health?.ready ? 'Ready' : loading ? 'Checking' : 'Attention'} detail={`${health?.checks.filter((check) => check.ok).length || 0}/${health?.checks.length || 0} systems available`} tone={health?.ready ? 'green' : 'amber'} />
         <Metric label="Games generated" value={String(completedCount)} detail={`${runs.length} total workspaces`} />
-        <Metric label="Ship rate" value={`${shipRate}%`} detail={`${shippedCount} QA-approved games`} tone="violet" />
+        <Metric label="Candidate rate" value={`${shipRate}%`} detail={`${shippedCount} passed automated experience review`} tone="violet" />
         <Metric label="Active stage" value={activeStage} detail={isRunning ? job?.idea || '' : 'Studio is available'} tone={isRunning ? 'blue' : undefined} />
       </section>
 
@@ -597,7 +597,7 @@ function LibraryView({ runs, onSelect, onPlay, onCreate }: {
             {query && <button onClick={() => setQuery('')} aria-label="Clear search"><Icon name="close" /></button>}
           </div>
           <div className="filter-chips">
-            {([['all', 'All'], ['shipped', 'Ship ready'], ['failed', 'Failed QA'], ['building', 'Incomplete']] as const).map(([value, label]) => (
+            {([['all', 'All'], ['shipped', 'Release candidates'], ['failed', 'Failed QA'], ['building', 'Incomplete']] as const).map(([value, label]) => (
               <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>
                 {label} <b>{counts[value]}</b>
               </button>
@@ -690,7 +690,7 @@ function RunCard({ run, onSelect, onPlay }: { run: SagaRun; onSelect: () => void
     <article className="run-card" onClick={onSelect}>
       <div className="run-preview">
         {preview ? <img src={preview} alt={`${run.title || 'Generated game'} screenshot`} loading="lazy" /> : <div className="placeholder-art"><span>✦</span></div>}
-        <span className={`status ${run.ship_ready ? 'passed' : run.complete ? 'failed' : 'building'}`}>{run.ship_ready ? 'Ship ready' : statusLabel(run.status)}</span>
+        <span className={`status ${run.ship_ready ? 'passed' : run.complete ? 'failed' : 'building'}`}>{run.ship_ready ? 'Release candidate' : statusLabel(run.status)}</span>
         <button className="play-button" aria-label="Play game" onClick={(event) => { event.stopPropagation(); onPlay() }}>▶</button>
       </div>
       <div className="run-copy">

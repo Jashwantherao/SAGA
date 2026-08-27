@@ -14,6 +14,7 @@ from saga.archetypes import (
     pack_for_template,
     validate_action_rpg_plan,
 )
+from saga.experience import score_action_rpg_candidate
 from saga.blueprint import validate_blueprint
 
 
@@ -81,7 +82,7 @@ def test_action_rpg_pack_manifest_and_plan_are_versioned_and_complete():
     plan = build_action_rpg_plan(_design(), 0)
 
     assert pack_for_template("action_rpg") == pack
-    assert pack.version == 1
+    assert pack.version == 3
     assert pack.mechanic_template == "action_rpg"
     assert "three_room_persistence" in pack.capabilities
     assert "versioned_checkpoint_save" in pack.capabilities
@@ -101,6 +102,64 @@ def test_action_rpg_pack_manifest_and_plan_are_versioned_and_complete():
         if pickup["kind"] == "sparks"
     ) == 10
     assert plan["rooms"][-1]["boss"]["phases"] == 2
+    assert plan["schema_version"] == 2
+    assert plan["experience_search"]["candidates_evaluated"] == 24
+    assert plan["experience_search"]["score"] >= 78
+    assert len({
+        enemy["role"]
+        for room in plan["rooms"]
+        for enemy in room.get("enemies", [])
+    }) >= 3
+    assert len({room["layout_id"] for room in plan["rooms"]}) == 3
+    assert any(
+        pickup["kind"] == "health"
+        for room in plan["rooms"][:-1]
+        for pickup in room.get("pickups", [])
+    )
+
+
+def test_action_rpg_v3_runtime_contains_production_feedback_contract():
+    root = load_pack("action_rpg").root
+    level = (root / "action_rpg_level.gd").read_text(encoding="utf-8")
+    player = (root / "player_controller.gd").read_text(encoding="utf-8")
+    enemy = (root / "enemy.gd").read_text(encoding="utf-8")
+
+    assert 'player.set_authored_visual(_asset("hero"), _asset("hero_walk")' in level
+    assert 'str(child.name) == "FallbackVisual"' in level
+    assert 'Sfx.play("win")' in level
+    assert "CPUParticles2D.new()" in level
+    assert "walk_texture" in player
+    assert "attack_animation_left" in player
+    assert "_spawn_dash_echo" in player
+    assert 'state = "attack_telegraph"' in enemy
+    assert "windup_left" in enemy
+
+
+def test_action_rpg_experience_search_is_repeatable_but_not_a_fixed_game():
+    first = build_action_rpg_plan(_design(), 0)
+    repeated = build_action_rpg_plan(_design(), 0)
+    alternate_design = _design()
+    alternate_design["title"] = "Moonlit Archive"
+    alternate_design["story_premise"] = "A cartographer maps a library that rearranges itself."
+    alternate = build_action_rpg_plan(alternate_design, 0)
+
+    assert first == repeated
+    assert first["experience_search"]["selected_signature"] != alternate["experience_search"]["selected_signature"]
+    assert score_action_rpg_candidate(first)["passed"] is True
+
+
+def test_action_rpg_quality_gate_rejects_role_and_layout_monotony():
+    plan = build_action_rpg_plan(_design(), 0)
+    for room in plan["rooms"]:
+        room["layout_id"] = "same_box"
+        for enemy in room.get("enemies", []):
+            enemy["role"] = "stalker"
+
+    errors = validate_action_rpg_plan(plan)
+
+    assert "action RPG encounters require at least three enemy roles" in errors
+    assert "each action RPG room requires a distinct spatial layout" in errors
+    assert "action RPG experience score is below the playable quality floor" in errors
 
 
 def test_action_rpg_qa_save_is_isolated_from_the_player_profile():
@@ -111,7 +170,8 @@ def test_action_rpg_qa_save_is_isolated_from_the_player_profile():
     assert 'QA_SAVE_PATH := "user://saga_action_rpg_qa_save.json"' in profile
     assert '"--objective-probe" in arguments' in profile
     assert '"--action-rpg-playthrough" in arguments' in profile
-    assert 'if "--action-rpg-playthrough" in OS.get_cmdline_user_args():' in profile
+    assert '"--presentation-capture" in arguments' in profile
+    assert 'if "--action-rpg-playthrough" in OS.get_cmdline_user_args() or "--presentation-capture" in OS.get_cmdline_user_args():' in profile
     assert 'return {"save": SAVE_PATH' in profile
 
 
@@ -122,7 +182,7 @@ def test_action_rpg_plan_validator_rejects_cosmetic_rpg_shell():
 
     errors = validate_action_rpg_plan(plan)
 
-    assert "action RPG v1 requires exactly three connected rooms" in errors
+    assert "action RPG v2 requires exactly three connected rooms" in errors
     assert "the final room must contain the boss" in errors
     assert "quest must expose collect, return, forge-open and complete stages" in errors
 
@@ -146,13 +206,34 @@ def test_action_rpg_adapter_is_compact_versioned_and_uses_authored_assets():
     assert "extra_rust_stalker.png" in script
     assert "extra_ember_hermit.png" in script
     assert "extra_forge_warden.png" in script
-    assert '\\"pack_version\\": 1' in script
+    assert '\\"pack_version\\": 3' in script
     assert '\\"room_plan\\"' in script
     assert [
         description
         for description, pattern in TEMPLATE_CONTRACTS["action_rpg"]
         if not re.search(pattern, script)
     ] == []
+
+
+def test_action_rpg_adapter_binds_authored_actor_roles_instead_of_fallback_shapes():
+    script = build_action_rpg_adapter(
+        _design(),
+        0,
+        [
+            "hero_sprite.png",
+            "level_0_bg.png",
+            "extra_thorn_sentinel.png",
+            "extra_thorn_skirmisher.png",
+            "extra_root_archivist.png",
+            "extra_glass_stag_boss.png",
+            "key_item.png",
+        ],
+    )
+
+    assert '\\"npc\\": \\"res://assets/extra_root_archivist.png\\"' in script
+    assert '\\"enemy_sentinel\\": \\"res://assets/extra_thorn_sentinel.png\\"' in script
+    assert '\\"enemy_skirmisher\\": \\"res://assets/extra_thorn_skirmisher.png\\"' in script
+    assert "extra_glass_stag_boss.png" in script
 
 
 def test_coder_scaffolds_action_rpg_without_model_call(tmp_path, monkeypatch):
@@ -182,7 +263,7 @@ def test_coder_scaffolds_action_rpg_without_model_call(tmp_path, monkeypatch):
         }
     )
 
-    assert result["coder_model"] == "archetype/action_rpg@1"
+    assert result["coder_model"] == "archetype/action_rpg@3"
     assert (project / "Level_0.gd").is_file()
     assert (project / "archetypes" / "action_rpg" / "boss.gd").is_file()
     project_config = (project / "project.godot").read_text(encoding="utf-8")
@@ -198,6 +279,8 @@ def test_action_rpg_input_playthrough_uses_only_player_controls():
     assert "Input.action_release" in source
     assert "qa_" not in source.lower()
     assert "ACTION_RPG_PLAYTHROUGH" in source
+    assert '_pickup_target(level, "entry_sparks"' in source
+    assert 'player.call("test_move"' in source
 
 
 def test_action_rpg_input_playthrough_parser_requires_every_observed_system(monkeypatch):

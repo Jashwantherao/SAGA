@@ -1,8 +1,8 @@
 """Procedural retro SFX - harness-owned, deterministic, no model involved.
 
 Flux/MusicGen cover art and music, but there is no clean local model for
-short sound effects, so the harness synthesizes them directly: four
-chiptune-style cues (pickup, hit, win, lose) written as 16-bit mono WAVs
+short sound effects, so the harness synthesizes them directly: a compact
+gameplay palette (swing, dash, pickup, hit, phase, win, lose) written as 16-bit mono WAVs
 into the generated project's assets. The Coder's few-shots call them via
 the Sfx autoload; the LLM never touches audio itself.
 """
@@ -47,9 +47,12 @@ def _write_wav(path: Path, samples: np.ndarray) -> None:
 
 
 def write_default_sfx(assets_dir: Path) -> None:
-    """Write the four standard cues the Sfx autoload expects."""
+    """Write the standard deterministic gameplay cues the Sfx autoload expects."""
     assets_dir.mkdir(parents=True, exist_ok=True)
+    _write_wav(assets_dir / "sfx_swing.wav", _tone(540, 145, 0.10, "sine"))
+    _write_wav(assets_dir / "sfx_dash.wav", _tone(180, 820, 0.13, "saw"))
     _write_wav(assets_dir / "sfx_pickup.wav", _tone(880, 1568, 0.12))
     _write_wav(assets_dir / "sfx_hit.wav", _tone(220, 70, 0.22, "saw"))
+    _write_wav(assets_dir / "sfx_phase.wav", _notes([196.0, 293.66, 440.0], 0.10, "saw"))
     _write_wav(assets_dir / "sfx_win.wav", _notes([523.25, 659.25, 783.99, 1046.5], 0.14))
     _write_wav(assets_dir / "sfx_lose.wav", _notes([392.0, 329.63, 261.63, 196.0], 0.18, "saw"))

@@ -12,12 +12,12 @@ var data: Dictionary = {}
 
 func _paths() -> Dictionary:
 	var arguments := OS.get_cmdline_user_args()
-	if "--objective-probe" in arguments or "--action-rpg-playthrough" in arguments:
+	if "--objective-probe" in arguments or "--action-rpg-playthrough" in arguments or "--presentation-capture" in arguments:
 		return {"save": QA_SAVE_PATH, "temp": QA_TEMP_PATH, "backup": QA_BACKUP_PATH}
 	return {"save": SAVE_PATH, "temp": TEMP_PATH, "backup": BACKUP_PATH}
 
 func _ready() -> void:
-	if "--action-rpg-playthrough" in OS.get_cmdline_user_args():
+	if "--action-rpg-playthrough" in OS.get_cmdline_user_args() or "--presentation-capture" in OS.get_cmdline_user_args():
 		# An input playthrough represents a first-time player. It gets a clean,
 		# isolated profile without touching the real campaign save.
 		reset()

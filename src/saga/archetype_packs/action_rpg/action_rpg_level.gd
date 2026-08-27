@@ -29,6 +29,7 @@ var inventory_panel: ColorRect
 var inventory_label: Label
 var room_label: Label
 var room_decor: Node2D
+var room_geometry: Node2D
 
 func level_definition() -> Dictionary:
 	return {}
@@ -40,6 +41,9 @@ func _ready() -> void:
 	RenderingServer.set_default_clear_color(Color("10151d"))
 	_build_background()
 	_build_room_shell()
+	room_geometry = Node2D.new()
+	room_geometry.name = "AuthoredRoomGeometry"
+	add_child(room_geometry)
 	room_decor = Node2D.new()
 	room_decor.z_index = -20
 	add_child(room_decor)
@@ -48,6 +52,20 @@ func _ready() -> void:
 	_restore_or_begin()
 	_load_room(room_index)
 	checkpoint_room()
+	if "--presentation-capture" in OS.get_cmdline_user_args():
+		call_deferred("_prepare_presentation_capture")
+
+func _prepare_presentation_capture() -> void:
+	# A compact, deterministic combat vignette for temporal QA. It uses the
+	# production enemy, player, damage, animation and feedback code; only the
+	# spawn position is staged so sparse video sampling actually sees combat.
+	for enemy in enemies:
+		if is_instance_valid(enemy):
+			enemy.queue_free()
+	enemies.clear()
+	player.position = Vector2(330, 320)
+	player.facing = Vector2.RIGHT
+	_spawn_enemy("presentation_sentinel", Vector2(405, 320), "sentinel", 12)
 
 func _process(_delta: float) -> void:
 	if not is_instance_valid(player):
@@ -106,7 +124,14 @@ func _attach_asset(node: Node2D, asset_name: String, max_size: float) -> bool:
 	var texture := load(path) as Texture2D
 	if texture == null:
 		return false
+	# Stable-pack silhouettes are safety fallbacks, never part of the authored
+	# final composition. Keeping them visible under a real sprite produced the
+	# colored squares and diamonds that made otherwise valid art look broken.
+	for child in node.get_children():
+		if child is Polygon2D and str(child.name) == "FallbackVisual":
+			child.visible = false
 	var sprite := Sprite2D.new()
+	sprite.name = "AuthoredSprite"
 	sprite.texture = texture
 	sprite.scale = Vector2.ONE * minf(
 		max_size / maxf(texture.get_width(), 1),
@@ -138,7 +163,7 @@ func _build_background() -> void:
 	fallback.z_index = -100
 	add_child(fallback)
 
-func _wall(position: Vector2, size: Vector2) -> void:
+func _wall(position: Vector2, size: Vector2, style := "boundary", parent: Node = null) -> void:
 	var wall := StaticBody2D.new()
 	wall.position = position
 	wall.collision_layer = 1
@@ -148,19 +173,61 @@ func _wall(position: Vector2, size: Vector2) -> void:
 	shape.size = size
 	collision.shape = shape
 	wall.add_child(collision)
+	var bevel := minf(14.0, minf(size.x, size.y) * 0.28)
+	var points := PackedVector2Array([
+		Vector2(-size.x / 2 + bevel, -size.y / 2), Vector2(size.x / 2 - bevel, -size.y / 2),
+		Vector2(size.x / 2, -size.y / 2 + bevel), Vector2(size.x / 2, size.y / 2 - bevel),
+		Vector2(size.x / 2 - bevel, size.y / 2), Vector2(-size.x / 2 + bevel, size.y / 2),
+		Vector2(-size.x / 2, size.y / 2 - bevel), Vector2(-size.x / 2, -size.y / 2 + bevel)
+	])
 	var visual := Polygon2D.new()
-	visual.polygon = PackedVector2Array([Vector2(-size.x / 2, -size.y / 2), Vector2(size.x / 2, -size.y / 2), Vector2(size.x / 2, size.y / 2), Vector2(-size.x / 2, size.y / 2)])
-	visual.color = Color("273846")
+	visual.polygon = points
+	var colors := {
+		"boundary": Color("182a35"), "ember_slab": Color("744632"),
+		"rune_pillar": Color("4e5d78"), "moon_pillar": Color("414b70"),
+		"moon_slab": Color("526283"), "verdant_slab": Color("3f6858"),
+		"verdant_pillar": Color("315a4b"), "iron_tooth": Color("70443d"),
+		"boss_pillar": Color("773e45")
+	}
+	var base_color: Color = colors.get(style, Color("384b59"))
+	visual.color = Color(base_color, 0.48 if style != "boundary" else 0.88)
 	wall.add_child(visual)
-	add_child(wall)
+	var outline := Line2D.new()
+	outline.points = points
+	outline.add_point(points[0])
+	outline.width = 2.0
+	outline.default_color = Color(base_color.lightened(0.34), 0.82)
+	wall.add_child(outline)
+	if style != "boundary":
+		var sigil := Line2D.new()
+		sigil.points = PackedVector2Array([Vector2(-size.x * 0.22, 0), Vector2(0, -size.y * 0.24), Vector2(size.x * 0.22, 0), Vector2(0, size.y * 0.24), Vector2(-size.x * 0.22, 0)])
+		sigil.width = 2.0
+		sigil.default_color = Color(1.0, 0.74, 0.35, 0.72)
+		wall.add_child(sigil)
+	(parent if parent != null else self).add_child(wall)
 
 func _build_room_shell() -> void:
 	_wall(Vector2(512, 76), Vector2(1024, 28))
 	_wall(Vector2(512, 562), Vector2(1024, 28))
 	_wall(Vector2(12, 288), Vector2(24, 576))
 	_wall(Vector2(1012, 288), Vector2(24, 576))
-	for position in [Vector2(340, 220), Vector2(680, 390)]:
-		_wall(position, Vector2(88, 38))
+
+func _vector_from(value, fallback: Vector2) -> Vector2:
+	if value is Array and value.size() >= 2:
+		return Vector2(float(value[0]), float(value[1]))
+	return fallback
+
+func _build_room_geometry(room_data: Dictionary) -> void:
+	for child in room_geometry.get_children():
+		child.queue_free()
+	for obstacle_value in (room_data.get("obstacles", []) as Array):
+		var obstacle := obstacle_value as Dictionary
+		_wall(
+			_vector_from(obstacle.get("position", []), Vector2(512, 288)),
+			_vector_from(obstacle.get("size", []), Vector2(88, 38)),
+			str(obstacle.get("style", "ember_slab")),
+			room_geometry
+		)
 
 func _build_player() -> void:
 	player = SagaActionRpgPlayer.new()
@@ -171,18 +238,11 @@ func _build_player() -> void:
 	player.swing_requested.connect(_on_player_swing)
 	player.defeated.connect(_on_player_defeated)
 	add_child(player)
-	var path := _asset("hero")
-	if path != "":
-		var texture := load(path) as Texture2D
-		if texture != null:
-			var sprite := Sprite2D.new()
-			sprite.texture = texture
-			sprite.scale = Vector2.ONE * minf(54.0 / maxf(texture.get_width(), 1), 54.0 / maxf(texture.get_height(), 1))
-			sprite.position.y = -8
-			player.add_child(sprite)
+	player.set_authored_visual(_asset("hero"), _asset("hero_walk"), 58.0)
 
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
+	layer.name = "HUD"
 	add_child(layer)
 	var backing := ColorRect.new()
 	backing.position = Vector2(12, 10)
@@ -190,6 +250,7 @@ func _build_hud() -> void:
 	backing.color = Color(0.025, 0.045, 0.065, 0.92)
 	layer.add_child(backing)
 	hud_label = Label.new()
+	hud_label.name = "HUDStatus"
 	hud_label.position = Vector2(26, 18)
 	hud_label.add_theme_font_size_override("font_size", 17)
 	layer.add_child(hud_label)
@@ -258,12 +319,13 @@ func _load_room(index: int) -> void:
 	_build_room_decor()
 	var rooms := ((_definition.get("room_plan", {}) as Dictionary).get("rooms", []) as Array)
 	var room_data: Dictionary = rooms[room_index] if room_index < rooms.size() else {}
+	_build_room_geometry(room_data)
 	var enemy_positions := [Vector2(390, 190), Vector2(650, 390), Vector2(520, 420)]
 	for enemy_index in range((room_data.get("enemies", []) as Array).size()):
 		var enemy_data := (room_data.get("enemies", []) as Array)[enemy_index] as Dictionary
 		_spawn_enemy(
 			str(enemy_data.get("id", "enemy_%d" % enemy_index)),
-			enemy_positions[enemy_index % enemy_positions.size()],
+			_vector_from(enemy_data.get("position", []), enemy_positions[enemy_index % enemy_positions.size()]),
 			str(enemy_data.get("role", "stalker")),
 			int(enemy_data.get("health", 3))
 		)
@@ -272,14 +334,15 @@ func _load_room(index: int) -> void:
 		var pickup_data := (room_data.get("pickups", []) as Array)[pickup_index] as Dictionary
 		_spawn_pickup(
 			str(pickup_data.get("id", "pickup_%d" % pickup_index)),
-			pickup_positions[pickup_index % pickup_positions.size()],
+			_vector_from(pickup_data.get("position", []), pickup_positions[pickup_index % pickup_positions.size()]),
 			str(pickup_data.get("kind", "sparks")),
 			int(pickup_data.get("amount", 1))
 		)
 	if str(room_data.get("npc", "")) != "":
-		_spawn_npc(Vector2(760, 270))
+		_spawn_npc(_vector_from(room_data.get("npc_position", []), Vector2(760, 270)))
 	if room_data.has("boss") and (forge_door_open or quest_stage in ["forge_open", "complete"]):
-		_spawn_boss(Vector2(760, 300), room_data.get("boss", {}) as Dictionary)
+		var boss_data := room_data.get("boss", {}) as Dictionary
+		_spawn_boss(_vector_from(boss_data.get("position", []), Vector2(760, 300)), boss_data)
 	elif room_index == 2 and not forge_door_open:
 		_spawn_npc(Vector2(820, 290))
 	_update_hud()
@@ -296,6 +359,19 @@ func _build_room_decor() -> void:
 		rune.position = Vector2(x, y)
 		rune.color = Color(colors[room_index], 0.42)
 		room_decor.add_child(rune)
+	var rooms := ((_definition.get("room_plan", {}) as Dictionary).get("rooms", []) as Array)
+	if room_index < rooms.size():
+		var theme_id := str((rooms[room_index] as Dictionary).get("theme_id", "ember_ruins"))
+		var theme_colors := {
+			"ember_ruins": Color("d87a45"), "moon_archive": Color("82a7e8"),
+			"verdant_foundry": Color("62bd8a"), "storm_crypt": Color("ac88df")
+		}
+		for index in range(4):
+			var mote := Polygon2D.new()
+			mote.polygon = PackedVector2Array([Vector2(0, -5), Vector2(4, 0), Vector2(0, 5), Vector2(-4, 0)])
+			mote.position = Vector2(185 + index * 210, 116 + ((index + room_index) % 2) * 350)
+			mote.color = Color(theme_colors.get(theme_id, Color("d87a45")), 0.82)
+			room_decor.add_child(mote)
 
 func _spawn_enemy(id: String, at: Vector2, role: String, health := 3) -> void:
 	if id in cleared_enemies:
@@ -305,7 +381,10 @@ func _spawn_enemy(id: String, at: Vector2, role: String, health := 3) -> void:
 	enemy.configure({"id": id, "role": role, "health": health, "speed": 72.0}, player)
 	enemy.defeated.connect(_on_enemy_defeated)
 	add_child(enemy)
-	_attach_asset(enemy, "enemy", 48.0)
+	var role_asset := "enemy_" + role.to_lower().replace(" ", "_")
+	if _asset(role_asset) == "":
+		role_asset = "enemy"
+	_attach_asset(enemy, role_asset, 48.0)
 	enemies.append(enemy)
 
 func _spawn_pickup(id: String, at: Vector2, kind: String, amount: int) -> void:
@@ -332,33 +411,99 @@ func _spawn_boss(at: Vector2, data := {}) -> void:
 	boss.position = at
 	boss.configure(data, player)
 	boss.defeated.connect(_on_boss_defeated)
+	boss.phase_changed.connect(_on_boss_phase_changed)
 	add_child(boss)
 	_attach_asset(boss, "boss", 82.0)
 
 func _on_player_swing(origin: Vector2, facing: Vector2) -> void:
+	_slash_feedback(origin, facing)
+	var connected := false
 	for enemy in enemies:
 		if not is_instance_valid(enemy) or enemy.health <= 0:
 			continue
 		var offset: Vector2 = enemy.global_position - origin
 		if offset.length() <= 82.0 and offset.normalized().dot(facing) >= 0.25:
-			enemy.take_damage(1, facing * 110.0)
+			if enemy.take_damage(1, facing * 110.0):
+				connected = true
+				_impact_feedback(enemy.global_position, Color("ffd08a"))
 	if is_instance_valid(boss):
 		var boss_offset := boss.global_position - origin
 		if boss_offset.length() <= 92.0 and boss_offset.normalized().dot(facing) >= 0.15:
-			boss.take_damage(1)
+			if boss.take_damage(1):
+				connected = true
+				_impact_feedback(boss.global_position, Color("ff805c"))
+	if connected:
+		Sfx.play("hit")
+
+func _slash_feedback(origin: Vector2, facing: Vector2) -> void:
+	var slash := Line2D.new()
+	slash.position = origin
+	slash.z_index = 28
+	slash.width = 7.0
+	slash.default_color = Color(1.0, 0.87, 0.54, 0.9)
+	var center_angle := facing.angle()
+	for index in range(8):
+		var angle := center_angle - 0.72 + 1.44 * float(index) / 7.0
+		slash.add_point(Vector2(cos(angle), sin(angle)) * 67.0)
+	add_child(slash)
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(slash, "width", 1.0, 0.16)
+	tween.tween_property(slash, "modulate:a", 0.0, 0.18)
+	tween.chain().tween_callback(slash.queue_free)
+
+func _impact_feedback(at: Vector2, color: Color) -> void:
+	var burst := Polygon2D.new()
+	burst.position = at
+	burst.z_index = 30
+	burst.polygon = PackedVector2Array([
+		Vector2(0, -18), Vector2(6, -6), Vector2(20, 0), Vector2(6, 6),
+		Vector2(0, 18), Vector2(-6, 6), Vector2(-20, 0), Vector2(-6, -6)
+	])
+	burst.color = color
+	add_child(burst)
+	var particles := CPUParticles2D.new()
+	particles.position = at
+	particles.z_index = 31
+	particles.amount = 12
+	particles.lifetime = 0.28
+	particles.one_shot = true
+	particles.explosiveness = 0.92
+	particles.emission_shape = CPUParticles2D.EMISSION_SHAPE_SPHERE
+	particles.emission_sphere_radius = 5.0
+	particles.direction = Vector2.UP
+	particles.spread = 180.0
+	particles.initial_velocity_min = 55.0
+	particles.initial_velocity_max = 125.0
+	particles.gravity = Vector2(0, 110)
+	particles.scale_amount_min = 1.5
+	particles.scale_amount_max = 3.5
+	particles.color = color
+	add_child(particles)
+	particles.finished.connect(particles.queue_free)
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(burst, "scale", Vector2(1.8, 1.8), 0.16)
+	tween.tween_property(burst, "modulate:a", 0.0, 0.18)
+	tween.chain().tween_callback(burst.queue_free)
 
 func _on_enemy_defeated(enemy_id: String) -> void:
 	if enemy_id not in cleared_enemies:
 		cleared_enemies.append(enemy_id)
 		inventory.add_sparks(2)
+		Sfx.play("pickup")
 
 func _on_pickup_collected(pickup_id: String, kind: String, amount: int) -> void:
+	Sfx.play("pickup")
 	if pickup_id not in collected_pickups:
 		collected_pickups.append(pickup_id)
 	if kind == "sparks":
 		inventory.add_sparks(amount)
+	elif kind == "health":
+		player.health = mini(player.max_health, player.health + amount)
 	else:
 		inventory.add_item(pickup_id, amount)
+	_impact_feedback(player.global_position, Color("8ff5cf") if kind == "health" else Color("ffd56b"))
 	if inventory.sparks >= 10 and quest_stage == "collect_sparks":
 		quest_stage = "return_to_hermit"
 	_update_hud()
@@ -366,7 +511,23 @@ func _on_pickup_collected(pickup_id: String, kind: String, amount: int) -> void:
 func _on_player_defeated() -> void:
 	state = "over"
 	player.movement_locked = true
+	Sfx.play("lose")
 	_update_hud()
+
+func _on_boss_phase_changed(_phase: int) -> void:
+	Sfx.play("phase")
+	_impact_feedback(boss.global_position, Color("ff4f72"))
+	var pulse := ColorRect.new()
+	pulse.position = Vector2.ZERO
+	pulse.size = Vector2(1024, 576)
+	pulse.color = Color(0.65, 0.05, 0.12, 0.24)
+	var layer := CanvasLayer.new()
+	layer.layer = 40
+	layer.add_child(pulse)
+	add_child(layer)
+	var tween := create_tween()
+	tween.tween_property(pulse, "modulate:a", 0.0, 0.42)
+	tween.tween_callback(layer.queue_free)
 
 func _on_boss_defeated() -> void:
 	quest_stage = "complete"
@@ -374,6 +535,7 @@ func _on_boss_defeated() -> void:
 	var profile := _profile_snapshot()
 	profile["boss_defeated"] = true
 	ActionRpgProfile.checkpoint_memory(profile)
+	Sfx.play("win")
 	_update_hud()
 
 func begin_dialogue() -> bool:
@@ -407,6 +569,7 @@ func turn_in_quest() -> bool:
 	dash_unlocked = true
 	forge_door_open = true
 	player.dash_unlocked = true
+	Sfx.play("phase")
 	checkpoint_room()
 	return true
 
@@ -428,8 +591,25 @@ func transition_room(direction: int) -> bool:
 	room_index = target
 	player.position = Vector2(60 if direction > 0 else 964, 320)
 	_load_room(room_index)
+	_room_transition_feedback(direction)
 	checkpoint_room()
 	return true
+
+func _room_transition_feedback(direction: int) -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 35
+	var curtain := ColorRect.new()
+	curtain.position = Vector2.ZERO
+	curtain.size = Vector2(1024, 576)
+	curtain.color = Color(0.03, 0.055, 0.08, 0.72)
+	layer.add_child(curtain)
+	add_child(layer)
+	var tween := create_tween()
+	curtain.position.x = 96.0 * float(direction)
+	tween.set_parallel(true)
+	tween.tween_property(curtain, "position:x", -96.0 * float(direction), 0.28)
+	tween.tween_property(curtain, "modulate:a", 0.0, 0.28)
+	tween.chain().tween_callback(layer.queue_free)
 
 func _profile_snapshot() -> Dictionary:
 	return {
@@ -488,7 +668,11 @@ func _update_hud() -> void:
 		return
 	hud_label.text = "HP %d/%d    SPARKS %d    Z swing    X talk    C inventory" % [player.health, player.max_health, inventory.sparks]
 	quest_label.text = "QUEST  " + _quest_hint()
-	room_label.text = "ROOM %d/3\n%s" % [room_index + 1, "SHIFT DASH" if dash_unlocked else ""]
+	var rooms := ((_definition.get("room_plan", {}) as Dictionary).get("rooms", []) as Array)
+	var room_name := "ROOM %d" % (room_index + 1)
+	if room_index < rooms.size():
+		room_name = str((rooms[room_index] as Dictionary).get("name", room_name))
+	room_label.text = "%s\n%s" % [room_name.to_upper(), "SHIFT DASH" if dash_unlocked else ""]
 	_update_inventory_panel()
 	if state == "over":
 		quest_label.text = "FALLEN — ENTER to restart at checkpoint"

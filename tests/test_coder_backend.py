@@ -3,7 +3,14 @@ import pytest
 
 from saga.agents import coder_backend
 from saga.agents.coder_backend import extract_gdscript
-from saga.agents.coder import ANIM_GD, AUTOPLAY_GD, OBJECTIVE_PROBE_GD, PROJECT_GODOT_TEMPLATE
+from saga.agents.coder import (
+    ANIM_GD,
+    AUTOPLAY_GD,
+    FEW_SHOTS,
+    OBJECTIVE_PROBE_GD,
+    PROJECT_GODOT_TEMPLATE,
+    SYSTEM_PROMPT_BASE,
+)
 
 
 @pytest.fixture(params=["sdk", "httpx"])
@@ -89,6 +96,27 @@ def test_autoplay_quit_stays_inside_report_function():
     quit_line = next(line for line in lines if "get_tree().quit()" in line)
 
     assert quit_line.startswith("\t")
+
+
+def test_autoplay_hud_contract_is_named_visible_nonempty_and_persistent():
+    assert 'const HUD_LAYER_NAME := "HUD"' in AUTOPLAY_GD
+    assert 'const HUD_CONTROL_NAME := "HUDStatus"' in AUTOPLAY_GD
+    assert "node.is_visible_in_tree()" in AUTOPLAY_GD
+    assert "node.text.strip_edges().is_empty()" in AUTOPLAY_GD
+    assert "node.modulate.a" in AUTOPLAY_GD
+    assert "node.self_modulate.a" in AUTOPLAY_GD
+    assert "get_global_modulate" not in AUTOPLAY_GD
+    assert "rect.intersects(node.get_viewport_rect())" in AUTOPLAY_GD
+    assert "_hud_baseline" in AUTOPLAY_GD
+    assert "_hud_input" in AUTOPLAY_GD
+    assert "hud_controls=%d hud_states=%d" in AUTOPLAY_GD
+
+
+def test_classic_game_examples_emit_the_named_hud_contract():
+    assert "Label named exactly `HUDStatus`" in SYSTEM_PROMPT_BASE
+    for _prompt, response in FEW_SHOTS.values():
+        assert 'canvas.name = "HUD"' in response
+        assert 'status_label.name = "HUDStatus"' in response
 
 
 def test_walk_animation_matches_left_facing_generated_art():

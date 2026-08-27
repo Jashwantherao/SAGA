@@ -449,7 +449,7 @@ def validate_action_rpg_plan(plan: dict) -> list[str]:
     errors: list[str] = []
     rooms = plan.get("rooms") or []
     if len(rooms) != 3:
-        errors.append("action RPG v1 requires exactly three connected rooms")
+        errors.append("action RPG v2 requires exactly three connected rooms")
     if [room.get("index") for room in rooms] != [0, 1, 2]:
         errors.append("room indices must be contiguous from zero")
     total_sparks = sum(
@@ -467,58 +467,30 @@ def validate_action_rpg_plan(plan: dict) -> list[str]:
         errors.append("the final room must contain the boss")
     if len(plan.get("quest_stages") or []) < 4:
         errors.append("quest must expose collect, return, forge-open and complete stages")
+    if int(plan.get("schema_version") or 0) >= 2:
+        from saga.experience import score_action_rpg_candidate
+
+        search = plan.get("experience_search") or {}
+        if int(search.get("candidates_evaluated") or 0) < 2:
+            errors.append("experience search must evaluate multiple candidates")
+        roles = {
+            str(enemy.get("role") or "")
+            for room in rooms
+            for enemy in (room.get("enemies") or [])
+        }
+        if len(roles) < 3:
+            errors.append("action RPG encounters require at least three enemy roles")
+        if len({str(room.get("layout_id") or "") for room in rooms}) < 3:
+            errors.append("each action RPG room requires a distinct spatial layout")
+        if not score_action_rpg_candidate(plan)["passed"]:
+            errors.append("action RPG experience score is below the playable quality floor")
     return errors
 
 
 def build_action_rpg_plan(design_doc: dict, level_index: int) -> dict:
-    levels = design_doc.get("levels") or [{}]
-    level = levels[min(level_index, len(levels) - 1)]
-    intensity = max(1, min(10, int(level.get("intensity") or 5)))
-    identity = "|".join((
-        str(design_doc.get("title") or "Action RPG"),
-        str(level.get("name") or f"Level {level_index + 1}"),
-        str(level_index),
-    ))
-    seed = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
-    enemy_health = 2 + intensity // 3
-    plan = {
-        "schema_version": 1,
-        "seed": seed,
-        "quest_stages": ["collect_sparks", "return_to_hermit", "forge_open", "complete"],
-        "quest": {"spark_cost": 10, "reward": "spark_dash", "opens_room": 2},
-        "rooms": [
-            {
-                "index": 0,
-                "id": "hermit_court",
-                "name": "Hermit's Court",
-                "npc": "hermit",
-                "enemies": [{"id": "stalker_entry", "role": "stalker", "health": enemy_health}],
-                "pickups": [{"id": "entry_sparks", "kind": "sparks", "amount": 4}],
-            },
-            {
-                "index": 1,
-                "id": "rust_vault",
-                "name": "Rust Vault",
-                "enemies": [
-                    {"id": "stalker_vault_a", "role": "stalker", "health": enemy_health},
-                    {"id": "stalker_vault_b", "role": "stalker", "health": enemy_health},
-                ],
-                "pickups": [
-                    {"id": "vault_sparks", "kind": "sparks", "amount": 6},
-                    {"id": "ember_charm", "kind": "item", "amount": 1},
-                ],
-            },
-            {
-                "index": 2,
-                "id": "heart_forge",
-                "name": "Heart Forge",
-                "requires_quest_stage": "forge_open",
-                "boss": {"id": "forge_warden", "health": 10 + intensity, "phases": 2},
-                "enemies": [],
-                "pickups": [],
-            },
-        ],
-    }
+    from saga.experience import search_action_rpg_plan
+
+    plan = search_action_rpg_plan(design_doc, level_index)
     errors = validate_action_rpg_plan(plan)
     if errors:
         raise ValueError("invalid action-RPG plan: " + "; ".join(errors))
@@ -535,13 +507,23 @@ def build_action_rpg_adapter(
     intensity = max(1, min(10, int(level.get("intensity") or 5)))
     hero = _asset_with(asset_filenames, "hero_sprite", "hero")
     background = _asset_with(asset_filenames, f"level_{level_index}_", "level_")
-    enemy = _asset_with(asset_filenames, "stalker", "enemy", "creature")
+    enemy = _asset_with(
+        asset_filenames,
+        "stalker", "sentinel", "skirmisher", "bruiser", "guard", "enemy", "creature", "thorn",
+    )
     boss = _asset_with(asset_filenames, "boss", "warden", "golem") or enemy
-    npc = _asset_with(asset_filenames, "hermit", "npc", "keeper")
+    npc = _asset_with(
+        asset_filenames,
+        "hermit", "archivist", "keeper", "merchant", "guide", "npc",
+    )
     pickup = _asset_with(asset_filenames, "key_item", "spark", "charm")
+    role_assets = {
+        role: _asset_with(asset_filenames, role) or enemy
+        for role in ("stalker", "sentinel", "skirmisher", "bruiser", "guard")
+    }
     plan = build_action_rpg_plan(design_doc, level_index)
     definition = {
-        "pack_version": 1,
+        "pack_version": 3,
         "title": str(design_doc.get("title") or "Action RPG"),
         "level_name": str(level.get("name") or f"Level {level_index + 1}"),
         "level_index": level_index,
@@ -554,6 +536,10 @@ def build_action_rpg_adapter(
             "hero": f"res://assets/{hero}" if hero else "",
             "background": f"res://assets/{background}" if background else "",
             "enemy": f"res://assets/{enemy}" if enemy else "",
+            **{
+                f"enemy_{role}": f"res://assets/{filename}" if filename else ""
+                for role, filename in role_assets.items()
+            },
             "boss": f"res://assets/{boss}" if boss else "",
             "npc": f"res://assets/{npc}" if npc else "",
             "pickup": f"res://assets/{pickup}" if pickup else "",

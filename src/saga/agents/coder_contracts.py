@@ -10,7 +10,7 @@ TEMPLATE_CONTRACTS = {
             r'extends\s+"res://archetypes/action_rpg/action_rpg_level\.gd"',
         ),
         ("the compact level-definition adapter", r"func\s+level_definition\s*\("),
-        ("the action-RPG version pin", r'\\?"pack_version\\?"\s*:\s*1'),
+        ("the action-RPG version pin", r'\\?"pack_version\\?"\s*:\s*3'),
         ("the validated room plan", r'\\?"room_plan\\?"\s*:'),
         ("the quest contract", r'\\?"quest_stages\\?"\s*:'),
         ("the three-room structure", r'\\?"rooms\\?"\s*:'),
