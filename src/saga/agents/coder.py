@@ -2451,6 +2451,7 @@ func _run() -> void:
 	if not bool(level.qa_reset_for_probe()):
 		_fail("reset_failed", [])
 		return
+	var narrative_fidelity := bool(level.qa_verify_narrative_identity())
 	var movement := bool(level.qa_verify_movement())
 	var melee_result: Dictionary = level.qa_verify_melee()
 	var pickup_result: Dictionary = level.qa_verify_pickup_inventory()
@@ -2465,26 +2466,26 @@ func _run() -> void:
 		bool(dialogue_result.get("dialogue", false)), bool(dialogue_result.get("quest", false)),
 		room_persistence, save_reload, bool(loss_result.get("loss", false)),
 		bool(loss_result.get("restart", false)), bool(boss_result.get("boss_phase", false)),
-		bool(boss_result.get("win", false))
+		bool(boss_result.get("win", false)), narrative_fidelity
 	]
-	print("[ACTION_RPG_METRICS] movement=%s melee=%s enemy_state=%s pickup=%s inventory=%s dialogue=%s quest=%s room=%s save=%s loss=%s restart=%s boss_phase=%s win=%s" % [
+	print("[ACTION_RPG_METRICS] movement=%s melee=%s enemy_state=%s pickup=%s inventory=%s dialogue=%s quest=%s room=%s save=%s loss=%s restart=%s boss_phase=%s win=%s narrative=%s" % [
 		_bool(flags[0]), _bool(flags[1]), _bool(flags[2]), _bool(flags[3]),
 		_bool(flags[4]), _bool(flags[5]), _bool(flags[6]), _bool(flags[7]),
-		_bool(flags[8]), _bool(flags[9]), _bool(flags[10]), _bool(flags[11]), _bool(flags[12])
+		_bool(flags[8]), _bool(flags[9]), _bool(flags[10]), _bool(flags[11]), _bool(flags[12]), _bool(flags[13])
 	])
 	var passed := not flags.has(false)
 	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=%d max_stall_frames=1 stuck=%s restart=%s deaths=1" % [
 		flags.count(true), _bool(not passed), "passed" if bool(loss_result.get("restart", false)) else "failed"
 	])
 	if passed:
-		print("[OBJECTIVE] status=passed template=action_rpg reason=none collected=13 total=13 remaining=0 frames=13")
+		print("[OBJECTIVE] status=passed template=action_rpg reason=none collected=14 total=14 remaining=0 frames=14")
 	else:
 		_fail("system_contract_failed", flags)
 	get_tree().quit()
 
 func _fail(reason: String, flags: Array) -> void:
 	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=%d max_stall_frames=1 stuck=true restart=failed deaths=1" % flags.count(true))
-	print("[OBJECTIVE] status=failed template=action_rpg reason=%s collected=%d total=13 remaining=%d frames=13" % [reason, flags.count(true), 13 - flags.count(true)])
+	print("[OBJECTIVE] status=failed template=action_rpg reason=%s collected=%d total=14 remaining=%d frames=14" % [reason, flags.count(true), 14 - flags.count(true)])
 	get_tree().quit()
 """
 

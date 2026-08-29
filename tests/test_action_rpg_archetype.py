@@ -51,6 +51,28 @@ def _design():
             {"name": "ember_hermit", "description": "a violet forge hermit viewed from above"},
             {"name": "forge_warden", "description": "a massive iron forge guardian viewed from above"},
         ],
+        "narrative": {
+            "quest_title": "The Last Hearth",
+            "currency_name": "Forge Sparks",
+            "quest_giver_name": "Ember Hermit",
+            "boss_name": "Forge Warden",
+            "enemy_name": "Rustbound",
+            "relic_name": "Cinder Compass",
+            "ability_name": "Lantern Step",
+            "room_names": [
+                "Ashen Threshold", "Rustbound Archive", "Cinder Crossing",
+                "Bellows Reliquary", "Lantern Sanctum", "The Last Hearth",
+            ],
+            "dialogue_lines": [
+                "The last hearth is fading.",
+                "Recover ten Forge Sparks and return to me.",
+                "Take the Lantern Step into the final chamber.",
+            ],
+            "collect_objective": "Recover 10 Forge Sparks",
+            "return_objective": "Return to the Ember Hermit",
+            "boss_objective": "Defeat the Forge Warden",
+            "victory_text": "The Ember Keep burns with living light again.",
+        },
     }
 
 
@@ -82,11 +104,12 @@ def test_action_rpg_pack_manifest_and_plan_are_versioned_and_complete():
     plan = build_action_rpg_plan(_design(), 0)
 
     assert pack_for_template("action_rpg") == pack
-    assert pack.version == 4
+    assert pack.version == 5
     assert pack.mechanic_template == "action_rpg"
     assert "variable_world_persistence" in pack.capabilities
     assert "four_persona_experience_critics" in pack.capabilities
     assert "bounded_content_repair" in pack.capabilities
+    assert "compiled_narrative_identity" in pack.capabilities
     assert "versioned_checkpoint_save" in pack.capabilities
     assert "two_phase_boss" in pack.capabilities
     assert "progression_profile.gd" in pack.required_files
@@ -103,8 +126,14 @@ def test_action_rpg_pack_manifest_and_plan_are_versioned_and_complete():
         if pickup["kind"] == "sparks"
     ) == 10
     assert plan["rooms"][-1]["boss"]["phases"] == 2
-    assert plan["schema_version"] == 3
+    assert plan["schema_version"] == 4
     assert plan["compiler"]["id"] == "encounter_progression"
+    assert plan["compiler"]["version"] == 2
+    assert plan["narrative"]["quest_giver_name"] == "Ember Hermit"
+    assert plan["rooms"][0]["name"] == "Ashen Threshold"
+    assert plan["rooms"][-1]["name"] == "The Last Hearth"
+    assert plan["rooms"][-1]["boss"]["name"] == "Forge Warden"
+    assert plan["rooms"][0]["enemies"][0]["display_name"].startswith("Rustbound")
     assert plan["experience_search"]["candidates_evaluated"] == 24
     assert plan["experience_search"]["score"] >= 78
     assert len({
@@ -125,7 +154,7 @@ def test_action_rpg_pack_manifest_and_plan_are_versioned_and_complete():
     )
 
 
-def test_action_rpg_v3_runtime_contains_production_feedback_contract():
+def test_action_rpg_v5_runtime_contains_production_feedback_and_identity_contracts():
     root = load_pack("action_rpg").root
     level = (root / "action_rpg_level.gd").read_text(encoding="utf-8")
     player = (root / "player_controller.gd").read_text(encoding="utf-8")
@@ -140,6 +169,9 @@ def test_action_rpg_v3_runtime_contains_production_feedback_contract():
     assert "_spawn_dash_echo" in player
     assert 'state = "attack_telegraph"' in enemy
     assert "windup_left" in enemy
+    assert "qa_verify_narrative_identity" in level
+    assert '"Ember Hermit"' not in level
+    assert '"Hermit\'s Court"' not in level
 
 
 def test_action_rpg_experience_search_is_repeatable_but_not_a_fixed_game():
@@ -193,6 +225,17 @@ def test_action_rpg_quality_gate_rejects_role_and_layout_monotony():
     assert "action RPG experience score is below the playable quality floor" in errors
 
 
+def test_action_rpg_validator_rejects_narrative_identity_drift():
+    plan = build_action_rpg_plan(_design(), 0)
+    plan["rooms"][0]["name"] = "Generic Template Room"
+    plan["rooms"][-1]["boss"]["name"] = "Generic Boss"
+
+    errors = validate_action_rpg_plan(plan)
+
+    assert "compiled room names must match the narrative contract" in errors
+    assert "boss identity must match the narrative contract" in errors
+
+
 def test_action_rpg_qa_save_is_isolated_from_the_player_profile():
     profile = (
         load_pack("action_rpg").root / "progression_profile.gd"
@@ -237,7 +280,7 @@ def test_action_rpg_adapter_is_compact_versioned_and_uses_authored_assets():
     assert "extra_rust_stalker.png" in script
     assert "extra_ember_hermit.png" in script
     assert "extra_forge_warden.png" in script
-    assert '\\"pack_version\\": 4' in script
+    assert '\\"pack_version\\": 5' in script
     assert '\\"room_plan\\"' in script
     assert [
         description
@@ -294,7 +337,7 @@ def test_coder_scaffolds_action_rpg_without_model_call(tmp_path, monkeypatch):
         }
     )
 
-    assert result["coder_model"] == "archetype/action_rpg@4"
+    assert result["coder_model"] == "archetype/action_rpg@5"
     assert result["content_plan"]["experience_search"]["personas"]["explorer"]["passed"] is True
     assert (project / "Level_0.gd").is_file()
     assert (project / "archetypes" / "action_rpg" / "boss.gd").is_file()
@@ -369,9 +412,9 @@ def test_action_rpg_input_playthrough_parser_rejects_missing_transition(monkeypa
 def test_action_rpg_qa_parser_requires_every_system_transition(monkeypatch):
     output = "\n".join(
         [
-            "[ACTION_RPG_METRICS] movement=true melee=true enemy_state=true pickup=true inventory=true dialogue=true quest=true room=true save=true loss=true restart=true boss_phase=true win=true",
-            "[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=13 max_stall_frames=1 stuck=false restart=passed deaths=1",
-            "[OBJECTIVE] status=passed template=action_rpg reason=none collected=13 total=13 remaining=0 frames=13",
+            "[ACTION_RPG_METRICS] movement=true melee=true enemy_state=true pickup=true inventory=true dialogue=true quest=true room=true save=true loss=true restart=true boss_phase=true win=true narrative=true",
+            "[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=14 max_stall_frames=1 stuck=false restart=passed deaths=1",
+            "[OBJECTIVE] status=passed template=action_rpg reason=none collected=14 total=14 remaining=0 frames=14",
         ]
     )
     monkeypatch.setattr(
@@ -391,6 +434,7 @@ def test_action_rpg_qa_parser_requires_every_system_transition(monkeypatch):
     assert result["save_reload_verified"] is True
     assert result["boss_phases_verified"] is True
     assert result["boss_win_verified"] is True
+    assert result["narrative_fidelity_verified"] is True
 
 
 def test_action_rpg_art_contract_is_top_down_and_actor_free():

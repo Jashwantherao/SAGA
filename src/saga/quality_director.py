@@ -14,7 +14,7 @@ from collections import defaultdict
 from saga.state import GraphState
 
 
-REPORT_VERSION = 4
+REPORT_VERSION = 5
 MINIMUM_SCORE = 80
 MINIMUM_DIMENSION_SCORE = 45
 MAX_POLISH_REPAIRS_PER_LEVEL = 1
@@ -119,6 +119,18 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
             ))
     else:
         objective_score = 90 if passed else 0
+
+    narrative_enabled = template == "action_rpg"
+    narrative_score = 100
+    if narrative_enabled and objective.get("narrative_fidelity_verified") is not True:
+        narrative_score = 0
+        findings.append(_finding(
+            "narrative_fidelity", "composition_director", "high",
+            "narrative_identity_unproven",
+            "The runtime did not prove the authored game identity",
+            str(objective.get("narrative_fidelity_verified", "missing evidence")),
+            "Compile room, quest, NPC, currency, relic and boss identity into ContentIR and verify the rendered HUD/dialogue.",
+        ))
 
     vision_notes = [str(note) for note in (level.get("vision_notes") or [])]
     vision_evaluated = level.get("vision_evaluated") is True
@@ -325,30 +337,37 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
 
     packed = template in PACKED_VISUAL_TEMPLATES
     dimensions = {
-        "playability": {"score": playability_score, "weight": 18 if persona_enabled else (20 if packed else 25), "confidence": "measured" if playability else "inferred"},
-        "objective": {"score": objective_score, "weight": 18 if persona_enabled else (20 if packed else 25), "confidence": "measured" if objective else "inferred"},
+        "playability": {"score": playability_score, "weight": 16 if narrative_enabled else (18 if persona_enabled else (20 if packed else 25)), "confidence": "measured" if playability else "inferred"},
+        "objective": {"score": objective_score, "weight": 16 if narrative_enabled else (18 if persona_enabled else (20 if packed else 25)), "confidence": "measured" if objective else "inferred"},
         "visual_presentation": {
             "score": visual_score,
-            "weight": 14 if persona_enabled else (15 if packed else 20),
+            "weight": 12 if narrative_enabled else (14 if persona_enabled else (15 if packed else 20)),
             "confidence": "measured" if screenshot and vision_evaluated else "not_evaluated",
         },
         "motion_presentation": {"score": motion_score, "weight": 8 if persona_enabled else (10 if packed else 15), "confidence": "measured" if video else "not_evaluated"},
         **({
             "player_experience": {
                 "score": experience_score,
-                "weight": 22 if persona_enabled else 25,
+                "weight": 18 if narrative_enabled else (22 if persona_enabled else 25),
                 "confidence": "measured" if video else "not_evaluated",
             }
         } if packed else {}),
         **({
             "persona_playtests": {
                 "score": persona_score,
-                "weight": 12,
+                "weight": 10 if narrative_enabled else 12,
                 "confidence": "measured" if objective.get("persona_results") else "not_evaluated",
             }
         } if persona_enabled else {}),
+        **({
+            "narrative_fidelity": {
+                "score": narrative_score,
+                "weight": 10,
+                "confidence": "measured" if objective else "not_evaluated",
+            }
+        } if narrative_enabled else {}),
         "balance": {"score": balance_score, "weight": 4 if persona_enabled else (5 if packed else 10), "confidence": "static_analysis"},
-        "reliability": {"score": reliability_score, "weight": 4 if persona_enabled else 5, "confidence": "measured"},
+        "reliability": {"score": reliability_score, "weight": 6 if narrative_enabled else (4 if persona_enabled else 5), "confidence": "measured"},
     }
     overall = round(sum(
         item["score"] * item["weight"] / 100 for item in dimensions.values()

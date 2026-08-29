@@ -602,6 +602,26 @@ def validate_action_rpg_plan(plan: dict) -> list[str]:
             errors.append("all four persona critics must report evidence")
         elif not all(bool(item.get("passed")) for item in personas.values()):
             errors.append("every persona critic must pass before selection")
+    if int(plan.get("schema_version") or 0) >= 4:
+        narrative = plan.get("narrative") or {}
+        required_narrative = {
+            "quest_title", "currency_name", "quest_giver_name", "boss_name", "enemy_name",
+            "relic_name", "ability_name", "collect_objective", "return_objective",
+            "boss_objective", "victory_text", "source_fingerprint",
+        }
+        if any(not str(narrative.get(field) or "").strip() for field in required_narrative):
+            errors.append("narrative compiler must provide every player-facing identity field")
+        room_names = narrative.get("room_names") or []
+        if len(room_names) != len(rooms) or [room.get("name") for room in rooms] != room_names:
+            errors.append("compiled room names must match the narrative contract")
+        npc_data = next((room.get("npc") for room in rooms if room.get("npc")), {})
+        if not isinstance(npc_data, dict) or npc_data.get("name") != narrative.get("quest_giver_name"):
+            errors.append("quest NPC identity must match the narrative contract")
+        boss_data = (rooms[-1].get("boss") if rooms else {}) or {}
+        if boss_data.get("name") != narrative.get("boss_name"):
+            errors.append("boss identity must match the narrative contract")
+        if (plan.get("compiler") or {}).get("version") != 2:
+            errors.append("action RPG narrative ContentIR requires compiler version 2")
     return errors
 
 
@@ -645,7 +665,7 @@ def build_action_rpg_adapter(
     if errors:
         raise ValueError("invalid action-RPG plan: " + "; ".join(errors))
     definition = {
-        "pack_version": 4,
+        "pack_version": 5,
         "title": str(design_doc.get("title") or "Action RPG"),
         "level_name": str(level.get("name") or f"Level {level_index + 1}"),
         "level_index": level_index,

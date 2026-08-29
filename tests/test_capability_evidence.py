@@ -179,9 +179,9 @@ def _design(template):
 
 def test_real_action_rpg_manifest_probes_are_all_backed_by_parser_evidence(monkeypatch):
     output = "\n".join([
-        "[OBJECTIVE_METRICS] completion_seconds=20.0 progress_events=13 max_stall_frames=30 stuck=false restart=passed deaths=1",
-        "[ACTION_RPG_METRICS] movement=true melee=true enemy_state=true pickup=true inventory=true dialogue=true quest=true room=true save=true loss=true restart=true boss_phase=true win=true",
-        "[OBJECTIVE] status=passed template=action_rpg reason=none collected=13 total=13 remaining=0 frames=1200",
+        "[OBJECTIVE_METRICS] completion_seconds=20.0 progress_events=14 max_stall_frames=30 stuck=false restart=passed deaths=1",
+        "[ACTION_RPG_METRICS] movement=true melee=true enemy_state=true pickup=true inventory=true dialogue=true quest=true room=true save=true loss=true restart=true boss_phase=true win=true narrative=true",
+        "[OBJECTIVE] status=passed template=action_rpg reason=none collected=14 total=14 remaining=0 frames=1200",
         "[ACTION_RPG_PLAYTHROUGH] status=passed movement=true melee=true pickup=true inventory=true dialogue=true quest=true rooms=true rooms_visited=5 rooms_total=5 checkpoint=true dash=true boss_phase=true win=true frames=3000 attacks=28 interactions=3 deaths=0 reason=none",
     ])
     monkeypatch.setattr(

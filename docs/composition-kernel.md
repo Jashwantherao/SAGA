@@ -82,3 +82,9 @@ ContentIR edits such as moving recovery, separating a reward, or clearing a
 speed lane. The stable Godot packs consume that selected plan unchanged. The
 run manifest retains every score, signature, repair and telemetry value so QA
 and benchmarks judge the exact game that was built.
+
+Narrative ContentIR v1 extends that same rule to player-facing identity. Room,
+quest, currency, NPC, enemy, relic, ability, dialogue, boss and ending strings are now
+part of the selected plan rather than constants in the Action-RPG runtime. The
+runtime must prove those compiled values reached its HUD and dialogue before the
+quest capability receives complete evidence.

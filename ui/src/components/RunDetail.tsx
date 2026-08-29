@@ -146,6 +146,7 @@ function CandidateStudioCard({ plan }: { plan: ContentPlan }) {
   const search = plan.experience_search || {}
   const personas = Object.entries(search.personas || {})
   const telemetry = search.telemetry || {}
+  const narrative = plan.narrative
   const clean = personas.length === 4 && personas.every(([, result]) => result.passed)
   const scope = (plan.rooms?.length || 0) > 0
     ? `${plan.rooms!.length} rooms`
@@ -171,6 +172,20 @@ function CandidateStudioCard({ plan }: { plan: ContentPlan }) {
           <span className="chip">{search.repairs_evaluated || 0} bounded repairs</span>
           {search.selected_signature && <span className="chip mono">{search.selected_signature}</span>}
         </div>
+        {narrative && (
+          <div className="design-section">
+            <p className="eyebrow">NARRATIVE CONTENTIR · {narrative.source?.replaceAll('_', ' ') || 'compiled'}</p>
+            <div className="detail-chips">
+              {narrative.quest_title && <span className="chip">Quest · {narrative.quest_title}</span>}
+              {narrative.quest_giver_name && <span className="chip">NPC · {narrative.quest_giver_name}</span>}
+              {narrative.boss_name && <span className="chip">Boss · {narrative.boss_name}</span>}
+              {narrative.enemy_name && <span className="chip">Enemies · {narrative.enemy_name}</span>}
+              {narrative.currency_name && <span className="chip">Currency · {narrative.currency_name}</span>}
+              {narrative.source_fingerprint && <span className="chip mono">{narrative.source_fingerprint}</span>}
+            </div>
+            {(narrative.room_names?.length || 0) > 0 && <small>{narrative.room_names!.join(' → ')}</small>}
+          </div>
+        )}
         <div className="metric-chips">
           {['room_count', 'encounter_count', 'enemy_count', 'optional_discoveries', 'estimated_completion_seconds'].map((name) => (
             telemetry[name] !== undefined && <span key={name}><small>{name.replaceAll('_', ' ')}</small><b>{telemetry[name]}</b></span>

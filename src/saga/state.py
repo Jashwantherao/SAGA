@@ -13,6 +13,23 @@ class ExtraSprite(TypedDict):
     description: str  # concrete visual description - drives the 128x128 generation
 
 
+class ActionRpgNarrative(TypedDict):
+    """Player-facing identity compiled into the stable Action-RPG runtime."""
+    quest_title: str
+    currency_name: str
+    quest_giver_name: str
+    boss_name: str
+    enemy_name: str
+    relic_name: str
+    ability_name: str
+    room_names: list[str]
+    dialogue_lines: list[str]
+    collect_objective: str
+    return_objective: str
+    boss_objective: str
+    victory_text: str
+
+
 class Level(TypedDict):
     name: str
     description: str  # drives this level's background generation
@@ -45,6 +62,9 @@ class DesignDoc(TypedDict):
     # walls, doors. Without these the Coder has only a hero, one icon and a
     # background, so it falls back to untextured ColorRects for anything else.
     extra_sprites: list[ExtraSprite]
+    # Required by the prompt for action_rpg. Older/fixed design documents are
+    # upgraded deterministically by the Narrative Content Compiler.
+    narrative: ActionRpgNarrative
 
 
 class GraphState(TypedDict, total=False):

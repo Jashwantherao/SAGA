@@ -113,6 +113,29 @@ def test_static_prototype_can_no_longer_receive_a_perfect_ship_score():
     }
 
 
+def test_action_rpg_without_runtime_narrative_proof_cannot_ship():
+    state = _state(objective_result={
+        "status": "passed",
+        "completion_score": 1.0,
+        "narrative_fidelity_verified": False,
+        "persona_results": {
+            name: {"passed": True}
+            for name in ("achiever", "explorer", "survivor", "speedrunner")
+        },
+    })
+    state["design_doc"]["mechanic_template"] = "action_rpg"
+
+    review = review_level(state)
+
+    assert review["dimensions"]["narrative_fidelity"]["score"] == 0
+    assert review["gate"]["passed"] is False
+    assert any(
+        finding["code"] == "narrative_identity_unproven"
+        and finding["owner"] == "composition_director"
+        for finding in review["findings"]
+    )
+
+
 def test_stable_pack_experience_failure_does_not_request_an_identical_rebuild():
     state = _state(video_qa_result={
         "status": "passed",

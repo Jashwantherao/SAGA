@@ -68,7 +68,7 @@ repair can enter SAGA's experience memory.
 
 ## Delivered first vertical slice
 
-Action-RPG pack v4 now compiles each brief into an `experience_contract`,
+Action-RPG pack v5 now compiles each brief into an `experience_contract`,
 generates 24 deterministic candidates, scores them, and ships only the selected
 candidate. The score covers enemy-role diversity, spatial variety, escalating
 pressure, safe placements, quest reachability, optional exploration reward,
@@ -131,3 +131,21 @@ style coherence. Any failure is durable quality-gate evidence owned by Asset
 Maker; role failures target a role sprite while camera/style failures target
 the current background. The art-direction hash is retained in each QA attempt,
 so visual evidence can be traced to the exact contract it judged.
+
+## Delivered fourth vertical slice: Narrative Content Compiler
+
+The Tideglass Oath live test exposed a truthful but unacceptable gap: fresh art
+and a fresh design still rendered “Ember Hermit” and “Hermit's Court.” Those
+strings lived in the stable pack rather than the selected game's ContentIR.
+
+Action-RPG pack v5 removes that shell. The Designer can now author a bounded
+narrative contract containing quest title, collectible currency, quest giver,
+enemy faction, boss, relic, unlocked ability, six room names, three dialogue lines, stage
+objectives and victory text. The deterministic compiler sanitizes it, fills any
+missing legacy fields from the reviewed design, fingerprints its source and
+binds it to rooms, pickups, NPC dialogue, inventory, HUD and boss presentation.
+
+Godot now performs a fourteenth objective check that compares rendered runtime
+identity with the exact compiled contract. Quality Director exposes a separate
+narrative-fidelity dimension and closes the ship gate if that evidence is absent
+or false. Candidate Studio shows the identity and provenance in the desktop UI.

@@ -16,10 +16,12 @@ var authored_sprite: Sprite2D
 var authored_base_scale := Vector2.ONE
 var telegraph: Polygon2D
 var health_fill: Polygon2D
+var boss_name := "Guardian"
 
 func configure(data: Dictionary, player_target: SagaActionRpgPlayer) -> void:
 	max_health = maxi(2, int(data.get("health", max_health)))
 	health = max_health
+	boss_name = str(data.get("name", boss_name))
 	target = player_target
 
 func _ready() -> void:
@@ -59,6 +61,14 @@ func _ready() -> void:
 	health_fill.color = Color("f05d45")
 	health_fill.z_index = 9
 	add_child(health_fill)
+	var name_label := Label.new()
+	name_label.text = boss_name
+	name_label.position = Vector2(-70, -72)
+	name_label.size = Vector2(140, 20)
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_label.add_theme_font_size_override("font_size", 12)
+	name_label.z_index = 10
+	add_child(name_label)
 
 func _physics_process(delta: float) -> void:
 	if health <= 0 or not is_instance_valid(target):

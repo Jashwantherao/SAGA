@@ -2,12 +2,21 @@ class_name SagaActionRpgNpc
 extends Node2D
 
 var npc_id := "hermit"
-var speaker_name := "Ember Hermit"
+var speaker_name := "Quest Keeper"
 var lines: Array[String] = [
-	"The forge is fading.",
-	"Bring me ten sparks and I will open the sealed road.",
-	"Your lantern remembers how to dash."
+	"The final passage is sealed.",
+	"Recover what was scattered and return to me.",
+	"Your path is open."
 ]
+
+func configure(data: Dictionary) -> void:
+	npc_id = str(data.get("id", npc_id))
+	speaker_name = str(data.get("name", speaker_name))
+	var authored_lines := data.get("lines", []) as Array
+	if authored_lines.size() >= 3:
+		lines.clear()
+		for line in authored_lines.slice(0, 3):
+			lines.append(str(line))
 
 func _ready() -> void:
 	add_to_group("action_rpg_npcs")

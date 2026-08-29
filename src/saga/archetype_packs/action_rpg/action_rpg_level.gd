@@ -65,7 +65,7 @@ func _prepare_presentation_capture() -> void:
 	enemies.clear()
 	player.position = Vector2(330, 320)
 	player.facing = Vector2.RIGHT
-	_spawn_enemy("presentation_sentinel", Vector2(405, 320), "sentinel", 12)
+	_spawn_enemy("presentation_sentinel", Vector2(405, 320), "sentinel", 12, _narrative_text("enemy_name", "Enemy") + " Sentinel")
 
 func _process(_delta: float) -> void:
 	if not is_instance_valid(player):
@@ -119,6 +119,30 @@ func _asset(name: String) -> String:
 
 func _rooms() -> Array:
 	return ((_definition.get("room_plan", {}) as Dictionary).get("rooms", []) as Array)
+
+func _narrative() -> Dictionary:
+	return ((_definition.get("room_plan", {}) as Dictionary).get("narrative", {}) as Dictionary)
+
+func _narrative_text(field: String, fallback: String) -> String:
+	return str(_narrative().get(field, fallback))
+
+func _quest_cost() -> int:
+	return maxi(1, int(((_definition.get("room_plan", {}) as Dictionary).get("quest", {}) as Dictionary).get("spark_cost", 10)))
+
+func _quest_npc_data() -> Dictionary:
+	for room_value in _rooms():
+		var room := room_value as Dictionary
+		if room.get("npc") is Dictionary:
+			return room.get("npc") as Dictionary
+	return {}
+
+func _item_display_name(item_id: String) -> String:
+	for room_value in _rooms():
+		for pickup_value in ((room_value as Dictionary).get("pickups", []) as Array):
+			var pickup := pickup_value as Dictionary
+			if str(pickup.get("id", "")) == item_id:
+				return str(pickup.get("display_name", item_id.replace("_", " ").capitalize()))
+	return item_id.replace("_", " ").capitalize()
 
 func _room_count() -> int:
 	return maxi(1, _rooms().size())
@@ -336,7 +360,8 @@ func _load_room(index: int) -> void:
 			str(enemy_data.get("id", "enemy_%d" % enemy_index)),
 			_vector_from(enemy_data.get("position", []), enemy_positions[enemy_index % enemy_positions.size()]),
 			str(enemy_data.get("role", "stalker")),
-			int(enemy_data.get("health", 3))
+			int(enemy_data.get("health", 3)),
+			str(enemy_data.get("display_name", "Enemy"))
 		)
 	var pickup_positions := [Vector2(500, 330), Vector2(600, 180), Vector2(760, 430)]
 	for pickup_index in range((room_data.get("pickups", []) as Array).size()):
@@ -347,13 +372,16 @@ func _load_room(index: int) -> void:
 			str(pickup_data.get("kind", "sparks")),
 			int(pickup_data.get("amount", 1))
 		)
-	if str(room_data.get("npc", "")) != "":
-		_spawn_npc(_vector_from(room_data.get("npc_position", []), Vector2(760, 270)))
+	if room_data.get("npc") is Dictionary:
+		_spawn_npc(
+			_vector_from(room_data.get("npc_position", []), Vector2(760, 270)),
+			room_data.get("npc") as Dictionary
+		)
 	if room_data.has("boss") and (forge_door_open or quest_stage in ["forge_open", "complete"]):
 		var boss_data := room_data.get("boss", {}) as Dictionary
 		_spawn_boss(_vector_from(boss_data.get("position", []), Vector2(760, 300)), boss_data)
 	elif room_index == _last_room_index() and not forge_door_open:
-		_spawn_npc(Vector2(820, 290))
+		_spawn_npc(Vector2(820, 290), _quest_npc_data())
 	_update_hud()
 
 func _build_room_decor() -> void:
@@ -383,12 +411,12 @@ func _build_room_decor() -> void:
 			mote.color = Color(theme_colors.get(theme_id, Color("d87a45")), 0.82)
 			room_decor.add_child(mote)
 
-func _spawn_enemy(id: String, at: Vector2, role: String, health := 3) -> void:
+func _spawn_enemy(id: String, at: Vector2, role: String, health := 3, display_name := "Enemy") -> void:
 	if id in cleared_enemies:
 		return
 	var enemy := SagaActionRpgEnemy.new()
 	enemy.position = at
-	enemy.configure({"id": id, "role": role, "health": health, "speed": 72.0}, player)
+	enemy.configure({"id": id, "role": role, "health": health, "speed": 72.0, "name": display_name}, player)
 	enemy.defeated.connect(_on_enemy_defeated)
 	add_child(enemy)
 	var role_asset := "enemy_" + role.to_lower().replace(" ", "_")
@@ -408,9 +436,10 @@ func _spawn_pickup(id: String, at: Vector2, kind: String, amount: int) -> void:
 	_attach_asset(pickup, "pickup", 34.0)
 	pickups.append(pickup)
 
-func _spawn_npc(at: Vector2) -> void:
+func _spawn_npc(at: Vector2, data: Dictionary) -> void:
 	npc = SagaActionRpgNpc.new()
 	npc.position = at
+	npc.configure(data)
 	add_child(npc)
 	_attach_asset(npc, "npc", 54.0)
 
@@ -514,7 +543,7 @@ func _on_pickup_collected(pickup_id: String, kind: String, amount: int) -> void:
 	else:
 		inventory.add_item(pickup_id, amount)
 	_impact_feedback(player.global_position, Color("8ff5cf") if kind == "health" else Color("ffd56b"))
-	if inventory.sparks >= 10 and quest_stage == "collect_sparks":
+	if inventory.sparks >= _quest_cost() and quest_stage == "collect_sparks":
 		quest_stage = "return_to_hermit"
 	_update_hud()
 
@@ -573,7 +602,7 @@ func advance_dialogue() -> bool:
 	return true
 
 func turn_in_quest() -> bool:
-	if quest_stage != "return_to_hermit" or not inventory.spend_sparks(10):
+	if quest_stage != "return_to_hermit" or not inventory.spend_sparks(_quest_cost()):
 		return false
 	quest_stage = "forge_open"
 	dash_unlocked = true
@@ -657,27 +686,27 @@ func restart_from_checkpoint() -> bool:
 
 func _quest_hint() -> String:
 	match quest_stage:
-		"collect_sparks": return "Gather 10 sparks for the Ember Hermit"
-		"return_to_hermit": return "Return to the Ember Hermit"
-		"forge_open": return "Enter the forge and defeat its warden"
-		"complete": return "The heart-forge burns again"
-	return "Explore the keep"
+		"collect_sparks": return _narrative_text("collect_objective", "Recover the quest relics")
+		"return_to_hermit": return _narrative_text("return_objective", "Return to the quest giver")
+		"forge_open": return _narrative_text("boss_objective", "Defeat the guardian")
+		"complete": return _narrative_text("victory_text", "The journey is complete")
+	return _narrative_text("quest_title", "Explore the world")
 
 func _update_inventory_panel() -> void:
 	if not is_instance_valid(inventory_label):
 		return
 	var item_lines: Array[String] = []
 	for key in inventory.items:
-		item_lines.append("%s x%d" % [str(key).replace("_", " ").capitalize(), int(inventory.items[key])])
+		item_lines.append("%s x%d" % [_item_display_name(str(key)), int(inventory.items[key])])
 	if item_lines.is_empty():
 		item_lines.append("No gear collected")
-	inventory_label.text = "INVENTORY\n\nSPARKS  %d\n\n%s\n\n[C] close" % [inventory.sparks, "\n".join(item_lines)]
+	inventory_label.text = "INVENTORY\n\n%s  %d\n\n%s\n\n[C] close" % [_narrative_text("currency_name", "Quest Relics").to_upper(), inventory.sparks, "\n".join(item_lines)]
 
 func _update_hud() -> void:
 	if not is_instance_valid(hud_label):
 		return
-	hud_label.text = "HP %d/%d    SPARKS %d    Z swing    X talk    C inventory" % [player.health, player.max_health, inventory.sparks]
-	quest_label.text = "QUEST  " + _quest_hint()
+	hud_label.text = "HP %d/%d    %s %d    Z swing    X talk    C inventory" % [player.health, player.max_health, _narrative_text("currency_name", "RELICS").to_upper(), inventory.sparks]
+	quest_label.text = "%s  %s" % [_narrative_text("quest_title", "QUEST").to_upper(), _quest_hint()]
 	var rooms := ((_definition.get("room_plan", {}) as Dictionary).get("rooms", []) as Array)
 	var room_name := "ROOM %d" % (room_index + 1)
 	if room_index < rooms.size():
@@ -687,7 +716,7 @@ func _update_hud() -> void:
 	if state == "over":
 		quest_label.text = "FALLEN — ENTER to restart at checkpoint"
 	elif state == "won":
-		quest_label.text = "FORGE RELIT — QUEST COMPLETE"
+		quest_label.text = _narrative_text("victory_text", "QUEST COMPLETE").to_upper()
 
 # Stable deterministic QA surface. These methods exercise the same state
 # transitions used by input, collision, dialogue and combat code.
@@ -718,6 +747,39 @@ func qa_reset_for_probe() -> bool:
 	_load_room(0)
 	return state == "playing" and room_index == 0 and inventory.sparks == 0
 
+func qa_verify_narrative_identity() -> bool:
+	var narrative := _narrative()
+	var required := [
+		"quest_title", "currency_name", "quest_giver_name", "boss_name", "enemy_name",
+		"relic_name", "ability_name", "collect_objective", "return_objective",
+		"boss_objective", "victory_text", "source_fingerprint"
+	]
+	for field in required:
+		if str(narrative.get(field, "")).strip_edges() == "":
+			return false
+	var room_names := narrative.get("room_names", []) as Array
+	if room_names.size() != _room_count():
+		return false
+	for index in range(_room_count()):
+		if str((_rooms()[index] as Dictionary).get("name", "")) != str(room_names[index]):
+			return false
+	if not is_instance_valid(npc):
+		_load_room(0)
+	if not is_instance_valid(npc) or npc.speaker_name != str(narrative.get("quest_giver_name", "")):
+		return false
+	var expected_lines := narrative.get("dialogue_lines", []) as Array
+	if npc.lines.size() != expected_lines.size():
+		return false
+	for index in range(expected_lines.size()):
+		if npc.lines[index] != str(expected_lines[index]):
+			return false
+	_update_hud()
+	return (
+		str(narrative.get("currency_name", "")).to_upper() in hud_label.text
+		and str(narrative.get("quest_title", "")).to_upper() in quest_label.text
+		and str(narrative.get("collect_objective", "")) in quest_label.text
+	)
+
 func qa_verify_movement() -> bool:
 	return player.qa_nudge(Vector2.RIGHT) > 10.0
 
@@ -747,15 +809,15 @@ func qa_verify_pickup_inventory() -> Dictionary:
 	qa_pickup.collected.connect(_on_pickup_collected)
 	add_child(qa_pickup)
 	var collected := qa_pickup.collect_for(player)
-	inventory.add_sparks(10)
+	inventory.add_sparks(_quest_cost())
 	quest_stage = "return_to_hermit"
 	var opened := toggle_inventory()
-	var listed := "ember charm" in inventory_label.text.to_lower() and str(inventory.sparks) in inventory_label.text
+	var listed := _item_display_name("ember_charm").to_lower() in inventory_label.text.to_lower() and str(inventory.sparks) in inventory_label.text
 	toggle_inventory()
 	qa_pickup.queue_free()
 	return {
 		"pickup": collected and qa_pickup.consumed and inventory.count("ember_charm") == charm_before + 1,
-		"inventory": inventory.sparks == before + 10 and opened and listed and not inventory_open
+		"inventory": inventory.sparks == before + _quest_cost() and opened and listed and not inventory_open
 	}
 
 func qa_verify_dialogue_quest() -> Dictionary:

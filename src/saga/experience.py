@@ -310,6 +310,163 @@ def _seed_for(design_doc: dict, level_index: int) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
 
+ACTION_RPG_NARRATIVE_FIELDS = (
+    "quest_title", "currency_name", "quest_giver_name", "boss_name", "enemy_name",
+    "relic_name", "ability_name", "collect_objective", "return_objective",
+    "boss_objective", "victory_text",
+)
+
+
+def _clean_narrative_text(value: Any, fallback: str, limit: int = 120) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = "".join(character for character in text if character.isprintable())
+    text = text or fallback
+    if len(text) <= limit:
+        return text
+    shortened = text[: max(1, limit - 1)].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return (shortened or text[: max(1, limit - 1)]).strip() + "…"
+
+
+def _role_display_name(design_doc: dict, role: str, fallback: str) -> str:
+    for sprite in design_doc.get("extra_sprites") or []:
+        raw = str(sprite.get("name") or "")
+        if role not in raw:
+            continue
+        words = [
+            word for word in raw.split("_")
+            if word not in {role, "extra", "sprite", "character", "gear"}
+        ]
+        if words:
+            display = " ".join(words).title()
+            if role == "relic" and "relic" not in display.casefold():
+                display += " Relic"
+            return display
+    return fallback
+
+
+def _currency_name(design_doc: dict, identity: str) -> str:
+    key_item = design_doc.get("key_item") or {}
+    if key_item.get("name"):
+        return _clean_narrative_text(key_item["name"], f"{identity} Relics", 36)
+    description = str(key_item.get("description") or "").lower()
+    if "shard" in description:
+        return "Lens Shards" if "lens" in description else f"{identity} Shards"
+    if "spark" in description:
+        words = re.findall(r"[a-z]+", description)
+        spark_index = words.index("spark") if "spark" in words else -1
+        prefix = words[spark_index - 1].title() if spark_index > 0 else identity
+        return f"{prefix} Sparks"
+    if "fragment" in description:
+        return f"{identity} Fragments"
+    return f"{identity} Relics"
+
+
+def compile_action_rpg_narrative(
+    design_doc: dict, level_index: int, room_count: int
+) -> dict[str, Any]:
+    """Compile authored identity into bounded, runtime-safe player-facing text.
+
+    New designs provide the explicit narrative object. Older fixed benchmark
+    documents are upgraded from their title, level, key item, sprites and ending
+    instead of falling back to the old Ember Hermit shell.
+    """
+    supplied = design_doc.get("narrative") or {}
+    levels = design_doc.get("levels") or [{}]
+    level = levels[min(level_index, len(levels) - 1)]
+    title = _clean_narrative_text(design_doc.get("title"), "Untitled Oath", 54)
+    title_words = [
+        word for word in re.findall(r"[A-Za-z0-9]+", title)
+        if word.lower() not in {"the", "a", "an", "of"}
+    ]
+    identity = (title_words[0] if title_words else "Lost").title()
+    currency = _clean_narrative_text(
+        supplied.get("currency_name"), _currency_name(design_doc, identity), 36
+    )
+    quest_giver = _clean_narrative_text(
+        supplied.get("quest_giver_name"),
+        _role_display_name(design_doc, "npc", f"{identity} Keeper"), 42,
+    )
+    boss_name = _clean_narrative_text(
+        supplied.get("boss_name"),
+        _role_display_name(design_doc, "boss", f"{identity} Guardian"), 42,
+    )
+    enemy_name = _clean_narrative_text(
+        supplied.get("enemy_name"),
+        _role_display_name(design_doc, "enemy", f"{identity} Wraith"), 42,
+    )
+    relic_name = _clean_narrative_text(
+        supplied.get("relic_name"),
+        _role_display_name(design_doc, "relic", f"{identity} Wayfinder"), 42,
+    )
+    ability_name = _clean_narrative_text(
+        supplied.get("ability_name"), f"{identity} Step", 36
+    )
+    level_name = _clean_narrative_text(level.get("name"), f"{identity} Reach", 54)
+    fallback_rooms = [
+        f"{identity} Threshold", f"{identity} Archive", f"{identity} Crossing",
+        f"{identity} Reliquary", f"{identity} Sanctum", f"{boss_name}'s Domain",
+    ]
+    room_names = [
+        _clean_narrative_text(name, fallback_rooms[index], 54)
+        for index, name in enumerate((supplied.get("room_names") or [])[:6])
+    ]
+    for index in range(len(room_names), 6):
+        room_names.append(fallback_rooms[index])
+    if len({name.casefold() for name in room_names}) != len(room_names):
+        room_names = fallback_rooms
+    quest_cost = 10
+    fallback_dialogue = [
+        f"The way through {level_name} has gone dark.",
+        f"Recover {quest_cost} {currency} and I can open the final passage.",
+        f"Take the {ability_name}. It will carry you to {boss_name}.",
+    ]
+    supplied_dialogue = supplied.get("dialogue_lines") or []
+    dialogue_lines = [
+        _clean_narrative_text(
+            supplied_dialogue[index] if index < len(supplied_dialogue) else "",
+            fallback_dialogue[index], 150,
+        )
+        for index in range(3)
+    ]
+    defaults = {
+        "quest_title": f"Relight {level_name}",
+        "currency_name": currency,
+        "quest_giver_name": quest_giver,
+        "boss_name": boss_name,
+        "enemy_name": enemy_name,
+        "relic_name": relic_name,
+        "ability_name": ability_name,
+        "collect_objective": f"Recover {quest_cost} {currency}",
+        "return_objective": f"Return to {quest_giver}",
+        "boss_objective": f"Defeat {boss_name}",
+        "victory_text": _clean_narrative_text(
+            level.get("outro_beat"), f"{level_name} awakens again.", 150
+        ),
+    }
+    narrative = {
+        field: _clean_narrative_text(supplied.get(field), defaults[field], 150)
+        for field in ACTION_RPG_NARRATIVE_FIELDS
+    }
+    selected_room_names = [room_names[0], *room_names[1 : max(1, room_count - 1)]]
+    if room_count > 1:
+        selected_room_names.append(room_names[-1])
+    narrative.update({
+        "contract_version": 1,
+        "room_names": selected_room_names[:room_count],
+        "dialogue_lines": dialogue_lines,
+        "source": "designer" if all(supplied.get(field) for field in ACTION_RPG_NARRATIVE_FIELDS) else "compiled_from_design",
+        "source_fingerprint": hashlib.sha256(
+            json.dumps({
+                "title": title,
+                "level": level_name,
+                "key_item": design_doc.get("key_item") or {},
+                "sprites": design_doc.get("extra_sprites") or [],
+            }, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:16],
+    })
+    return narrative
+
+
 def build_action_rpg_experience_contract(
     design_doc: dict, level_index: int
 ) -> dict[str, Any]:
@@ -450,10 +607,8 @@ def _candidate_plan(
         )
 
     spark_entry = rng.choice([3, 4, 5])
-    room_name_roots = [
-        "Hermit's Court", "Rust Vault", "Shattered Causeway",
-        "Moonwell Annex", "Verdant Reliquary", "Storm Gallery",
-    ]
+    narrative = compile_action_rpg_narrative(design_doc, level_index, room_count)
+    room_name_roots = narrative["room_names"]
     rooms: list[dict[str, Any]] = []
     for room_index in range(room_count - 1):
         spec = room_specs[room_index]
@@ -467,6 +622,7 @@ def _candidate_plan(
                     "role": role,
                     "health": enemy_health + room_index // 2 + (1 if role == "bruiser" else 0),
                     "position": spec["enemy_positions"][enemy_index],
+                    "display_name": f"{narrative['enemy_name']} {role.title()}",
                 }
             )
         pickups: list[dict[str, Any]] = []
@@ -475,6 +631,7 @@ def _candidate_plan(
                 {
                     "id": "entry_sparks", "kind": "sparks", "amount": spark_entry,
                     "position": spec["pickup_positions"][0],
+                    "display_name": narrative["currency_name"],
                 }
             )
         elif room_index == 1:
@@ -483,10 +640,12 @@ def _candidate_plan(
                     {
                         "id": "vault_sparks", "kind": "sparks", "amount": 10 - spark_entry,
                         "position": spec["pickup_positions"][0],
+                        "display_name": narrative["currency_name"],
                     },
                     {
                         "id": "ember_charm", "kind": "item", "amount": 1,
                         "position": spec["pickup_positions"][1],
+                        "display_name": narrative["relic_name"],
                     },
                 ]
             )
@@ -495,6 +654,7 @@ def _candidate_plan(
                 {
                     "id": "restoration_tonic", "kind": "health", "amount": 2,
                     "position": spec["pickup_positions"][2],
+                    "display_name": "Restoration Tonic",
                 }
             )
         elif room_index % 2 == 0:
@@ -502,6 +662,7 @@ def _candidate_plan(
                 {
                     "id": f"optional_relic_{room_index}", "kind": "item", "amount": 1,
                     "position": spec["pickup_positions"][2],
+                    "display_name": narrative["relic_name"],
                 }
             )
         beat = "orient" if room_index == 0 else (
@@ -523,7 +684,14 @@ def _candidate_plan(
             "optional_discovery": room_index > 1 and room_index % 2 == 0,
         }
         if room_index == 0:
-            room.update({"npc": "hermit", "npc_position": [850, 285]})
+            room.update({
+                "npc": {
+                    "id": "quest_giver",
+                    "name": narrative["quest_giver_name"],
+                    "lines": narrative["dialogue_lines"],
+                },
+                "npc_position": [850, 285],
+            })
         rooms.append(room)
 
     boss_index = room_count - 1
@@ -531,13 +699,14 @@ def _candidate_plan(
         {
             "index": boss_index,
             "id": "heart_forge",
-            "name": "Heart Forge",
+            "name": room_name_roots[boss_index],
             "theme_id": themes[boss_index % len(themes)],
             "layout_id": "open_arena",
             "obstacles": deepcopy(ACTION_RPG_LAYOUTS["open_arena"]),
             "requires_quest_stage": "forge_open",
             "boss": {
                 "id": "forge_warden",
+                "name": narrative["boss_name"],
                 "health": 10 + intensity + max(0, room_count - 4) * 2,
                 "phases": 2,
                 "position": [760, 300],
@@ -559,15 +728,16 @@ def _candidate_plan(
         for index in range(room_count - 1)
     ]
     plan: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "seed": seed,
         "compiler": {
             "id": "encounter_progression",
-            "version": 1,
+            "version": 2,
             "candidate_index": candidate_index,
         },
         "quest_stages": ["collect_sparks", "return_to_hermit", "forge_open", "complete"],
         "quest": {"spark_cost": 10, "reward": "spark_dash", "opens_room": boss_index},
+        "narrative": narrative,
         "experience_contract": contract,
         "world_graph": {"start": rooms[0]["id"], "boss": rooms[-1]["id"], "edges": edges},
         "rooms": rooms,
@@ -821,6 +991,10 @@ def repair_action_rpg_candidate(
                     "kind": "item",
                     "amount": 1,
                     "position": relic_position,
+                    "display_name": str(
+                        (repaired.get("narrative") or {}).get("relic_name")
+                        or "Optional Relic"
+                    ),
                 }
             )
             target["optional_discovery"] = True

@@ -134,7 +134,7 @@ ACTION_RPG_METRICS = re.compile(
     r"enemy_state=(true|false) pickup=(true|false) inventory=(true|false) "
     r"dialogue=(true|false) quest=(true|false) room=(true|false) "
     r"save=(true|false) loss=(true|false) restart=(true|false) "
-    r"boss_phase=(true|false) win=(true|false)"
+    r"boss_phase=(true|false) win=(true|false) narrative=(true|false)"
 )
 CAMPAIGN_METRICS = re.compile(
     r"\[CAMPAIGN_METRICS\] scene=(true|false) stats=(true|false) "
@@ -563,6 +563,7 @@ def _run_objective_probe(
             "clean_restart",
             "boss_phases_verified",
             "boss_win_verified",
+            "narrative_fidelity_verified",
         )
         result.update({name: value == "true" for name, value in zip(names, rpg.groups())})
     blocked_positions = [
@@ -865,6 +866,7 @@ def _run_objective_probe(
             "clean_restart",
             "boss_phases_verified",
             "boss_win_verified",
+            "narrative_fidelity_verified",
         ]
         missing = [name for name in flags if not result[name]]
         if missing:
@@ -2119,7 +2121,7 @@ def qa_agent(state: GraphState) -> GraphState:
             print(
                 "[QA Agent] Playthrough: normal inputs completed all "
                 f"{playthrough_result['rooms_total']} compiled rooms, "
-                f"the hermit quest and boss in {playthrough_result['frames']} frames "
+                f"the authored quest and boss in {playthrough_result['frames']} frames "
                 f"with {playthrough_result['deaths']} deaths"
             )
         if template == "run_and_gun" and current_level == total_levels - 1:

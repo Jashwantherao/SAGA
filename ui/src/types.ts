@@ -177,6 +177,20 @@ export type ContentPlan = {
   seed?: string
   compiler?: { id?: string; version?: number; candidate_index?: number }
   rooms?: { id?: string; name?: string; beat?: string; optional_discovery?: boolean }[]
+  narrative?: {
+    contract_version?: number
+    quest_title?: string
+    currency_name?: string
+    quest_giver_name?: string
+    boss_name?: string
+    enemy_name?: string
+    relic_name?: string
+    ability_name?: string
+    room_names?: string[]
+    dialogue_lines?: string[]
+    source?: string
+    source_fingerprint?: string
+  }
   experience_search?: {
     algorithm_version?: number
     candidates_evaluated?: number
@@ -264,6 +278,7 @@ export type DesignDoc = {
   audio_mood?: string
   key_item?: { description?: string; role?: string }
   extra_sprites?: { name?: string; description?: string }[]
+  narrative?: ContentPlan['narrative']
 }
 
 export type Job = {

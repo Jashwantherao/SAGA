@@ -4,6 +4,7 @@ extends CharacterBody2D
 signal defeated(enemy_id: String)
 
 var enemy_id := "enemy"
+var enemy_name := "Enemy"
 var role := "stalker"
 var max_health := 3
 var health := 3
@@ -51,6 +52,14 @@ func _ready() -> void:
 	visual.polygon = role_shapes.get(role, role_shapes["stalker"])
 	visual.color = role_colors.get(role, role_colors["stalker"])
 	add_child(visual)
+	var name_label := Label.new()
+	name_label.text = enemy_name
+	name_label.position = Vector2(-65, -45)
+	name_label.size = Vector2(130, 18)
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_label.add_theme_font_size_override("font_size", 10)
+	name_label.z_index = 9
+	add_child(name_label)
 	telegraph = Polygon2D.new()
 	telegraph.name = "AttackTelegraph"
 	telegraph.z_index = -1
@@ -82,6 +91,7 @@ func _build_health_bar() -> void:
 
 func configure(data: Dictionary, player_target: SagaActionRpgPlayer) -> void:
 	enemy_id = str(data.get("id", enemy_id))
+	enemy_name = str(data.get("name", enemy_name))
 	role = str(data.get("role", role))
 	max_health = int(data.get("health", max_health))
 	health = max_health

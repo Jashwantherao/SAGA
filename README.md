@@ -157,7 +157,7 @@ The deterministic blueprint exposes the runtime capabilities as separate,
 dependency-ordered systems. QA calls a stable pack interface and refuses to
 ship unless all seven core transitions, the encounter-structure contract, ten
 combat-depth assertions and seven progression/persistence assertions pass.
-`action_rpg` is the second capability family. Pack v4 lives under
+`action_rpg` is the second capability family. Pack v5 lives under
 `src/saga/archetype_packs/action_rpg/` and compiles a brief into a validated,
 reproducible 4–6-room adventure. Candidate Studio searches 24 world and encounter
 plans, runs four persona critics, applies only bounded data edits, and records the
@@ -170,7 +170,12 @@ boss. Authored hero, enemy, NPC, pickup, boss and top-down background assets are
 used when present, with procedural visuals retained only as a mechanics fallback.
 The deterministic objective probe uses a separate QA save namespace, so testing
 can never advance, corrupt, or erase the player's campaign profile.
-QA refuses to ship until thirteen named RPG transitions pass: movement, melee,
+Pack v5 adds a Narrative Content Compiler: each design's quest title, currency,
+quest giver, enemy faction, relic, ability, six-room name bank, dialogue, objectives, boss and
+ending become validated ContentIR consumed verbatim by the stable runtime. Older
+reviewed designs are upgraded from their title, key item and named actor assets;
+they never fall back to the old Ember Hermit shell. QA refuses to ship until
+fourteen named RPG transitions pass: narrative fidelity, movement, melee,
 enemy state, pickup, inventory, dialogue, quest, room transition, save/reload,
 loss, clean restart, boss phase and final win. Production builds also require an
 authored hero and background and treat placeholder or perspective-mismatched art

@@ -379,7 +379,7 @@ def main() -> None:
             file=sys.stderr,
         )
     manifest = {
-        "manifest_version": 19,
+        "manifest_version": 20,
         "run_dir": result["run_dir"],
         "idea": args.idea,
         "title": (result.get("design_doc") or {}).get("title"),

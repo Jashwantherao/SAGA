@@ -1,5 +1,11 @@
 from saga.agents.asset_maker import HERO_NATIVE_FACING
-from saga.agents.game_designer import _level_system_prompt, _normalize, _validate, game_designer
+from saga.agents.game_designer import (
+    DESIGN_DOC_SCHEMA,
+    _level_system_prompt,
+    _normalize,
+    _validate,
+    game_designer,
+)
 
 
 def _doc():
@@ -50,6 +56,15 @@ def test_one_level_override_changes_prompt_and_validation():
     assert _validate(doc, level_count=1) == []
     assert "exactly 1 level" in _level_system_prompt(1)
     assert "need 3-5 levels" in _validate(doc)[0]
+
+
+def test_action_rpg_prompt_and_schema_request_runtime_identity():
+    prompt = _level_system_prompt(1)
+    narrative = DESIGN_DOC_SCHEMA["properties"]["narrative"]
+
+    assert "quest_giver_name" in prompt
+    assert "boss_name" in narrative["required"]
+    assert narrative["properties"]["room_names"]["minItems"] == 6
 
 
 def test_level_override_rejects_wrong_count():
