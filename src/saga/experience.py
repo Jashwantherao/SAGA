@@ -568,7 +568,11 @@ def _candidate_plan(
             ),
         ),
     )
-    room_count = 4 + rng.randrange(3)
+    # A nonlinear quest needs enough authored space for a readable junction,
+    # a genuinely optional discovery, a recovery room and the boss.  Five is
+    # the smallest graph that can provide all four without turning a room into
+    # a pile of unrelated responsibilities.
+    room_count = 5 + rng.randrange(2)
     theme_offset = int(seed[:4], 16) % len(ACTION_RPG_THEMES)
     themes = list(ACTION_RPG_THEMES)
     themes = themes[theme_offset:] + themes[:theme_offset]
@@ -649,6 +653,14 @@ def _candidate_plan(
                     },
                 ]
             )
+        elif room_index == 2:
+            pickups.append(
+                {
+                    "id": "optional_relic_branch", "kind": "item", "amount": 1,
+                    "position": spec["pickup_positions"][2],
+                    "display_name": narrative["relic_name"],
+                }
+            )
         elif room_index == room_count - 2:
             pickups.append(
                 {
@@ -671,7 +683,9 @@ def _candidate_plan(
         room = {
             "index": room_index,
             "id": "hermit_court" if room_index == 0 else (
-                "rust_vault" if room_index == 1 else f"journey_{room_index}"
+                "rust_vault" if room_index == 1 else (
+                    "relic_branch" if room_index == 2 else f"journey_{room_index}"
+                )
             ),
             "name": room_name_roots[room_index],
             "theme_id": themes[room_index % len(themes)],
@@ -681,7 +695,7 @@ def _candidate_plan(
             "pickups": pickups,
             "beat": beat,
             "pressure": sum(ACTION_RPG_ROLE_COSTS[enemy["role"]] for enemy in enemies),
-            "optional_discovery": room_index > 1 and room_index % 2 == 0,
+            "optional_discovery": room_index == 2,
         }
         if room_index == 0:
             room.update({
@@ -718,28 +732,68 @@ def _candidate_plan(
             "optional_discovery": False,
         }
     )
+    # Index two is a north branch off the first junction.  Its east exit is a
+    # real return shortcut into the recovery path, producing a small cycle the
+    # player can understand and exploit.  Edges describe both directions so
+    # the stable runtime never guesses travel from array order.
+    main_route = [rooms[0]["id"], rooms[1]["id"]] + [
+        rooms[index]["id"] for index in range(3, room_count)
+    ]
     edges = [
         {
-            "id": f"room_{index}_to_{index + 1}",
-            "from": rooms[index]["id"],
-            "to": rooms[index + 1]["id"],
-            "kind": "gated" if index + 1 == boss_index else "main_route",
-        }
-        for index in range(room_count - 1)
+            "id": "threshold_to_junction", "from": rooms[0]["id"],
+            "to": rooms[1]["id"], "direction": "east",
+            "return_direction": "west", "kind": "main_route",
+        },
+        {
+            "id": "junction_to_relic", "from": rooms[1]["id"],
+            "to": rooms[2]["id"], "direction": "north",
+            "return_direction": "south", "kind": "optional_branch",
+        },
+        {
+            "id": "junction_to_recovery", "from": rooms[1]["id"],
+            "to": rooms[3]["id"], "direction": "east",
+            "return_direction": "west", "kind": "main_route",
+        },
+        {
+            "id": "relic_return_shortcut", "from": rooms[2]["id"],
+            "to": rooms[3]["id"], "direction": "east",
+            "return_direction": "north", "kind": "shortcut",
+        },
     ]
+    for index in range(3, room_count - 1):
+        edges.append(
+            {
+                "id": f"room_{index}_to_{index + 1}",
+                "from": rooms[index]["id"], "to": rooms[index + 1]["id"],
+                "direction": "east", "return_direction": "west",
+                "kind": "gated" if index + 1 == boss_index else "main_route",
+                **(
+                    {"requires_quest_stage": "forge_open"}
+                    if index + 1 == boss_index else {}
+                ),
+            }
+        )
     plan: dict[str, Any] = {
-        "schema_version": 4,
+        "schema_version": 5,
         "seed": seed,
         "compiler": {
             "id": "encounter_progression",
-            "version": 2,
+            "version": 3,
             "candidate_index": candidate_index,
         },
         "quest_stages": ["collect_sparks", "return_to_hermit", "forge_open", "complete"],
         "quest": {"spark_cost": 10, "reward": "spark_dash", "opens_room": boss_index},
         "narrative": narrative,
         "experience_contract": contract,
-        "world_graph": {"start": rooms[0]["id"], "boss": rooms[-1]["id"], "edges": edges},
+        "world_graph": {
+            "version": 2,
+            "start": rooms[0]["id"],
+            "boss": rooms[-1]["id"],
+            "main_route": main_route,
+            "optional_rooms": [rooms[2]["id"]],
+            "edges": edges,
+        },
         "rooms": rooms,
     }
     return plan
@@ -818,6 +872,31 @@ def score_action_rpg_candidate(plan: dict[str, Any]) -> dict[str, Any]:
         if pickup.get("kind") == "sparks"
     )
     quest_funded = sparks >= int((plan.get("quest") or {}).get("spark_cost") or 0)
+    world = plan.get("world_graph") or {}
+    world_edges = world.get("edges") or []
+    main_route = world.get("main_route") or []
+    optional_room_ids = set(world.get("optional_rooms") or [])
+    branch_edges = sum(edge.get("kind") == "optional_branch" for edge in world_edges)
+    shortcut_edges = sum(edge.get("kind") == "shortcut" for edge in world_edges)
+    adjacency: dict[str, set[str]] = {
+        str(room.get("id")): set() for room in rooms if room.get("id")
+    }
+    for edge in world_edges:
+        source, target = str(edge.get("from") or ""), str(edge.get("to") or "")
+        if source in adjacency and target in adjacency:
+            adjacency[source].add(target)
+            if edge.get("return_direction"):
+                adjacency[target].add(source)
+    reachable: set[str] = set()
+    pending = [str(world.get("start") or "")]
+    while pending:
+        current = pending.pop()
+        if current in reachable or current not in adjacency:
+            continue
+        reachable.add(current)
+        pending.extend(adjacency[current] - reachable)
+    graph_reachable = len(reachable) == len(rooms)
+    branching_junctions = sum(len(targets) >= 3 for targets in adjacency.values())
     explorer_separation = 0.0
     if optional_relic and mandatory_vault_pickup:
         relic_position = optional_relic.get("position", [0, 0])
@@ -870,20 +949,24 @@ def score_action_rpg_candidate(plan: dict[str, Any]) -> dict[str, Any]:
         "explorer_reward": min(1.0, explorer_separation + optional_rooms * 0.2),
         "survivor_recovery": recovery_timing,
         "speedrunner_lane": max(lane_scores, default=0.0),
+        "nonlinear_world": 1.0 if graph_reachable and branch_edges > 0 and branching_junctions > 0 else 0.0,
+        "shortcut_value": 1.0 if shortcut_edges > 0 and len(main_route) < len(rooms) else 0.0,
     }
     weights = {
         "role_diversity": 16,
-        "spatial_variety": 14,
+        "spatial_variety": 10,
         "pacing_curve": 16,
         "placement_safety": 16,
         "achiever_path": 12,
-        "explorer_reward": 8,
+        "explorer_reward": 6,
         "survivor_recovery": 10,
-        "speedrunner_lane": 8,
+        "speedrunner_lane": 6,
+        "nonlinear_world": 5,
+        "shortcut_value": 5,
     }
     score = round(sum(metrics[key] * weights[key] for key in weights), 1)
     hard_constraints_passed = (
-        4 <= len(rooms) <= 6
+        5 <= len(rooms) <= 6
         and len(roles) >= 3
         and len(layouts) >= 4
         and clear_placements
@@ -893,6 +976,11 @@ def score_action_rpg_candidate(plan: dict[str, Any]) -> dict[str, Any]:
         and optional_relic is not None
         and max(lane_scores, default=0.0) >= 0.4
         and quest_funded
+        and graph_reachable
+        and branch_edges >= 1
+        and shortcut_edges >= 1
+        and branching_junctions >= 1
+        and bool(optional_room_ids)
     )
     personas = {
         "achiever": {
@@ -902,9 +990,11 @@ def score_action_rpg_candidate(plan: dict[str, Any]) -> dict[str, Any]:
             "quest_currency": sparks,
         },
         "explorer": {
-            "passed": optional_relic is not None and optional_rooms > 0,
+            "passed": optional_relic is not None and optional_rooms > 0 and branch_edges > 0,
             "optional_discoveries": optional_rooms,
             "reward_separation": round(explorer_separation, 3),
+            "branch_rooms": len(optional_room_ids),
+            "shortcuts": shortcut_edges,
         },
         "survivor": {
             "passed": recovery_pickup is not None and recovery_timing >= 0.35,
@@ -922,6 +1012,11 @@ def score_action_rpg_candidate(plan: dict[str, Any]) -> dict[str, Any]:
         "encounter_count": sum(bool(room.get("enemies")) for room in rooms),
         "enemy_count": total_enemies,
         "optional_discoveries": optional_rooms,
+        "main_route_rooms": len(main_route),
+        "optional_rooms": len(optional_room_ids),
+        "branch_edges": branch_edges,
+        "shortcut_edges": shortcut_edges,
+        "branching_junctions": branching_junctions,
         "backtrack_rooms": backtrack_rooms,
         "estimated_travel_seconds": estimated_travel_seconds,
         "estimated_combat_seconds": estimated_combat_seconds,

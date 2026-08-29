@@ -2457,6 +2457,7 @@ func _run() -> void:
 	var pickup_result: Dictionary = level.qa_verify_pickup_inventory()
 	var dialogue_result: Dictionary = level.qa_verify_dialogue_quest()
 	var room_persistence := bool(level.qa_verify_room_persistence())
+	var world_graph := bool(level.qa_verify_world_graph())
 	var save_reload := bool(level.qa_verify_save_reload())
 	var loss_result: Dictionary = level.qa_verify_loss_restart()
 	var boss_result: Dictionary = level.qa_verify_boss_phases_and_win()
@@ -2464,28 +2465,28 @@ func _run() -> void:
 		movement, bool(melee_result.get("melee", false)), bool(melee_result.get("enemy_state", false)),
 		bool(pickup_result.get("pickup", false)), bool(pickup_result.get("inventory", false)),
 		bool(dialogue_result.get("dialogue", false)), bool(dialogue_result.get("quest", false)),
-		room_persistence, save_reload, bool(loss_result.get("loss", false)),
+		room_persistence, world_graph, save_reload, bool(loss_result.get("loss", false)),
 		bool(loss_result.get("restart", false)), bool(boss_result.get("boss_phase", false)),
 		bool(boss_result.get("win", false)), narrative_fidelity
 	]
-	print("[ACTION_RPG_METRICS] movement=%s melee=%s enemy_state=%s pickup=%s inventory=%s dialogue=%s quest=%s room=%s save=%s loss=%s restart=%s boss_phase=%s win=%s narrative=%s" % [
+	print("[ACTION_RPG_METRICS] movement=%s melee=%s enemy_state=%s pickup=%s inventory=%s dialogue=%s quest=%s room=%s world_graph=%s save=%s loss=%s restart=%s boss_phase=%s win=%s narrative=%s" % [
 		_bool(flags[0]), _bool(flags[1]), _bool(flags[2]), _bool(flags[3]),
 		_bool(flags[4]), _bool(flags[5]), _bool(flags[6]), _bool(flags[7]),
-		_bool(flags[8]), _bool(flags[9]), _bool(flags[10]), _bool(flags[11]), _bool(flags[12]), _bool(flags[13])
+		_bool(flags[8]), _bool(flags[9]), _bool(flags[10]), _bool(flags[11]), _bool(flags[12]), _bool(flags[13]), _bool(flags[14])
 	])
 	var passed := not flags.has(false)
 	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=%d max_stall_frames=1 stuck=%s restart=%s deaths=1" % [
 		flags.count(true), _bool(not passed), "passed" if bool(loss_result.get("restart", false)) else "failed"
 	])
 	if passed:
-		print("[OBJECTIVE] status=passed template=action_rpg reason=none collected=14 total=14 remaining=0 frames=14")
+		print("[OBJECTIVE] status=passed template=action_rpg reason=none collected=15 total=15 remaining=0 frames=15")
 	else:
 		_fail("system_contract_failed", flags)
 	get_tree().quit()
 
 func _fail(reason: String, flags: Array) -> void:
 	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=%d max_stall_frames=1 stuck=true restart=failed deaths=1" % flags.count(true))
-	print("[OBJECTIVE] status=failed template=action_rpg reason=%s collected=%d total=14 remaining=%d frames=14" % [reason, flags.count(true), 14 - flags.count(true)])
+	print("[OBJECTIVE] status=failed template=action_rpg reason=%s collected=%d total=15 remaining=%d frames=15" % [reason, flags.count(true), 15 - flags.count(true)])
 	get_tree().quit()
 """
 
@@ -2659,7 +2660,7 @@ func _fail(reason: String) -> void:
 
 ACTION_RPG_PLAYTHROUGH_GD = """extends Node
 
-const FRAME_LIMIT := 6000
+const FRAME_LIMIT := 9000
 const MAX_DEATHS := 3
 var _active := false
 var _frame := 0
@@ -2679,6 +2680,8 @@ var _quest := false
 var _checkpoint := false
 var _dash := false
 var _boss_phase := false
+var _branch := false
+var _shortcut := false
 var _visited := {}
 
 func _ready() -> void:
@@ -2714,11 +2717,15 @@ func _physics_process(_delta: float) -> void:
 	_dash = _dash or player_velocity.length() > float(player.get("move_speed")) * 1.5
 	var room := int(level.get("room_index"))
 	_visited[room] = true
+	_branch = _branch or room == 2
+	var used_shortcuts := level.get("used_shortcuts") as Array
+	_shortcut = _shortcut or "relic_return_shortcut" in used_shortcuts
 	var checkpoint_data := level.get("checkpoint_data") as Dictionary
 	_checkpoint = _checkpoint or (not checkpoint_data.is_empty() and int(checkpoint_data.get("room_index", -1)) >= 1)
 	var collected := level.get("collected_pickups") as Array
 	_pickup = _pickup or (
-		"entry_sparks" in collected and "vault_sparks" in collected and "ember_charm" in collected
+		"entry_sparks" in collected and "vault_sparks" in collected
+		and "ember_charm" in collected and "optional_relic_branch" in collected
 	)
 	_dialogue = _dialogue or bool(level.get("dialogue_open"))
 	_quest = _quest or str(level.get("quest_stage")) in ["forge_open", "complete"]
@@ -2765,9 +2772,26 @@ func _physics_process(_delta: float) -> void:
 				_navigate(player, _pickup_target(level, "vault_sparks", Vector2(500, 330)))
 		"vault_charm":
 			if "ember_charm" in collected:
-				_stage = "inventory_open"
+				_stage = "enter_branch"
 			else:
 				_navigate(player, _pickup_target(level, "ember_charm", Vector2(600, 180)))
+		"enter_branch":
+			if room == 2:
+				_branch = true
+				_stage = "branch_relic"
+			else:
+				_navigate(player, Vector2(512, 112))
+		"branch_relic":
+			if "optional_relic_branch" in collected:
+				_stage = "take_shortcut"
+			else:
+				_navigate(player, _pickup_target(level, "optional_relic_branch", Vector2(760, 430)))
+		"take_shortcut":
+			if room == 3:
+				_shortcut = true
+				_stage = "inventory_open"
+			else:
+				_navigate(player, Vector2(990, 320))
 		"inventory_open":
 			_release_movement()
 			if bool(level.get("inventory_open")):
@@ -2889,7 +2913,7 @@ func _pickup_target(level: Node, pickup_id: String, fallback: Vector2) -> Vector
 func _navigate(player: Node2D, target: Vector2) -> void:
 	var waypoint := _navigation_waypoint(player, target)
 	var delta := waypoint - player.global_position
-	if delta.length() <= 18.0:
+	if delta.length() <= 7.0:
 		delta = target - player.global_position
 		if delta.length() <= 18.0:
 			_release_movement()
@@ -2933,7 +2957,10 @@ func _navigation_waypoint(player: Node2D, target: Vector2) -> Vector2:
 		if center_value.size() < 2 or size_value.size() < 2:
 			continue
 		var center := Vector2(float(center_value[0]), float(center_value[1]))
-		var half_size := Vector2(float(size_value[0]), float(size_value[1])) * 0.5 + Vector2(24, 24)
+		# Keep the route one full control step beyond the player's collision
+		# capsule. A 24 px margin could choose a cell that was mathematically
+		# open but left the live body touching a bevel and unable to turn.
+		var half_size := Vector2(float(size_value[0]), float(size_value[1])) * 0.5 + Vector2(38, 38)
 		for x in range(grid.region.position.x, grid.region.end.x):
 			for y in range(grid.region.position.y, grid.region.end.y):
 				var cell_center := Vector2(x * 32, y * 32)
@@ -2993,12 +3020,12 @@ func _metrics(status: String, reason: String) -> void:
 	var rooms_total := 0
 	if not levels.is_empty():
 		rooms_total = _last_room(levels[0]) + 1
-	var rooms := rooms_total >= 4 and _visited.size() >= rooms_total
+	var rooms := rooms_total >= 5 and _visited.size() >= rooms_total
 	var won := status == "passed"
-	print("[ACTION_RPG_PLAYTHROUGH] status=%s movement=%s melee=%s pickup=%s inventory=%s dialogue=%s quest=%s rooms=%s rooms_visited=%d rooms_total=%d checkpoint=%s dash=%s boss_phase=%s win=%s frames=%d attacks=%d interactions=%d deaths=%d reason=%s" % [
+	print("[ACTION_RPG_PLAYTHROUGH] status=%s movement=%s melee=%s pickup=%s inventory=%s dialogue=%s quest=%s rooms=%s rooms_visited=%d rooms_total=%d branch=%s shortcut=%s checkpoint=%s dash=%s boss_phase=%s win=%s frames=%d attacks=%d interactions=%d deaths=%d reason=%s" % [
 		status, str(_movement).to_lower(), str(_melee).to_lower(), str(_pickup).to_lower(),
 		str(_inventory).to_lower(), str(_dialogue).to_lower(), str(_quest).to_lower(),
-		str(rooms).to_lower(), _visited.size(), rooms_total, str(_checkpoint).to_lower(), str(_dash).to_lower(),
+		str(rooms).to_lower(), _visited.size(), rooms_total, str(_branch).to_lower(), str(_shortcut).to_lower(), str(_checkpoint).to_lower(), str(_dash).to_lower(),
 		str(_boss_phase).to_lower(), str(won).to_lower(), _frame, _attacks,
 		_interactions, _deaths, reason
 	])
@@ -3010,7 +3037,8 @@ func _pass() -> void:
 	var checks := {
 		"movement": _movement, "melee": _melee, "pickup": _pickup,
 		"inventory": _inventory, "dialogue": _dialogue, "quest": _quest,
-		"rooms": rooms_total >= 4 and _visited.size() >= rooms_total, "checkpoint": _checkpoint,
+		"rooms": rooms_total >= 5 and _visited.size() >= rooms_total,
+		"branch": _branch, "shortcut": _shortcut, "checkpoint": _checkpoint,
 		"dash": _dash, "boss_phase": _boss_phase
 	}
 	for key in checks:

@@ -594,7 +594,7 @@ def validate_action_rpg_plan(plan: dict) -> list[str]:
             errors.append("action RPG v4 requires the encounter progression compiler")
         world = plan.get("world_graph") or {}
         edges = world.get("edges") or []
-        if len(edges) != max(0, len(rooms) - 1):
+        if int(plan.get("schema_version") or 0) < 5 and len(edges) != max(0, len(rooms) - 1):
             errors.append("world graph must connect every authored room")
         search = plan.get("experience_search") or {}
         personas = search.get("personas") or {}
@@ -620,8 +620,95 @@ def validate_action_rpg_plan(plan: dict) -> list[str]:
         boss_data = (rooms[-1].get("boss") if rooms else {}) or {}
         if boss_data.get("name") != narrative.get("boss_name"):
             errors.append("boss identity must match the narrative contract")
-        if (plan.get("compiler") or {}).get("version") != 2:
+        if int(plan.get("schema_version") or 0) == 4 and (plan.get("compiler") or {}).get("version") != 2:
             errors.append("action RPG narrative ContentIR requires compiler version 2")
+    if int(plan.get("schema_version") or 0) >= 5:
+        if len(rooms) < 5:
+            errors.append("action RPG v5 nonlinear worlds require at least five rooms")
+        if (plan.get("compiler") or {}).get("version") != 3:
+            errors.append("action RPG nonlinear ContentIR requires compiler version 3")
+        world = plan.get("world_graph") or {}
+        room_ids = [str(room.get("id") or "") for room in rooms]
+        room_id_set = set(room_ids)
+        if "" in room_id_set or len(room_id_set) != len(room_ids):
+            errors.append("nonlinear world rooms require unique non-empty ids")
+        if int(world.get("version") or 0) != 2:
+            errors.append("nonlinear world graph requires version 2")
+        start = str(world.get("start") or "")
+        boss = str(world.get("boss") or "")
+        if start not in room_id_set or boss not in room_id_set:
+            errors.append("world graph start and boss must reference authored rooms")
+        edges = world.get("edges") or []
+        directions = {"north", "south", "east", "west"}
+        exits: dict[str, dict[str, str]] = {room_id: {} for room_id in room_ids}
+        adjacency: dict[str, set[str]] = {room_id: set() for room_id in room_ids}
+        valid_edges = True
+        for edge in edges:
+            source = str(edge.get("from") or "")
+            target = str(edge.get("to") or "")
+            direction = str(edge.get("direction") or "")
+            return_direction = str(edge.get("return_direction") or "")
+            if (
+                source not in room_id_set or target not in room_id_set or source == target
+                or direction not in directions
+                or (return_direction and return_direction not in directions)
+            ):
+                valid_edges = False
+                continue
+            if direction in exits[source] or (return_direction and return_direction in exits[target]):
+                valid_edges = False
+                continue
+            exits[source][direction] = target
+            adjacency[source].add(target)
+            if return_direction:
+                exits[target][return_direction] = source
+                adjacency[target].add(source)
+        if not valid_edges:
+            errors.append("world graph exits require valid unique directional connections")
+
+        reachable: set[str] = set()
+        pending = [start]
+        while pending:
+            current = pending.pop()
+            if current in reachable or current not in adjacency:
+                continue
+            reachable.add(current)
+            pending.extend(adjacency[current] - reachable)
+        if reachable != room_id_set:
+            errors.append("every authored room must be reachable through world graph exits")
+
+        main_route = [str(room_id) for room_id in (world.get("main_route") or [])]
+        optional_rooms = {str(room_id) for room_id in (world.get("optional_rooms") or [])}
+        if not main_route or main_route[0] != start or main_route[-1] != boss:
+            errors.append("main route must connect the declared start to the boss")
+        elif any(room_id not in room_id_set for room_id in main_route):
+            errors.append("main route references an unknown room")
+        else:
+            for source, target in zip(main_route, main_route[1:]):
+                if target not in adjacency.get(source, set()):
+                    errors.append("main route contains a disconnected step")
+                    break
+        if not optional_rooms or not optional_rooms.issubset(room_id_set - set(main_route)):
+            errors.append("world graph requires an optional room outside the main route")
+        optional_room_data = [room for room in rooms if str(room.get("id")) in optional_rooms]
+        if not any(
+            room.get("optional_discovery")
+            and any(pickup.get("kind") == "item" for pickup in (room.get("pickups") or []))
+            for room in optional_room_data
+        ):
+            errors.append("optional world branch must contain a discoverable item reward")
+        kinds = {str(edge.get("kind") or "") for edge in edges}
+        if "optional_branch" not in kinds or "shortcut" not in kinds:
+            errors.append("world graph requires an optional branch and a return shortcut")
+        if not any(len(room_exits) >= 3 for room_exits in exits.values()):
+            errors.append("nonlinear world requires a junction with at least three exits")
+        gated_edges = [edge for edge in edges if edge.get("kind") == "gated"]
+        if not any(
+            str(edge.get("to") or "") == boss
+            and edge.get("requires_quest_stage") == "forge_open"
+            for edge in gated_edges
+        ):
+            errors.append("boss route must be gated by forge_open")
     return errors
 
 
@@ -665,7 +752,7 @@ def build_action_rpg_adapter(
     if errors:
         raise ValueError("invalid action-RPG plan: " + "; ".join(errors))
     definition = {
-        "pack_version": 5,
+        "pack_version": 6,
         "title": str(design_doc.get("title") or "Action RPG"),
         "level_name": str(level.get("name") or f"Level {level_index + 1}"),
         "level_index": level_index,

@@ -129,7 +129,7 @@ Generated sprites are single still images — there is no sprite sheet anywhere 
 
 The Game Designer picks whichever of these best fits the one-line idea, instead of defaulting to "collect":
 
-`collect` · `survive_hazards` · `ordered_switches` · `depletion` · `herd_to_goal` · `capture_zones` · `survive_and_deplete` (escalating drain + finite-fuel refill zones + roaming hazards) · `maze_chase` (walled corridors via axis-separated collision, pickups, a patrolling hazard) · `dot_maze` (a dense corridor maze, dots, patrollers, a hunter and power reversal) · `run_and_gun` (side-view running/jumping, projectiles, patrol/chase enemies, checkpoint respawn and a multi-phase boss) · `action_rpg` (top-down exploration, frontal melee, inventory, NPC dialogue, a persistent quest, a compiled 4–6-room journey, checkpoint saving and a two-phase boss)
+`collect` · `survive_hazards` · `ordered_switches` · `depletion` · `herd_to_goal` · `capture_zones` · `survive_and_deplete` (escalating drain + finite-fuel refill zones + roaming hazards) · `maze_chase` (walled corridors via axis-separated collision, pickups, a patrolling hazard) · `dot_maze` (a dense corridor maze, dots, patrollers, a hunter and power reversal) · `run_and_gun` (side-view running/jumping, projectiles, patrol/chase enemies, checkpoint respawn and a multi-phase boss) · `action_rpg` (top-down exploration, frontal melee, inventory, NPC dialogue, a persistent quest, a compiled nonlinear 5–6-room world, checkpoint saving and a two-phase boss)
 
 The nine classic templates each have a worked few-shot example in `coder.py`, since showing a local model a complete example of the structure it's asked to produce remains its biggest reliability lever. The dedicated examples expose the stable mechanic state required by autonomous QA, including switch sequence, territory ownership, and permanent creature settlement. `dot_maze`'s few-shot is the largest (244 lines) and routes to a bigger model via `TEMPLATE_MODEL_OVERRIDES` - the 14B reliably dropped variable declarations at that length. `run_and_gun` and `action_rpg` deliberately bypass that monolithic path and scaffold the packs below.
 
@@ -157,9 +157,9 @@ The deterministic blueprint exposes the runtime capabilities as separate,
 dependency-ordered systems. QA calls a stable pack interface and refuses to
 ship unless all seven core transitions, the encounter-structure contract, ten
 combat-depth assertions and seven progression/persistence assertions pass.
-`action_rpg` is the second capability family. Pack v5 lives under
+`action_rpg` is the second capability family. Pack v6 lives under
 `src/saga/archetype_packs/action_rpg/` and compiles a brief into a validated,
-reproducible 4–6-room adventure. Candidate Studio searches 24 world and encounter
+reproducible 5–6-room adventure. Candidate Studio searches 24 world and encounter
 plans, runs four persona critics, applies only bounded data edits, and records the
 selected signature, repair ledger, and pacing telemetry. Stable modules own four-direction movement
 and collision, Z-key frontal melee, patrol/chase/attack/stagger enemy states,
@@ -174,13 +174,18 @@ Pack v5 adds a Narrative Content Compiler: each design's quest title, currency,
 quest giver, enemy faction, relic, ability, six-room name bank, dialogue, objectives, boss and
 ending become validated ContentIR consumed verbatim by the stable runtime. Older
 reviewed designs are upgraded from their title, key item and named actor assets;
-they never fall back to the old Ember Hermit shell. QA refuses to ship until
-fourteen named RPG transitions pass: narrative fidelity, movement, melee,
+they never fall back to the old Ember Hermit shell. Pack v6 compiles directional
+exits, a three-way junction, an optional relic room, a return shortcut, and a
+quest-gated boss route. Runtime travel consumes this graph directly and persists
+discovered rooms and shortcut use; room-array order no longer controls travel.
+QA refuses to ship until fifteen named RPG transitions pass: world-graph
+traversal, narrative fidelity, movement, melee,
 enemy state, pickup, inventory, dialogue, quest, room transition, save/reload,
 loss, clean restart, boss phase and final win. Production builds also require an
 authored hero and background and treat placeholder or perspective-mismatched art
 as a ship-gate failure. A second, independent Action-RPG playthrough must then
-finish the adventure using only the public movement, attack, interact, inventory,
+visit every room, collect the optional relic, take the shortcut, and finish the
+adventure using only the public movement, attack, interact, inventory,
 dash and restart input actions. It may observe runtime state, but cannot invoke
 the pack's `qa_*` shortcuts. Its per-system results, frame count, attack and
 interaction counts, and death count are retained under `input_playthrough` in

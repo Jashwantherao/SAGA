@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "action_rpg",
-  "version": 5,
+  "version": 6,
   "mechanic_template": "action_rpg",
   "capabilities": [
     "top_down_four_direction_movement",
@@ -19,6 +19,9 @@
     "four_persona_experience_critics",
     "bounded_content_repair",
     "compiled_narrative_identity",
+    "directional_nonlinear_world_graph",
+    "optional_branch_and_return_shortcut",
+    "persistent_room_discovery",
     "versioned_checkpoint_save",
     "two_phase_boss",
     "action_rpg_hud",
@@ -153,7 +156,7 @@
       "consumes": ["player.moved", "quest.advanced"],
       "state_owners": ["world.action_rpg"],
       "runtime_files": ["action_rpg_level.gd"],
-      "required_probes": ["objective.room_transition_verified", "input.rooms_verified"]
+      "required_probes": ["objective.room_transition_verified", "objective.world_graph_verified", "input.rooms_verified", "input.branch_verified", "input.shortcut_verified"]
     },
     {
       "id": "persistence.action_rpg",

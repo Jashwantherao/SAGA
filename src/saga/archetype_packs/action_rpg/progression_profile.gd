@@ -36,7 +36,9 @@ func defaults() -> Dictionary:
 		"dash_unlocked": false,
 		"boss_defeated": false,
 		"collected_pickups": [],
-		"cleared_enemies": []
+		"cleared_enemies": [],
+		"discovered_rooms": [],
+		"used_shortcuts": []
 	}
 
 func reset() -> void:

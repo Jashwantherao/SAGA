@@ -177,6 +177,14 @@ export type ContentPlan = {
   seed?: string
   compiler?: { id?: string; version?: number; candidate_index?: number }
   rooms?: { id?: string; name?: string; beat?: string; optional_discovery?: boolean }[]
+  world_graph?: {
+    version?: number
+    start?: string
+    boss?: string
+    main_route?: string[]
+    optional_rooms?: string[]
+    edges?: { id?: string; from?: string; to?: string; direction?: string; return_direction?: string; kind?: string }[]
+  }
   narrative?: {
     contract_version?: number
     quest_title?: string

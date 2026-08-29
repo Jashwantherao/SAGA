@@ -104,18 +104,20 @@ def test_action_rpg_pack_manifest_and_plan_are_versioned_and_complete():
     plan = build_action_rpg_plan(_design(), 0)
 
     assert pack_for_template("action_rpg") == pack
-    assert pack.version == 5
+    assert pack.version == 6
     assert pack.mechanic_template == "action_rpg"
     assert "variable_world_persistence" in pack.capabilities
     assert "four_persona_experience_critics" in pack.capabilities
     assert "bounded_content_repair" in pack.capabilities
     assert "compiled_narrative_identity" in pack.capabilities
+    assert "directional_nonlinear_world_graph" in pack.capabilities
+    assert "optional_branch_and_return_shortcut" in pack.capabilities
     assert "versioned_checkpoint_save" in pack.capabilities
     assert "two_phase_boss" in pack.capabilities
     assert "progression_profile.gd" in pack.required_files
     assert "action_rpg_level.gd" in pack.required_files
     assert validate_action_rpg_plan(plan) == []
-    assert 4 <= len(plan["rooms"]) <= 6
+    assert 5 <= len(plan["rooms"]) <= 6
     assert plan["rooms"][0]["id"] == "hermit_court"
     assert plan["rooms"][1]["id"] == "rust_vault"
     assert plan["rooms"][-1]["id"] == "heart_forge"
@@ -126,9 +128,16 @@ def test_action_rpg_pack_manifest_and_plan_are_versioned_and_complete():
         if pickup["kind"] == "sparks"
     ) == 10
     assert plan["rooms"][-1]["boss"]["phases"] == 2
-    assert plan["schema_version"] == 4
+    assert plan["schema_version"] == 5
     assert plan["compiler"]["id"] == "encounter_progression"
-    assert plan["compiler"]["version"] == 2
+    assert plan["compiler"]["version"] == 3
+    assert plan["world_graph"]["version"] == 2
+    assert plan["world_graph"]["main_route"][0] == "hermit_court"
+    assert plan["world_graph"]["main_route"][-1] == "heart_forge"
+    assert plan["world_graph"]["optional_rooms"] == ["relic_branch"]
+    assert {edge["kind"] for edge in plan["world_graph"]["edges"]} >= {
+        "main_route", "optional_branch", "shortcut", "gated"
+    }
     assert plan["narrative"]["quest_giver_name"] == "Ember Hermit"
     assert plan["rooms"][0]["name"] == "Ashen Threshold"
     assert plan["rooms"][-1]["name"] == "The Last Hearth"
@@ -154,7 +163,7 @@ def test_action_rpg_pack_manifest_and_plan_are_versioned_and_complete():
     )
 
 
-def test_action_rpg_v5_runtime_contains_production_feedback_and_identity_contracts():
+def test_action_rpg_v6_runtime_contains_production_feedback_and_identity_contracts():
     root = load_pack("action_rpg").root
     level = (root / "action_rpg_level.gd").read_text(encoding="utf-8")
     player = (root / "player_controller.gd").read_text(encoding="utf-8")
@@ -170,6 +179,8 @@ def test_action_rpg_v5_runtime_contains_production_feedback_and_identity_contrac
     assert 'state = "attack_telegraph"' in enemy
     assert "windup_left" in enemy
     assert "qa_verify_narrative_identity" in level
+    assert "qa_verify_world_graph" in level
+    assert 'transition_exit("north")' in level
     assert '"Ember Hermit"' not in level
     assert '"Hermit\'s Court"' not in level
 
@@ -236,6 +247,46 @@ def test_action_rpg_validator_rejects_narrative_identity_drift():
     assert "boss identity must match the narrative contract" in errors
 
 
+def test_action_rpg_validator_rejects_decorative_or_broken_world_graphs():
+    plan = build_action_rpg_plan(_design(), 0)
+    shortcut = next(
+        edge for edge in plan["world_graph"]["edges"] if edge["kind"] == "shortcut"
+    )
+    shortcut["direction"] = "south"  # clashes with the branch room's return exit
+    plan["world_graph"]["optional_rooms"] = []
+
+    errors = validate_action_rpg_plan(plan)
+
+    assert "world graph exits require valid unique directional connections" in errors
+    assert "world graph requires an optional room outside the main route" in errors
+
+
+def test_action_rpg_graph_compiles_a_branch_shortcut_and_gated_boss_route():
+    plan = build_action_rpg_plan(_design(), 0)
+    edges = plan["world_graph"]["edges"]
+
+    assert any(
+        edge["from"] == "rust_vault"
+        and edge["to"] == "relic_branch"
+        and edge["direction"] == "north"
+        and edge["return_direction"] == "south"
+        for edge in edges
+    )
+    assert any(
+        edge["from"] == "relic_branch"
+        and edge["kind"] == "shortcut"
+        and edge["direction"] == "east"
+        for edge in edges
+    )
+    assert any(
+        edge["to"] == "heart_forge"
+        and edge["requires_quest_stage"] == "forge_open"
+        for edge in edges
+    )
+    telemetry = plan["experience_search"]["telemetry"]
+    assert telemetry["optional_rooms"] == telemetry["shortcut_edges"] == 1
+
+
 def test_action_rpg_qa_save_is_isolated_from_the_player_profile():
     profile = (
         load_pack("action_rpg").root / "progression_profile.gd"
@@ -280,7 +331,7 @@ def test_action_rpg_adapter_is_compact_versioned_and_uses_authored_assets():
     assert "extra_rust_stalker.png" in script
     assert "extra_ember_hermit.png" in script
     assert "extra_forge_warden.png" in script
-    assert '\\"pack_version\\": 5' in script
+    assert '\\"pack_version\\": 6' in script
     assert '\\"room_plan\\"' in script
     assert [
         description
@@ -337,7 +388,7 @@ def test_coder_scaffolds_action_rpg_without_model_call(tmp_path, monkeypatch):
         }
     )
 
-    assert result["coder_model"] == "archetype/action_rpg@5"
+    assert result["coder_model"] == "archetype/action_rpg@6"
     assert result["content_plan"]["experience_search"]["personas"]["explorer"]["passed"] is True
     assert (project / "Level_0.gd").is_file()
     assert (project / "archetypes" / "action_rpg" / "boss.gd").is_file()
@@ -363,6 +414,7 @@ def test_action_rpg_input_playthrough_parser_requires_every_observed_system(monk
         "[ACTION_RPG_PLAYTHROUGH] status=passed movement=true melee=true "
         "pickup=true inventory=true dialogue=true quest=true rooms=true "
         "rooms_visited=5 rooms_total=5 "
+        "branch=true shortcut=true "
         "checkpoint=true dash=true boss_phase=true win=true frames=2400 "
         "attacks=30 interactions=2 deaths=1 reason=none"
     )
@@ -382,6 +434,8 @@ def test_action_rpg_input_playthrough_parser_requires_every_observed_system(monk
     assert result["normal_input_only"] is True
     assert result["boss_phase_verified"] is True
     assert result["rooms_visited"] == result["rooms_total"] == 5
+    assert result["branch_verified"] is True
+    assert result["shortcut_verified"] is True
     assert result["deaths"] == 1
 
 
@@ -390,6 +444,7 @@ def test_action_rpg_input_playthrough_parser_rejects_missing_transition(monkeypa
         "[ACTION_RPG_PLAYTHROUGH] status=failed movement=true melee=true "
         "pickup=true inventory=true dialogue=true quest=true rooms=true "
         "rooms_visited=4 rooms_total=5 "
+        "branch=true shortcut=false "
         "checkpoint=true dash=false boss_phase=false win=false frames=12000 "
         "attacks=20 interactions=2 deaths=3 reason=timeout_boss"
     )
@@ -412,9 +467,9 @@ def test_action_rpg_input_playthrough_parser_rejects_missing_transition(monkeypa
 def test_action_rpg_qa_parser_requires_every_system_transition(monkeypatch):
     output = "\n".join(
         [
-            "[ACTION_RPG_METRICS] movement=true melee=true enemy_state=true pickup=true inventory=true dialogue=true quest=true room=true save=true loss=true restart=true boss_phase=true win=true narrative=true",
-            "[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=14 max_stall_frames=1 stuck=false restart=passed deaths=1",
-            "[OBJECTIVE] status=passed template=action_rpg reason=none collected=14 total=14 remaining=0 frames=14",
+            "[ACTION_RPG_METRICS] movement=true melee=true enemy_state=true pickup=true inventory=true dialogue=true quest=true room=true world_graph=true save=true loss=true restart=true boss_phase=true win=true narrative=true",
+            "[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=15 max_stall_frames=1 stuck=false restart=passed deaths=1",
+            "[OBJECTIVE] status=passed template=action_rpg reason=none collected=15 total=15 remaining=0 frames=15",
         ]
     )
     monkeypatch.setattr(
@@ -435,6 +490,7 @@ def test_action_rpg_qa_parser_requires_every_system_transition(monkeypatch):
     assert result["boss_phases_verified"] is True
     assert result["boss_win_verified"] is True
     assert result["narrative_fidelity_verified"] is True
+    assert result["world_graph_verified"] is True
 
 
 def test_action_rpg_art_contract_is_top_down_and_actor_free():
@@ -474,7 +530,9 @@ def test_action_rpg_room_transitions_are_reachable_before_boundary_collisions():
     assert "player.position.x >= 970.0" in source
     assert "player.position.x <= 54.0" in source
     assert "room_index == _last_room_index() and is_instance_valid(boss)" in source
-    assert "target >= _room_count()" in source
+    assert 'transition_exit("north")' in source
+    assert 'transition_exit("south")' in source
+    assert 'var exit := _exit_for(_room_id(), direction)' in source
 
 
 def test_action_rpg_production_gate_requires_authored_role_art(tmp_path):

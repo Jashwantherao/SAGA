@@ -18,6 +18,8 @@ var forge_door_open := false
 var checkpoint_data: Dictionary = {}
 var cleared_enemies: Array = []
 var collected_pickups: Array = []
+var discovered_rooms: Array = []
+var used_shortcuts: Array = []
 var _definition: Dictionary
 var _x_latched := false
 var _c_latched := false
@@ -88,7 +90,7 @@ func _process(_delta: float) -> void:
 		# boundary wall. The old 985/39 thresholds sat beyond the physical travel
 		# limit, leaving players walking forever against the edge.
 		if player.position.x >= 970.0:
-			transition_room(1)
+			transition_exit("east")
 		elif player.position.x <= 54.0:
 			if room_index == _last_room_index() and is_instance_valid(boss):
 				# The forge is a committed boss arena. Letting the west edge
@@ -96,7 +98,11 @@ func _process(_delta: float) -> void:
 				# the quest in an unwinnable state.
 				player.position.x = 60.0
 			else:
-				transition_room(-1)
+				transition_exit("west")
+		elif player.position.y <= 122.0:
+			transition_exit("north")
+		elif player.position.y >= 514.0:
+			transition_exit("south")
 	_update_hud()
 
 func _ensure_input_actions() -> void:
@@ -119,6 +125,37 @@ func _asset(name: String) -> String:
 
 func _rooms() -> Array:
 	return ((_definition.get("room_plan", {}) as Dictionary).get("rooms", []) as Array)
+
+func _world_graph() -> Dictionary:
+	return ((_definition.get("room_plan", {}) as Dictionary).get("world_graph", {}) as Dictionary)
+
+func _room_id(index: int = room_index) -> String:
+	var rooms := _rooms()
+	if index < 0 or index >= rooms.size():
+		return ""
+	return str((rooms[index] as Dictionary).get("id", ""))
+
+func _room_index_for_id(room_id: String) -> int:
+	for index in range(_rooms().size()):
+		if _room_id(index) == room_id:
+			return index
+	return -1
+
+func _exit_for(room_id: String, direction: String) -> Dictionary:
+	for edge_value in (_world_graph().get("edges", []) as Array):
+		var edge := edge_value as Dictionary
+		if str(edge.get("from", "")) == room_id and str(edge.get("direction", "")) == direction:
+			return {
+				"edge_id": str(edge.get("id", "")), "target": str(edge.get("to", "")),
+				"kind": str(edge.get("kind", "main_route")),
+				"requires_quest_stage": str(edge.get("requires_quest_stage", ""))
+			}
+		if str(edge.get("to", "")) == room_id and str(edge.get("return_direction", "")) == direction:
+			return {
+				"edge_id": str(edge.get("id", "")), "target": str(edge.get("from", "")),
+				"kind": str(edge.get("kind", "main_route")), "requires_quest_stage": ""
+			}
+	return {}
 
 func _narrative() -> Dictionary:
 	return ((_definition.get("room_plan", {}) as Dictionary).get("narrative", {}) as Dictionary)
@@ -329,6 +366,8 @@ func _restore_or_begin() -> void:
 	player.dash_unlocked = dash_unlocked
 	cleared_enemies = (profile.get("cleared_enemies", []) as Array).duplicate()
 	collected_pickups = (profile.get("collected_pickups", []) as Array).duplicate()
+	discovered_rooms = (profile.get("discovered_rooms", []) as Array).duplicate()
+	used_shortcuts = (profile.get("used_shortcuts", []) as Array).duplicate()
 	var saved_position := profile.get("hero_position", [150.0, 320.0]) as Array
 	if saved_position.size() >= 2:
 		player.position = Vector2(float(saved_position[0]), float(saved_position[1]))
@@ -347,6 +386,9 @@ func _clear_room_entities() -> void:
 func _load_room(index: int) -> void:
 	_clear_room_entities()
 	room_index = clampi(index, 0, _last_room_index())
+	var current_room_id := _room_id()
+	if current_room_id != "" and current_room_id not in discovered_rooms:
+		discovered_rooms.append(current_room_id)
 	var palette := [Color("172a35"), Color("2b2436"), Color("20352f"), Color("272642"), Color("34301f"), Color("351f22")]
 	RenderingServer.set_default_clear_color(palette[room_index % palette.size()])
 	_build_room_decor()
@@ -620,21 +662,46 @@ func toggle_inventory() -> bool:
 	return inventory_open
 
 func transition_room(direction: int) -> bool:
-	var target := room_index + direction
-	if target < 0 or target >= _room_count():
-		player.position.x = clampf(player.position.x, 40.0, 984.0)
+	# Compatibility surface for older probes and saves. Array order no longer
+	# controls the world; positive and negative mean east and west exits.
+	return transition_exit("east" if direction > 0 else "west")
+
+func transition_exit(direction: String) -> bool:
+	var exit := _exit_for(_room_id(), direction)
+	if exit.is_empty():
+		_clamp_to_playfield()
 		return false
-	if target == _last_room_index() and quest_stage not in ["forge_open", "complete"]:
-		player.position.x = 960.0
+	var required_stage := str(exit.get("requires_quest_stage", ""))
+	if required_stage != "" and quest_stage not in [required_stage, "complete"]:
+		_clamp_to_playfield()
 		return false
+	if room_index == _last_room_index() and is_instance_valid(boss):
+		_clamp_to_playfield()
+		return false
+	var target := _room_index_for_id(str(exit.get("target", "")))
+	if target < 0:
+		_clamp_to_playfield()
+		return false
+	if str(exit.get("kind", "")) == "shortcut":
+		var edge_id := str(exit.get("edge_id", ""))
+		if edge_id != "" and edge_id not in used_shortcuts:
+			used_shortcuts.append(edge_id)
 	room_index = target
-	player.position = Vector2(60 if direction > 0 else 964, 320)
+	match direction:
+		"east": player.position = Vector2(60, 320)
+		"west": player.position = Vector2(964, 320)
+		"north": player.position = Vector2(512, 510)
+		"south": player.position = Vector2(512, 126)
 	_load_room(room_index)
 	_room_transition_feedback(direction)
 	checkpoint_room()
 	return true
 
-func _room_transition_feedback(direction: int) -> void:
+func _clamp_to_playfield() -> void:
+	player.position.x = clampf(player.position.x, 54.0, 970.0)
+	player.position.y = clampf(player.position.y, 122.0, 514.0)
+
+func _room_transition_feedback(direction: String) -> void:
 	var layer := CanvasLayer.new()
 	layer.layer = 35
 	var curtain := ColorRect.new()
@@ -644,9 +711,13 @@ func _room_transition_feedback(direction: int) -> void:
 	layer.add_child(curtain)
 	add_child(layer)
 	var tween := create_tween()
-	curtain.position.x = 96.0 * float(direction)
+	var offset: Vector2 = {
+		"east": Vector2(96, 0), "west": Vector2(-96, 0),
+		"north": Vector2(0, -72), "south": Vector2(0, 72)
+	}.get(direction, Vector2.ZERO) as Vector2
+	curtain.position = offset
 	tween.set_parallel(true)
-	tween.tween_property(curtain, "position:x", -96.0 * float(direction), 0.28)
+	tween.tween_property(curtain, "position", -offset, 0.28)
 	tween.tween_property(curtain, "modulate:a", 0.0, 0.28)
 	tween.chain().tween_callback(layer.queue_free)
 
@@ -662,7 +733,9 @@ func _profile_snapshot() -> Dictionary:
 		"dash_unlocked": dash_unlocked,
 		"boss_defeated": quest_stage == "complete",
 		"collected_pickups": collected_pickups.duplicate(),
-		"cleared_enemies": cleared_enemies.duplicate()
+		"cleared_enemies": cleared_enemies.duplicate(),
+		"discovered_rooms": discovered_rooms.duplicate(),
+		"used_shortcuts": used_shortcuts.duplicate()
 	}
 
 func checkpoint_room() -> bool:
@@ -711,7 +784,14 @@ func _update_hud() -> void:
 	var room_name := "ROOM %d" % (room_index + 1)
 	if room_index < rooms.size():
 		room_name = str((rooms[room_index] as Dictionary).get("name", room_name))
-	room_label.text = "%s\n%s" % [room_name.to_upper(), "SHIFT DASH" if dash_unlocked else ""]
+	var exit_labels: Array[String] = []
+	for direction in ["north", "south", "east", "west"]:
+		var exit := _exit_for(_room_id(), direction)
+		if not exit.is_empty():
+			var marker: String = "?" if str(exit.get("kind", "")) == "optional_branch" else direction.left(1).to_upper()
+			exit_labels.append(marker)
+	var discovery := "%d/%d DISCOVERED" % [discovered_rooms.size(), _room_count()]
+	room_label.text = "%s\n%s  %s" % [room_name.to_upper(), discovery, " ".join(exit_labels)]
 	_update_inventory_panel()
 	if state == "over":
 		quest_label.text = "FALLEN — ENTER to restart at checkpoint"
@@ -740,6 +820,8 @@ func qa_reset_for_probe() -> bool:
 	inventory.restore({"sparks": 0, "items": {}})
 	cleared_enemies.clear()
 	collected_pickups.clear()
+	discovered_rooms.clear()
+	used_shortcuts.clear()
 	checkpoint_data.clear()
 	player.dash_unlocked = false
 	player.restore(true)
@@ -845,8 +927,28 @@ func qa_verify_room_persistence() -> bool:
 	_load_room(1)
 	var enemy_stayed_cleared := not enemies.any(func(enemy): return enemy.enemy_id == "foe_1_0")
 	var pickup_stayed_collected := not pickups.any(func(pickup): return pickup.pickup_id == "vault_sparks")
-	var moved := transition_room(1)
-	return moved and room_index == 2 and forge_door_open and enemy_stayed_cleared and pickup_stayed_collected
+	var moved := transition_exit("east")
+	return moved and _room_id() == "journey_3" and forge_door_open and enemy_stayed_cleared and pickup_stayed_collected
+
+func qa_verify_world_graph() -> bool:
+	# Prove the authored junction, optional branch and shortcut are runtime
+	# travel—not metadata—and that discovery survives the route.
+	room_index = 0
+	_load_room(0)
+	var start_id := _room_id()
+	var entered_junction := transition_exit("east") and _room_id() == "rust_vault"
+	var entered_branch := transition_exit("north") and _room_id() == "relic_branch"
+	var took_shortcut := transition_exit("east") and _room_id() == "journey_3"
+	var returned_to_junction := transition_exit("west") and _room_id() == "rust_vault"
+	var returned_to_start := transition_exit("west") and _room_id() == start_id
+	var optional_rooms := _world_graph().get("optional_rooms", []) as Array
+	return (
+		entered_junction and entered_branch and took_shortcut
+		and returned_to_junction and returned_to_start
+		and "relic_branch" in discovered_rooms
+		and "relic_return_shortcut" in used_shortcuts
+		and optional_rooms.has("relic_branch")
+	)
 
 func qa_verify_save_reload() -> bool:
 	inventory.add_item("qa_relic", 1)
@@ -880,6 +982,8 @@ func qa_verify_save_reload() -> bool:
 		"items": items_match,
 		"pickups": loaded.get("collected_pickups", []) == expected.get("collected_pickups", []),
 		"enemies": loaded.get("cleared_enemies", []) == expected.get("cleared_enemies", []),
+		"discovery": loaded.get("discovered_rooms", []) == expected.get("discovered_rooms", []),
+		"shortcuts": loaded.get("used_shortcuts", []) == expected.get("used_shortcuts", []),
 		"relic": int((loaded.get("items", {}) as Dictionary).get("qa_relic", 0)) == expected_count
 	}
 	print("[ACTION_RPG_SAVE] " + JSON.stringify(checks))

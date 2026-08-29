@@ -133,6 +133,7 @@ ACTION_RPG_METRICS = re.compile(
     r"\[ACTION_RPG_METRICS\] movement=(true|false) melee=(true|false) "
     r"enemy_state=(true|false) pickup=(true|false) inventory=(true|false) "
     r"dialogue=(true|false) quest=(true|false) room=(true|false) "
+    r"world_graph=(true|false) "
     r"save=(true|false) loss=(true|false) restart=(true|false) "
     r"boss_phase=(true|false) win=(true|false) narrative=(true|false)"
 )
@@ -151,6 +152,7 @@ ACTION_RPG_PLAYTHROUGH = re.compile(
     r"melee=(true|false) pickup=(true|false) inventory=(true|false) "
     r"dialogue=(true|false) quest=(true|false) rooms=(true|false) "
     r"rooms_visited=(\d+) rooms_total=(\d+) "
+    r"branch=(true|false) shortcut=(true|false) "
     r"checkpoint=(true|false) dash=(true|false) boss_phase=(true|false) "
     r"win=(true|false) frames=(\d+) attacks=(\d+) interactions=(\d+) "
     r"deaths=(\d+) reason=([a-z0-9_]+)"
@@ -558,6 +560,7 @@ def _run_objective_probe(
             "dialogue_verified",
             "quest_verified",
             "room_transition_verified",
+            "world_graph_verified",
             "save_reload_verified",
             "lose_verified",
             "clean_restart",
@@ -861,6 +864,7 @@ def _run_objective_probe(
             "dialogue_verified",
             "quest_verified",
             "room_transition_verified",
+            "world_graph_verified",
             "save_reload_verified",
             "lose_verified",
             "clean_restart",
@@ -1032,6 +1036,8 @@ def _run_action_rpg_playthrough(
         rooms,
         rooms_visited,
         rooms_total,
+        branch,
+        shortcut,
         checkpoint,
         dash,
         boss_phase,
@@ -1054,6 +1060,8 @@ def _run_action_rpg_playthrough(
         "rooms_verified": rooms == "true",
         "rooms_visited": int(rooms_visited),
         "rooms_total": int(rooms_total),
+        "branch_verified": branch == "true",
+        "shortcut_verified": shortcut == "true",
         "checkpoint_verified": checkpoint == "true",
         "dash_verified": dash == "true",
         "boss_phase_verified": boss_phase == "true",

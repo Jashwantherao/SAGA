@@ -149,3 +149,19 @@ Godot now performs a fourteenth objective check that compares rendered runtime
 identity with the exact compiled contract. Quality Director exposes a separate
 narrative-fidelity dimension and closes the ship gate if that evidence is absent
 or false. Candidate Studio shows the identity and provenance in the desktop UI.
+
+### Nonlinear world compiler (implemented)
+
+Action-RPG pack v6 replaces the former decorative linear `world_graph` with a
+runtime-owned directional graph. Every selected ContentIR plan contains a
+start-to-boss main route, a three-way junction, an optional relic room, a return
+shortcut, and a quest-gated boss edge. Validation rejects unknown rooms,
+duplicate directions, unreachable authored rooms, disconnected route steps,
+missing branch rewards, absent shortcuts, and an ungated boss.
+
+The stable Godot pack resolves north/south/east/west exits from this graph,
+records room discovery and shortcut use in the checkpoint profile, and exposes
+route hints in the HUD. Deterministic QA proves the graph and persistence; a
+separate normal-input player must physically enter the optional room, collect
+its relic, take the shortcut, visit every room, return the quest, and win the
+boss fight. Candidate Studio surfaces the route, branch, and shortcut evidence.

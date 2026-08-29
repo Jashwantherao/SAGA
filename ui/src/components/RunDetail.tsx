@@ -147,6 +147,7 @@ function CandidateStudioCard({ plan }: { plan: ContentPlan }) {
   const personas = Object.entries(search.personas || {})
   const telemetry = search.telemetry || {}
   const narrative = plan.narrative
+  const world = plan.world_graph
   const clean = personas.length === 4 && personas.every(([, result]) => result.passed)
   const scope = (plan.rooms?.length || 0) > 0
     ? `${plan.rooms!.length} rooms`
@@ -186,8 +187,19 @@ function CandidateStudioCard({ plan }: { plan: ContentPlan }) {
             {(narrative.room_names?.length || 0) > 0 && <small>{narrative.room_names!.join(' → ')}</small>}
           </div>
         )}
+        {world && (world.edges?.length || 0) > 0 && (
+          <div className="design-section">
+            <p className="eyebrow">NONLINEAR WORLD · DIRECTIONAL GRAPH V{world.version || 1}</p>
+            <div className="detail-chips">
+              <span className="chip">{world.main_route?.length || 0} main-route rooms</span>
+              <span className="chip">{world.optional_rooms?.length || 0} optional rooms</span>
+              <span className="chip">{world.edges?.filter((edge) => edge.kind === 'shortcut').length || 0} shortcuts</span>
+            </div>
+            {(world.main_route?.length || 0) > 0 && <small>Main route · {world.main_route!.join(' → ')}</small>}
+          </div>
+        )}
         <div className="metric-chips">
-          {['room_count', 'encounter_count', 'enemy_count', 'optional_discoveries', 'estimated_completion_seconds'].map((name) => (
+          {['room_count', 'encounter_count', 'enemy_count', 'optional_rooms', 'shortcut_edges', 'estimated_completion_seconds'].map((name) => (
             telemetry[name] !== undefined && <span key={name}><small>{name.replaceAll('_', ' ')}</small><b>{telemetry[name]}</b></span>
           ))}
         </div>
