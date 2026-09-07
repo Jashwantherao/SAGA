@@ -371,6 +371,7 @@ func _build_enemies() -> void:
 
 func _build_hud() -> void:
 	var canvas := CanvasLayer.new()
+	canvas.name = "HUD"
 	add_child(canvas)
 	var panel := ColorRect.new()
 	panel.position = Vector2(14, 12)
@@ -378,6 +379,7 @@ func _build_hud() -> void:
 	panel.color = Color(0.02, 0.04, 0.08, 0.84)
 	canvas.add_child(panel)
 	status_label = Label.new()
+	status_label.name = "HUDStatus"
 	status_label.position = Vector2(28, 22)
 	status_label.add_theme_font_size_override("font_size", 16)
 	canvas.add_child(status_label)

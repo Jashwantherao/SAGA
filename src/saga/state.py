@@ -13,6 +13,23 @@ class ExtraSprite(TypedDict):
     description: str  # concrete visual description - drives the 128x128 generation
 
 
+class ActionRpgNarrative(TypedDict):
+    """Player-facing identity compiled into the stable Action-RPG runtime."""
+    quest_title: str
+    currency_name: str
+    quest_giver_name: str
+    boss_name: str
+    enemy_name: str
+    relic_name: str
+    ability_name: str
+    room_names: list[str]
+    dialogue_lines: list[str]
+    collect_objective: str
+    return_objective: str
+    boss_objective: str
+    victory_text: str
+
+
 class Level(TypedDict):
     name: str
     description: str  # drives this level's background generation
@@ -28,7 +45,8 @@ class DesignDoc(TypedDict):
     title: str
     genre: str
     # collect | survive_hazards | ordered_switches | depletion | herd_to_goal
-    # | capture_zones | survive_and_deplete | maze_chase | dot_maze | run_and_gun
+    # | capture_zones | survive_and_deplete | maze_chase | dot_maze
+    # | run_and_gun | action_rpg
     mechanic_template: str
     hero_description: str  # concrete, high-contrast visual description of the hero sprite
     core_mechanics: list[str]
@@ -44,6 +62,9 @@ class DesignDoc(TypedDict):
     # walls, doors. Without these the Coder has only a hero, one icon and a
     # background, so it falls back to untextured ColorRects for anything else.
     extra_sprites: list[ExtraSprite]
+    # Required by the prompt for action_rpg. Older/fixed design documents are
+    # upgraded deterministically by the Narrative Content Compiler.
+    narrative: ActionRpgNarrative
 
 
 class GraphState(TypedDict, total=False):
@@ -64,15 +85,39 @@ class GraphState(TypedDict, total=False):
     blueprint_model: Optional[str]
     blueprint_errors: Optional[list[str]]
     blueprint_build_plan: Optional[list[dict]]
+    # Composition Kernel v1: the validated data-only game contract and the
+    # deterministic, versioned capability assembly resolved from it. These
+    # are fixed before asset/audio work so every downstream agent and QA gate
+    # can agree on exactly what the game contains and what must be proven.
+    game_spec: Optional[dict]
+    game_spec_status: Optional[str]
+    game_spec_errors: Optional[list[str]]
+    assembly_lock: Optional[dict]
+    assembly_hash: Optional[str]
+    # Encounter and Progression Compiler: selected, scored ContentIR for the
+    # current level, including persona evidence and bounded repair provenance.
+    content_plan: Optional[dict]
+    # Art Director v1: a deterministic camera, palette, silhouette, scale and
+    # layer-separation bible shared by image generation and visual QA.
+    art_direction: Optional[dict]
+    art_direction_status: Optional[str]
+    art_direction_errors: Optional[list[str]]
     # Protected incremental builder ledger. "integrated" means the focused
     # candidate passed static contracts plus a Godot startup gate; behavioral
     # confirmation is attached later by the authoritative QA probes.
     system_build_results: list[dict]
     sprite_paths: Optional[list[str]]
+    # Structural image evidence emitted by Asset Maker for dimensions, alpha
+    # cutout separation, occupancy and framing before Godot imports the files.
+    asset_contract_results: Optional[list[dict]]
     bgm_path: Optional[str]
     godot_project_path: Optional[str]
     qa_passed: Optional[bool]
     qa_errors: Optional[list[str]]
+    # A deterministic failure in a locked stable capability is not repairable
+    # through the generic Coder retry loop. QA marks it terminal so the run
+    # stops truthfully after the first authoritative verdict.
+    qa_terminal: bool
     retry_count: int
     # Which of the design doc's levels the Coder<->QA loop is currently
     # building; advanced by the graph's advance_level node after each level
@@ -89,6 +134,9 @@ class GraphState(TypedDict, total=False):
     video_notes: Optional[list[str]]
     # Non-gating findings from the local vision model's screenshot review.
     vision_notes: Optional[list[str]]
+    # True only when the screenshot backend returned the complete structured
+    # verdict required by QA. A screenshot alone is not visual evaluation.
+    vision_evaluated: bool
     # Non-gating findings from the balance check - a level that is winnable but
     # toothless, or a fight that drags. These are tuning notes, not defects, so
     # they feed the playtest loop rather than failing a build; see saga.balance.
@@ -121,7 +169,7 @@ class GraphState(TypedDict, total=False):
     # when the graph advances. Each entry contains every attempt plus the
     # level's final status and artifacts, and is written verbatim to run.json.
     level_results: list[dict]
-    # Quality Director v1: every technically passing level receives a
+    # Quality Director v3: every technically passing level receives a
     # deterministic evidence-based review. Reviews are durable so a polish
     # retry cannot erase the original finding; quality_report is the latest
     # aggregate used by the ship gate and UI.

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import saga.agents.asset_maker as asset_maker_module
 from saga.agents.asset_maker import _asset_requests, _target_names, asset_maker
+from saga.agents.asset_maker import _inspect_asset
 from saga.agents.studio_director import _apply, _sanitize
 
 
@@ -154,3 +155,30 @@ def test_global_art_style_is_not_accepted_as_a_targeted_repair():
     result = _sanitize(decision, {"design_doc": _doc()}, retry_count=1)
 
     assert result["action"] == "fix"
+
+
+def test_asset_contract_inspection_rejects_opaque_or_edge_cropped_actor(tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "hero_sprite.png"
+    Image.new("RGB", (128, 128), (255, 0, 0)).save(path)
+
+    result = _inspect_asset(path, "hero_sprite", 128, 128, True)
+
+    assert result["status"] == "failed"
+    assert any("transparent separation" in error for error in result["errors"])
+    assert any("touches the frame edge" in error for error in result["errors"])
+
+
+def test_asset_contract_inspection_accepts_framed_transparent_actor(tmp_path):
+    from PIL import Image, ImageDraw
+
+    path = tmp_path / "hero_sprite.png"
+    image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+    ImageDraw.Draw(image).ellipse((24, 16, 104, 112), fill=(255, 190, 60, 255))
+    image.save(path)
+
+    result = _inspect_asset(path, "hero_sprite", 128, 128, True)
+
+    assert result["status"] == "passed"
+    assert result["errors"] == []

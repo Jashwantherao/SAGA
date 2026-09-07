@@ -58,9 +58,11 @@ def load_pack(pack_id: str) -> ArchetypePack:
 
 
 def pack_for_template(template: str) -> ArchetypePack | None:
-    if template != "run_and_gun":
-        return None
-    return load_pack("run_and_gun")
+    pack_id = {
+        "run_and_gun": "run_and_gun",
+        "action_rpg": "action_rpg",
+    }.get(template)
+    return load_pack(pack_id) if pack_id else None
 
 
 def scaffold_pack(project_dir: str | Path, template: str) -> ArchetypePack | None:
@@ -176,7 +178,9 @@ def validate_run_and_gun_encounter_plan(plan: dict) -> list[str]:
     return errors
 
 
-def build_run_and_gun_encounter_plan(design_doc: dict, level_index: int) -> dict:
+def _run_and_gun_candidate(
+    design_doc: dict, level_index: int, candidate_index: int
+) -> dict:
     """Create deterministic authored-feeling stage structure from the brief.
 
     The plan is data, not generated GDScript. A stable digest selects one of
@@ -191,6 +195,7 @@ def build_run_and_gun_encounter_plan(design_doc: dict, level_index: int) -> dict
         str(level.get("name") or f"Level {level_index + 1}"),
         str(level.get("description") or ""),
         str(level_index),
+        str(candidate_index),
     ))
     digest = hashlib.sha256(identity.encode("utf-8")).digest()
     layout_id = RUN_AND_GUN_LAYOUTS[digest[0] % len(RUN_AND_GUN_LAYOUTS)]
@@ -336,7 +341,12 @@ def build_run_and_gun_encounter_plan(design_doc: dict, level_index: int) -> dict
     }
 
     plan = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "compiler": {
+            "id": "encounter_progression",
+            "version": 1,
+            "candidate_index": candidate_index,
+        },
         "layout_id": layout_id,
         "seed": digest.hex()[:16],
         "world_width": world_width,
@@ -361,10 +371,103 @@ def build_run_and_gun_encounter_plan(design_doc: dict, level_index: int) -> dict
     return plan
 
 
+def score_run_and_gun_candidate(plan: dict) -> dict:
+    combat = plan.get("combat_plan") or {}
+    waves = combat.get("waves") or []
+    roles = set(combat.get("enemy_roles") or [])
+    checkpoint = float(plan.get("checkpoint_x") or 0.0)
+    boss_start = float((plan.get("boss_arena") or {}).get("start") or 0.0)
+    recovery = [
+        float(item.get("x") or 0.0)
+        for item in plan.get("pickups") or []
+        if item.get("kind") == "health"
+    ]
+    platform_x = sorted(float(item.get("x") or 0.0) for item in plan.get("platforms") or [])
+    gaps = [later - earlier for earlier, later in zip(platform_x, platform_x[1:])]
+    max_gap = max(gaps, default=999.0)
+    hazard_distances = [
+        min(abs(float(item.get("x") or 0.0) - point) for point in (0.0, checkpoint, boss_start))
+        for item in plan.get("hazards") or []
+    ]
+    fair_hazards = all(distance >= 90.0 for distance in hazard_distances)
+    preboss_recovery = any(checkpoint - 180.0 <= point < boss_start for point in recovery)
+    threat_limit = int(combat.get("threat_budget_limit") or 0)
+    threat_spent = int(combat.get("threat_budget_spent") or 0)
+    metrics = {
+        "role_diversity": min(1.0, len(roles) / 4.0),
+        "route_continuity": min(1.0, 280.0 / max(280.0, max_gap)),
+        "hazard_fairness": 1.0 if fair_hazards else 0.0,
+        "survivor_recovery": 1.0 if preboss_recovery else 0.0,
+        "pressure_use": min(1.0, (threat_spent / max(1, threat_limit)) / 0.65),
+        "weapon_expression": min(1.0, len(combat.get("weapon_pickups") or []) / 2.0),
+    }
+    weights = {
+        "role_diversity": 20, "route_continuity": 20, "hazard_fairness": 18,
+        "survivor_recovery": 16, "pressure_use": 14, "weapon_expression": 12,
+    }
+    score = round(sum(metrics[name] * weight for name, weight in weights.items()), 1)
+    personas = {
+        "achiever": {"passed": len(waves) >= 2 and boss_start > checkpoint, "waves": len(waves)},
+        "explorer": {"passed": len(combat.get("weapon_pickups") or []) >= 2, "weapon_caches": len(combat.get("weapon_pickups") or [])},
+        "survivor": {"passed": preboss_recovery and fair_hazards, "preboss_recovery": preboss_recovery},
+        "speedrunner": {"passed": max_gap <= 360.0, "largest_route_gap": round(max_gap, 1)},
+    }
+    return {
+        "score": score,
+        "metrics": metrics,
+        "personas": personas,
+        "telemetry": {
+            "stage_width": plan.get("world_width"),
+            "encounter_count": len(plan.get("enemy_spawns") or []) + len(waves),
+            "enemy_count": len(plan.get("enemy_spawns") or []) + sum(len(wave.get("members") or []) for wave in waves),
+            "optional_discoveries": len(combat.get("weapon_pickups") or []),
+            "largest_route_gap": round(max_gap, 1),
+            "threat_budget_used": threat_spent,
+            "threat_budget_limit": threat_limit,
+        },
+        "passed": score >= 78 and all(item["passed"] for item in personas.values()),
+    }
+
+
+def build_run_and_gun_encounter_plan(
+    design_doc: dict, level_index: int, candidate_count: int = 16
+) -> dict:
+    """Search several safe stage candidates and retain critic provenance."""
+    if candidate_count < 2:
+        raise ValueError("run-and-gun candidate search requires at least two candidates")
+    ranked = []
+    for candidate_index in range(candidate_count):
+        plan = _run_and_gun_candidate(design_doc, level_index, candidate_index)
+        result = score_run_and_gun_candidate(plan)
+        signature = hashlib.sha256(
+            json.dumps(plan, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:16]
+        ranked.append((bool(result["passed"]), float(result["score"]), signature, plan, result))
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    passed, score, signature, selected, result = ranked[0]
+    selected["experience_search"] = {
+        "algorithm_version": 2,
+        "candidates_evaluated": candidate_count,
+        "repairs_evaluated": 0,
+        "selected_candidate": selected["compiler"]["candidate_index"],
+        "selected_after_repair": False,
+        "selected_signature": signature,
+        "score": score,
+        "metrics": result["metrics"],
+        "personas": result["personas"],
+        "telemetry": result["telemetry"],
+        "runner_up_score": ranked[1][1],
+    }
+    if not passed:
+        raise ValueError("no run-and-gun candidate passed the experience floor")
+    return selected
+
+
 def build_run_and_gun_adapter(
     design_doc: dict,
     level_index: int,
     asset_filenames: list[str],
+    plan: dict | None = None,
 ) -> str:
     """Render the tiny game-specific layer consumed by the stable pack."""
     levels = design_doc.get("levels") or [{}]
@@ -381,9 +484,9 @@ def build_run_and_gun_adapter(
     flyer = _asset_with(asset_filenames, "flyer", "flying", "aerial", "drone") or enemy
     boss = _asset_with(asset_filenames, "boss", "commander", "titan") or enemy
     checkpoint = _asset_with(asset_filenames, "key_item", "checkpoint", "beacon")
-    encounter_plan = build_run_and_gun_encounter_plan(design_doc, level_index)
+    encounter_plan = plan or build_run_and_gun_encounter_plan(design_doc, level_index)
     definition = {
-        "pack_version": 6,
+        "pack_version": 7,
         "title": str(design_doc.get("title") or "Run and Gun"),
         "level_name": str(level.get("name") or f"Level {level_index + 1}"),
         "level_index": level_index,
@@ -433,10 +536,265 @@ def scaffold_run_and_gun_level(
     design_doc: dict,
     level_index: int,
     asset_filenames: list[str],
+    plan: dict | None = None,
 ) -> ArchetypePack:
     pack = scaffold_pack(project_dir, "run_and_gun")
     if pack is None:  # pragma: no cover - protected by the fixed template above
         raise ValueError("run_and_gun archetype is unavailable")
-    adapter = build_run_and_gun_adapter(design_doc, level_index, asset_filenames)
+    adapter = build_run_and_gun_adapter(
+        design_doc, level_index, asset_filenames, plan=plan
+    )
+    (Path(project_dir) / f"Level_{level_index}.gd").write_text(adapter, encoding="utf-8")
+    return pack
+
+
+def validate_action_rpg_plan(plan: dict) -> list[str]:
+    """Reject an RPG shell that lacks a complete explore-to-boss loop."""
+    errors: list[str] = []
+    rooms = plan.get("rooms") or []
+    if not 4 <= len(rooms) <= 6:
+        errors.append("action RPG v4 requires four to six connected rooms")
+    if [room.get("index") for room in rooms] != list(range(len(rooms))):
+        errors.append("room indices must be contiguous from zero")
+    total_sparks = sum(
+        int(pickup.get("amount") or 0)
+        for room in rooms
+        for pickup in (room.get("pickups") or [])
+        if pickup.get("kind") == "sparks"
+    )
+    quest_cost = int((plan.get("quest") or {}).get("spark_cost") or 0)
+    if quest_cost < 1 or total_sparks < quest_cost:
+        errors.append("reachable spark pickups must fund the quest")
+    if not any(room.get("npc") for room in rooms):
+        errors.append("at least one room must contain the quest NPC")
+    if not (rooms and rooms[-1].get("boss")):
+        errors.append("the final room must contain the boss")
+    if len(plan.get("quest_stages") or []) < 4:
+        errors.append("quest must expose collect, return, forge-open and complete stages")
+    if int(plan.get("schema_version") or 0) >= 2:
+        from saga.experience import score_action_rpg_candidate
+
+        search = plan.get("experience_search") or {}
+        if int(search.get("candidates_evaluated") or 0) < 2:
+            errors.append("experience search must evaluate multiple candidates")
+        roles = {
+            str(enemy.get("role") or "")
+            for room in rooms
+            for enemy in (room.get("enemies") or [])
+        }
+        if len(roles) < 3:
+            errors.append("action RPG encounters require at least three enemy roles")
+        if len({str(room.get("layout_id") or "") for room in rooms}) < 4:
+            errors.append("action RPG journey requires at least four spatial layouts")
+        if not score_action_rpg_candidate(plan)["passed"]:
+            errors.append("action RPG experience score is below the playable quality floor")
+    if int(plan.get("schema_version") or 0) >= 3:
+        compiler = plan.get("compiler") or {}
+        if compiler.get("id") != "encounter_progression":
+            errors.append("action RPG v4 requires the encounter progression compiler")
+        world = plan.get("world_graph") or {}
+        edges = world.get("edges") or []
+        if int(plan.get("schema_version") or 0) < 5 and len(edges) != max(0, len(rooms) - 1):
+            errors.append("world graph must connect every authored room")
+        search = plan.get("experience_search") or {}
+        personas = search.get("personas") or {}
+        if set(personas) != {"achiever", "explorer", "survivor", "speedrunner"}:
+            errors.append("all four persona critics must report evidence")
+        elif not all(bool(item.get("passed")) for item in personas.values()):
+            errors.append("every persona critic must pass before selection")
+    if int(plan.get("schema_version") or 0) >= 4:
+        narrative = plan.get("narrative") or {}
+        required_narrative = {
+            "quest_title", "currency_name", "quest_giver_name", "boss_name", "enemy_name",
+            "relic_name", "ability_name", "collect_objective", "return_objective",
+            "boss_objective", "victory_text", "source_fingerprint",
+        }
+        if any(not str(narrative.get(field) or "").strip() for field in required_narrative):
+            errors.append("narrative compiler must provide every player-facing identity field")
+        room_names = narrative.get("room_names") or []
+        if len(room_names) != len(rooms) or [room.get("name") for room in rooms] != room_names:
+            errors.append("compiled room names must match the narrative contract")
+        npc_data = next((room.get("npc") for room in rooms if room.get("npc")), {})
+        if not isinstance(npc_data, dict) or npc_data.get("name") != narrative.get("quest_giver_name"):
+            errors.append("quest NPC identity must match the narrative contract")
+        boss_data = (rooms[-1].get("boss") if rooms else {}) or {}
+        if boss_data.get("name") != narrative.get("boss_name"):
+            errors.append("boss identity must match the narrative contract")
+        if int(plan.get("schema_version") or 0) == 4 and (plan.get("compiler") or {}).get("version") != 2:
+            errors.append("action RPG narrative ContentIR requires compiler version 2")
+    if int(plan.get("schema_version") or 0) >= 5:
+        if len(rooms) < 5:
+            errors.append("action RPG v5 nonlinear worlds require at least five rooms")
+        if (plan.get("compiler") or {}).get("version") != 3:
+            errors.append("action RPG nonlinear ContentIR requires compiler version 3")
+        world = plan.get("world_graph") or {}
+        room_ids = [str(room.get("id") or "") for room in rooms]
+        room_id_set = set(room_ids)
+        if "" in room_id_set or len(room_id_set) != len(room_ids):
+            errors.append("nonlinear world rooms require unique non-empty ids")
+        if int(world.get("version") or 0) != 2:
+            errors.append("nonlinear world graph requires version 2")
+        start = str(world.get("start") or "")
+        boss = str(world.get("boss") or "")
+        if start not in room_id_set or boss not in room_id_set:
+            errors.append("world graph start and boss must reference authored rooms")
+        edges = world.get("edges") or []
+        directions = {"north", "south", "east", "west"}
+        exits: dict[str, dict[str, str]] = {room_id: {} for room_id in room_ids}
+        adjacency: dict[str, set[str]] = {room_id: set() for room_id in room_ids}
+        valid_edges = True
+        for edge in edges:
+            source = str(edge.get("from") or "")
+            target = str(edge.get("to") or "")
+            direction = str(edge.get("direction") or "")
+            return_direction = str(edge.get("return_direction") or "")
+            if (
+                source not in room_id_set or target not in room_id_set or source == target
+                or direction not in directions
+                or (return_direction and return_direction not in directions)
+            ):
+                valid_edges = False
+                continue
+            if direction in exits[source] or (return_direction and return_direction in exits[target]):
+                valid_edges = False
+                continue
+            exits[source][direction] = target
+            adjacency[source].add(target)
+            if return_direction:
+                exits[target][return_direction] = source
+                adjacency[target].add(source)
+        if not valid_edges:
+            errors.append("world graph exits require valid unique directional connections")
+
+        reachable: set[str] = set()
+        pending = [start]
+        while pending:
+            current = pending.pop()
+            if current in reachable or current not in adjacency:
+                continue
+            reachable.add(current)
+            pending.extend(adjacency[current] - reachable)
+        if reachable != room_id_set:
+            errors.append("every authored room must be reachable through world graph exits")
+
+        main_route = [str(room_id) for room_id in (world.get("main_route") or [])]
+        optional_rooms = {str(room_id) for room_id in (world.get("optional_rooms") or [])}
+        if not main_route or main_route[0] != start or main_route[-1] != boss:
+            errors.append("main route must connect the declared start to the boss")
+        elif any(room_id not in room_id_set for room_id in main_route):
+            errors.append("main route references an unknown room")
+        else:
+            for source, target in zip(main_route, main_route[1:]):
+                if target not in adjacency.get(source, set()):
+                    errors.append("main route contains a disconnected step")
+                    break
+        if not optional_rooms or not optional_rooms.issubset(room_id_set - set(main_route)):
+            errors.append("world graph requires an optional room outside the main route")
+        optional_room_data = [room for room in rooms if str(room.get("id")) in optional_rooms]
+        if not any(
+            room.get("optional_discovery")
+            and any(pickup.get("kind") == "item" for pickup in (room.get("pickups") or []))
+            for room in optional_room_data
+        ):
+            errors.append("optional world branch must contain a discoverable item reward")
+        kinds = {str(edge.get("kind") or "") for edge in edges}
+        if "optional_branch" not in kinds or "shortcut" not in kinds:
+            errors.append("world graph requires an optional branch and a return shortcut")
+        if not any(len(room_exits) >= 3 for room_exits in exits.values()):
+            errors.append("nonlinear world requires a junction with at least three exits")
+        gated_edges = [edge for edge in edges if edge.get("kind") == "gated"]
+        if not any(
+            str(edge.get("to") or "") == boss
+            and edge.get("requires_quest_stage") == "forge_open"
+            for edge in gated_edges
+        ):
+            errors.append("boss route must be gated by forge_open")
+    return errors
+
+
+def build_action_rpg_plan(design_doc: dict, level_index: int) -> dict:
+    from saga.experience import search_action_rpg_plan
+
+    plan = search_action_rpg_plan(design_doc, level_index)
+    errors = validate_action_rpg_plan(plan)
+    if errors:
+        raise ValueError("invalid action-RPG plan: " + "; ".join(errors))
+    return plan
+
+
+def build_action_rpg_adapter(
+    design_doc: dict,
+    level_index: int,
+    asset_filenames: list[str],
+    plan: dict | None = None,
+) -> str:
+    levels = design_doc.get("levels") or [{}]
+    level = levels[min(level_index, len(levels) - 1)]
+    intensity = max(1, min(10, int(level.get("intensity") or 5)))
+    hero = _asset_with(asset_filenames, "hero_sprite", "hero")
+    background = _asset_with(asset_filenames, f"level_{level_index}_", "level_")
+    enemy = _asset_with(
+        asset_filenames,
+        "stalker", "sentinel", "skirmisher", "bruiser", "guard", "enemy", "creature", "thorn",
+    )
+    boss = _asset_with(asset_filenames, "boss", "warden", "golem") or enemy
+    npc = _asset_with(
+        asset_filenames,
+        "hermit", "archivist", "keeper", "merchant", "guide", "npc",
+    )
+    pickup = _asset_with(asset_filenames, "key_item", "spark", "charm")
+    role_assets = {
+        role: _asset_with(asset_filenames, role) or enemy
+        for role in ("stalker", "sentinel", "skirmisher", "bruiser", "guard")
+    }
+    plan = plan or build_action_rpg_plan(design_doc, level_index)
+    errors = validate_action_rpg_plan(plan)
+    if errors:
+        raise ValueError("invalid action-RPG plan: " + "; ".join(errors))
+    definition = {
+        "pack_version": 6,
+        "title": str(design_doc.get("title") or "Action RPG"),
+        "level_name": str(level.get("name") or f"Level {level_index + 1}"),
+        "level_index": level_index,
+        "total_levels": len(levels),
+        "intensity": intensity,
+        "player_health": max(4, 7 - intensity // 3),
+        "move_speed": 175.0 + intensity * 3.0,
+        "room_plan": plan,
+        "assets": {
+            "hero": f"res://assets/{hero}" if hero else "",
+            "background": f"res://assets/{background}" if background else "",
+            "enemy": f"res://assets/{enemy}" if enemy else "",
+            **{
+                f"enemy_{role}": f"res://assets/{filename}" if filename else ""
+                for role, filename in role_assets.items()
+            },
+            "boss": f"res://assets/{boss}" if boss else "",
+            "npc": f"res://assets/{npc}" if npc else "",
+            "pickup": f"res://assets/{pickup}" if pickup else "",
+        },
+    }
+    payload = json.dumps(definition, ensure_ascii=False, indent=2)
+    return (
+        'extends "res://archetypes/action_rpg/action_rpg_level.gd"\n\n'
+        "# Game-specific adapter. Stable RPG systems live in the versioned pack.\n"
+        "func level_definition() -> Dictionary:\n"
+        f"\treturn JSON.parse_string({json.dumps(payload)})\n"
+    )
+
+
+def scaffold_action_rpg_level(
+    project_dir: str | Path,
+    design_doc: dict,
+    level_index: int,
+    asset_filenames: list[str],
+    plan: dict | None = None,
+) -> ArchetypePack:
+    pack = scaffold_pack(project_dir, "action_rpg")
+    if pack is None:  # pragma: no cover - protected by the fixed template above
+        raise ValueError("action_rpg archetype is unavailable")
+    adapter = build_action_rpg_adapter(
+        design_doc, level_index, asset_filenames, plan=plan
+    )
     (Path(project_dir) / f"Level_{level_index}.gd").write_text(adapter, encoding="utf-8")
     return pack

@@ -4,13 +4,24 @@ import re
 
 
 TEMPLATE_CONTRACTS = {
+    "action_rpg": [
+        (
+            "the versioned action-RPG base level",
+            r'extends\s+"res://archetypes/action_rpg/action_rpg_level\.gd"',
+        ),
+        ("the compact level-definition adapter", r"func\s+level_definition\s*\("),
+        ("the action-RPG version pin", r'\\?"pack_version\\?"\s*:\s*6'),
+        ("the validated room plan", r'\\?"room_plan\\?"\s*:'),
+        ("the quest contract", r'\\?"quest_stages\\?"\s*:'),
+        ("the compiled room structure", r'\\?"rooms\\?"\s*:'),
+    ],
     "run_and_gun": [
         (
             "the versioned run-and-gun base level",
             r'extends\s+"res://archetypes/run_and_gun/run_and_gun_level\.gd"',
         ),
         ("the compact level-definition adapter", r"func\s+level_definition\s*\("),
-        ("the archetype version pin", r'\\?"pack_version\\?"\s*:\s*6'),
+        ("the archetype version pin", r'\\?"pack_version\\?"\s*:\s*7'),
         ("the validated encounter plan", r'\\?"encounter_plan\\?"\s*:'),
         ("the campaign progression contract", r'\\?"progression\\?"\s*:'),
         ("authored enemy pressure", r'\\?"enemy_count\\?"\s*:'),

@@ -1,8 +1,9 @@
 """Builds the SAGA graph:
 
-Studio Director -> Game Designer -> Systems Architect -> (Asset Maker, Audio Agent)
-    -> Coder <-> QA Agent -> Quality Director (per level, advancing through the design doc's
-       levels via advance_level) -> END
+Studio Director -> Game Designer -> Systems Architect -> Composition Director
+    -> Art Director -> Asset Maker -> Coder <-> QA Agent -> Quality Director
+    (Audio Agent starts after composition in parallel with visual production.)
+       (per level, advancing through the design doc's levels via advance_level) -> END
 
 Failures do not loop straight back to the Coder: they return to the Studio
 Director, which triages each one - fix the script, regenerate it fresh, or
@@ -14,8 +15,10 @@ hard budget (MAX_RETRIES); the Director decides direction within it.
 from langgraph.graph import END, START, StateGraph
 
 from saga.agents.asset_maker import asset_maker
+from saga.agents.art_director import art_director
 from saga.agents.audio_agent import audio_agent
 from saga.agents.coder import coder
+from saga.agents.composition_director import composition_director
 from saga.agents.game_designer import game_designer
 from saga.agents.qa_agent import qa_agent
 from saga.agents.studio_director import studio_director
@@ -28,7 +31,7 @@ MAX_RETRIES = 6
 
 
 def _route_after_qa(state: GraphState) -> str:
-    if state.get("ship_blocked"):
+    if state.get("ship_blocked") or state.get("qa_terminal"):
         return "done"
     if state.get("qa_passed"):
         return "quality"
@@ -74,6 +77,7 @@ def advance_level(state: GraphState) -> GraphState:
     return {
         "current_level": next_level,
         "qa_errors": None,
+        "qa_terminal": False,
         "retry_count": 0,
         "ship_blocked": False,
         "quality_repair_requested": False,
@@ -91,6 +95,8 @@ def build_graph(human_gate: bool = False):
     graph.add_node("studio_director", studio_director)
     graph.add_node("game_designer", game_designer)
     graph.add_node("systems_architect", systems_architect)
+    graph.add_node("composition_director", composition_director)
+    graph.add_node("art_director", art_director)
     graph.add_node("asset_maker", asset_maker)
     graph.add_node("audio_agent", audio_agent)
     # The agentic Coder wraps the one-shot one: it produces the draft, then
@@ -116,10 +122,14 @@ def build_graph(human_gate: bool = False):
         {"design": "game_designer", "revise": "coder", "reasset": "asset_maker"},
     )
     graph.add_edge("game_designer", "systems_architect")
-    graph.add_edge("systems_architect", "asset_maker")
-    graph.add_edge("systems_architect", "audio_agent")
-    graph.add_edge("asset_maker", "coder")
-    graph.add_edge("audio_agent", "coder")
+    graph.add_edge("systems_architect", "composition_director")
+    graph.add_edge("composition_director", "art_director")
+    graph.add_edge("composition_director", "audio_agent")
+    graph.add_edge("art_director", "asset_maker")
+    # This must be one multi-source edge. Two independent edges are OR-style
+    # triggers in LangGraph and allowed Coder/QA to start while ComfyUI was
+    # still generating the first asset.
+    graph.add_edge(["asset_maker", "audio_agent"], "coder")
     graph.add_edge("coder", "qa_agent")
     # The gate sits on the next_level edge specifically: that is the moment a
     # level is known-good and the rest of the game has not been built on it

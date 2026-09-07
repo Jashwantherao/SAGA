@@ -1,3 +1,7 @@
+import hashlib
+import json
+
+from saga.capability_evidence import evaluate_capability_coverage
 from saga.main import assess_ship_status, unconfirmed_systems
 
 
@@ -211,3 +215,102 @@ def test_video_advisory_is_reported_as_a_shippable_warning():
     )
 
     assert (status, ready) == ("passed_with_warnings", True)
+
+
+def _with_capability_coverage(result, statuses):
+    lock = {
+        "lock_version": 1,
+        "game_spec_version": 2,
+        "game_spec_hash": "a" * 64,
+        "title": "Ship Proof",
+        "modes": [{
+            "id": "main",
+            "perspective": "top_down_2d",
+            "entry": True,
+            "declared_capabilities": [{"id": "feature.test", "version": 1}],
+            "components": [{
+                "id": "feature.test",
+                "version": 1,
+                "implementation": "legacy_generated",
+                "manifest_id": "ship_test",
+                "component_digest": "b" * 64,
+                "declared": True,
+                "runtime_files": [],
+                "runtime_digests": {},
+                "required_probes": ["objective.status"],
+            }],
+        }],
+        "state_owners": {"state.feature_test": "feature.test"},
+        "state_facts": {},
+        "required_probes": ["objective.status"],
+    }
+    lock["assembly_hash"] = hashlib.sha256(
+        json.dumps(
+            lock, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+    result["assembly_lock"] = lock
+    for level, status in zip(result["level_results"], statuses):
+        objective = None if status == "blocked" else {"status": status}
+        level["objective_result"] = {
+            "capability_coverage": evaluate_capability_coverage(
+                result["assembly_lock"],
+                objective_result=objective,
+                playability_result={},
+            )
+        }
+    return result
+
+
+def test_composed_run_requires_passing_capability_proof_for_every_level():
+    result = _with_capability_coverage(_result(_clean_levels()), ["passed", "passed"])
+
+    assert assess_ship_status(result) == ("passed", True)
+
+
+def test_missing_composition_evidence_blocks_shipping_even_with_green_qa():
+    result = _result(_clean_levels())
+    result["assembly_lock"] = {"assembly_hash": "assembly-1"}
+    result["level_results"][0]["objective_result"] = {
+        "capability_coverage": {"status": "passed"}
+    }
+
+    assert assess_ship_status(result) == ("blocked", False)
+
+
+def test_empty_composition_lock_cannot_bypass_the_ship_gate():
+    result = _result(_clean_levels())
+    result["assembly_lock"] = {}
+
+    assert assess_ship_status(result) == ("blocked", False)
+
+
+def test_failed_composition_evidence_closes_the_ship_gate():
+    result = _with_capability_coverage(_result(_clean_levels()), ["passed", "failed"])
+
+    assert assess_ship_status(result) == ("failed", False)
+
+
+def test_forged_pass_status_without_locked_rows_is_blocked():
+    result = _with_capability_coverage(_result(_clean_levels()), ["passed", "passed"])
+    forged = {
+        "coverage_version": 1,
+        "assembly_hash": result["assembly_lock"]["assembly_hash"],
+        "status": "passed",
+        "capabilities_total": 0,
+        "capabilities_passed": 0,
+        "missing_evidence": [],
+        "failed_evidence": [],
+        "capabilities": [],
+    }
+    for level in result["level_results"]:
+        level["objective_result"]["capability_coverage"] = forged
+
+    assert assess_ship_status(result) == ("blocked", False)
+
+
+def test_tampered_composition_lock_cannot_ship_with_stale_green_coverage():
+    result = _with_capability_coverage(_result(_clean_levels()), ["passed", "passed"])
+    result["assembly_lock"]["title"] = "Tampered after composition"
+
+    assert assess_ship_status(result) == ("blocked", False)

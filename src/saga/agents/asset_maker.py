@@ -1,7 +1,7 @@
 """Asset Maker agent — generates sprites/backgrounds via a local ComfyUI + Flux.1 schnell service.
 
-Derives its asset list directly from the Game Designer's design doc (no
-Art Director agent yet): one hero sprite, one key-item icon (its gameplay
+Consumes the Art Director's locked visual bible and role contracts: one hero
+sprite, one key-item icon (its gameplay
 role - pickup, hazard, switch, creature, or zone marker - is decided by the
 design doc, not here), plus one background per level.
 """
@@ -13,6 +13,11 @@ from pathlib import Path
 import httpx
 
 from saga.config import settings
+from saga.agents.art_director import (
+    art_contract_by_name,
+    asset_prompt_suffix,
+    compile_art_direction,
+)
 from saga.state import GraphState
 from saga.workspace import assets_dir
 
@@ -45,6 +50,54 @@ ICON_GEN_SIZE = 512
 # edge-to-edge with no scaling or letterboxing.
 VIEWPORT_WIDTH = 1024
 VIEWPORT_HEIGHT = 576
+
+
+def _inspect_asset(
+    path: Path,
+    logical_name: str,
+    expected_width: int,
+    expected_height: int,
+    transparent_actor: bool,
+) -> dict:
+    """Run cheap structural checks before an asset can reach the runtime."""
+    errors: list[str] = []
+    observed: dict = {}
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            image.load()
+            observed["size"] = [image.width, image.height]
+            observed["mode"] = image.mode
+            if image.size != (expected_width, expected_height):
+                errors.append(
+                    f"expected {expected_width}x{expected_height}, got {image.width}x{image.height}"
+                )
+            if transparent_actor:
+                rgba = image.convert("RGBA")
+                alpha = rgba.getchannel("A")
+                bbox = alpha.getbbox()
+                observed["alpha_bbox"] = list(bbox) if bbox else None
+                if not bbox:
+                    errors.append("actor has no visible alpha subject")
+                else:
+                    coverage = sum(1 for value in alpha.get_flattened_data() if value > 16) / (image.width * image.height)
+                    observed["alpha_coverage"] = round(coverage, 4)
+                    if coverage < 0.05:
+                        errors.append("actor occupies less than 5% of its frame")
+                    if coverage > 0.90:
+                        errors.append("actor cutout leaves no readable transparent separation")
+                    if bbox[0] == 0 or bbox[1] == 0 or bbox[2] == image.width or bbox[3] == image.height:
+                        errors.append("actor silhouette touches the frame edge")
+    except Exception as exc:
+        errors.append(f"image inspection failed: {type(exc).__name__}: {exc}")
+    return {
+        "logical_name": logical_name,
+        "path": str(path),
+        "status": "passed" if not errors else "failed",
+        "errors": errors,
+        "observed": observed,
+    }
 
 
 def _build_workflow(prompt: str, filename_prefix: str, seed: int, width: int, height: int) -> dict:
@@ -155,7 +208,7 @@ def _generate_image(
     raise TimeoutError(f"ComfyUI generation for {filename_prefix!r} did not complete within {timeout}s")
 
 
-def _asset_requests(design_doc: dict) -> list[tuple]:
+def _asset_requests(design_doc: dict, art_direction: dict | None = None) -> list[tuple]:
     """Build the stable asset plan used by both initial and repair runs.
 
     Every request carries an explicit seed. Filtering this plan for a targeted
@@ -163,25 +216,40 @@ def _asset_requests(design_doc: dict) -> list[tuple]:
     batch entries were omitted.
     """
     art_style = design_doc["art_style"]
+    art_direction = art_direction or compile_art_direction(design_doc)
+    contracts = art_contract_by_name(art_direction)
+    template = design_doc.get("mechanic_template")
+    if template == "run_and_gun":
+        actor_view = f"side view, {HERO_NATIVE_FACING}"
+        idle_pose = "at rest, standing still, relaxed, still facing screen-left"
+        motion_pose = "walking toward screen-left, legs apart mid-stride, leaning left into the movement"
+    else:
+        actor_view = (
+            "strict top-down orthographic actor viewed directly from above, "
+            "head oriented toward the top edge, no side-view pose, no isometric angle"
+        )
+        idle_pose = "at rest in a compact readable top-down stance"
+        motion_pose = "moving toward the top edge with a distinct active limb pose"
     hero_common = (
         f"{design_doc['hero_description']}, full body, whole character visible from "
-        f"head to feet, side view, {HERO_NATIVE_FACING}, game sprite, centered, "
+        f"head to feet, {actor_view}, game sprite, centered, "
         f"{art_style}, plain solid background"
     )
     requests = [
         (
-            f"{design_doc['hero_description']}, at rest, sitting or standing still, "
-            f"relaxed, still facing screen-left, {hero_common}",
+            f"{design_doc['hero_description']}, {idle_pose}, {hero_common}"
+            f"{asset_prompt_suffix(contracts.get('hero_sprite'), art_direction)}",
             "hero_sprite", ICON_GEN_SIZE, ICON_GEN_SIZE, True, HERO_SEED,
         ),
         (
-            f"{design_doc['hero_description']}, walking toward screen-left, legs apart "
-            f"mid-stride, leaning left into the movement, {hero_common}",
+            f"{design_doc['hero_description']}, {motion_pose}, {hero_common}"
+            f"{asset_prompt_suffix(contracts.get('hero_walk'), art_direction)}",
             "hero_walk", ICON_GEN_SIZE, ICON_GEN_SIZE, True, HERO_SEED,
         ),
         (
             f"{design_doc['key_item']['description']}, whole object fully visible, small game "
-            f"icon, centered, {art_style}, plain solid background",
+            f"icon, centered, {art_style}, plain solid background"
+            f"{asset_prompt_suffix(contracts.get('key_item'), art_direction)}",
             "key_item", ICON_GEN_SIZE, ICON_GEN_SIZE, True, 2,
         ),
     ]
@@ -189,13 +257,15 @@ def _asset_requests(design_doc: dict) -> list[tuple]:
         requests.append(
             (
                 f"{extra['description']}, whole object fully visible, game sprite, "
-                f"centered, {art_style}, plain solid background",
+                f"centered, {art_style}, plain solid background"
+                f"{asset_prompt_suffix(contracts.get('extra_' + extra['name']), art_direction)}",
                 f"extra_{extra['name']}", ICON_GEN_SIZE, ICON_GEN_SIZE, True, index,
             )
         )
     background_seed = 3 + len(design_doc.get("extra_sprites") or [])
     for index, level in enumerate(design_doc["levels"]):
-        if design_doc.get("mechanic_template") == "run_and_gun":
+        template = design_doc.get("mechanic_template")
+        if template == "run_and_gun":
             background_subject = (
                 f"distant atmospheric backdrop for {level.get('name', 'the stage')} "
                 f"in a {design_doc.get('genre', 'side-view action game')}, using only "
@@ -211,6 +281,19 @@ def _asset_requests(design_doc: dict) -> list[tuple]:
                 "no isometric angle, no diagonal travel path, no vanishing-point floor, "
                 "no characters, no enemies, no UI, no text, background scenery only"
             )
+        elif template == "action_rpg":
+            background_subject = (
+                f"top-down environment for {level.get('name', 'the dungeon')} in a "
+                f"{design_doc.get('genre', 'fantasy action RPG')}, floor, walls, "
+                "ruins, paths and non-interactive environmental details only, empty "
+                "play space, no hero, no NPC, no enemies, no boss, no pickups, no UI"
+            )
+            viewpoint = (
+                "strict 2D top-down orthographic game background, camera facing "
+                "straight down at 90 degrees, readable connected rooms and open "
+                "combat floor, no perspective, no horizon, no vanishing point, no "
+                "camera tilt, no isometric angle, no characters, no UI, no text"
+            )
         else:
             background_subject = level["description"]
             viewpoint = (
@@ -221,7 +304,8 @@ def _asset_requests(design_doc: dict) -> list[tuple]:
             )
         requests.append(
             (
-                f"{background_subject}, {art_style}, game background, {viewpoint}",
+                f"{background_subject}, {art_style}, game background, {viewpoint}"
+                f"{asset_prompt_suffix(contracts.get(f'level_{index}_bg'), art_direction)}",
                 f"level_{index}_bg", VIEWPORT_WIDTH, VIEWPORT_HEIGHT, False,
                 background_seed + index,
             )
@@ -261,7 +345,29 @@ def asset_maker(state: GraphState) -> GraphState:
     # pack. Reuse those exact files instead of introducing image-model noise.
     if state.get("sprite_paths") and not state.get("reasset_request"):
         print(f"[Asset Maker] Reusing {len(state['sprite_paths'])} frozen assets")
-        return {"sprite_paths": list(state["sprite_paths"])}
+        update: GraphState = {"sprite_paths": list(state["sprite_paths"])}
+        if state.get("art_direction"):
+            request_map = {
+                name: (width, height, strip_bg)
+                for _prompt, name, width, height, strip_bg, _seed in _asset_requests(
+                    state["design_doc"], state["art_direction"]
+                )
+            }
+            results = []
+            for raw_path in state["sprite_paths"]:
+                path = Path(raw_path)
+                logical_name = path.stem
+                if logical_name in request_map:
+                    width, height, strip_bg = request_map[logical_name]
+                    delivered_width = ICON_WIDTH if strip_bg else width
+                    delivered_height = ICON_HEIGHT if strip_bg else height
+                    results.append(
+                        _inspect_asset(
+                            path, logical_name, delivered_width, delivered_height, strip_bg
+                        )
+                    )
+            update["asset_contract_results"] = results
+        return update
 
     _check_comfyui_reachable()
     design_doc = state["design_doc"]
@@ -280,7 +386,7 @@ def asset_maker(state: GraphState) -> GraphState:
     # detail drift a little. It is not enough control for a multi-frame walk
     # cycle, which is why there is only one walking pose; the bob and lean in
     # the Anim autoload supply the stepping motion.
-    requests = _asset_requests(design_doc)
+    requests = _asset_requests(design_doc, state.get("art_direction"))
     reasset_request = state.get("reasset_request")
     target_names = _target_names(reasset_request) if reasset_request else None
     if target_names:
@@ -290,6 +396,10 @@ def asset_maker(state: GraphState) -> GraphState:
         print(f"[Asset Maker] Targeted repair: {', '.join(sorted(target_names))}")
 
     sprite_paths = list(state.get("sprite_paths") or []) if reasset_request else []
+    contract_results = [
+        result for result in (state.get("asset_contract_results") or [])
+        if result.get("logical_name") not in {request[1] for request in requests}
+    ]
     replaced_files = []
     for request in requests:
         prompt, name, width, height, strip_bg, seed = request
@@ -315,6 +425,13 @@ def asset_maker(state: GraphState) -> GraphState:
         path_string = str(path)
         if path_string not in sprite_paths:
             sprite_paths.append(path_string)
+        delivered_width = ICON_WIDTH if strip_bg else width
+        delivered_height = ICON_HEIGHT if strip_bg else height
+        contract_results.append(
+            _inspect_asset(
+                path, name, delivered_width, delivered_height, strip_bg
+            )
+        )
         if reasset_request:
             replaced_files.append(
                 {
@@ -345,7 +462,10 @@ def asset_maker(state: GraphState) -> GraphState:
     except Exception as e:
         print(f"[Asset Maker] ComfyUI VRAM release skipped ({type(e).__name__}: {e})")
 
-    update: GraphState = {"sprite_paths": sprite_paths}
+    update: GraphState = {
+        "sprite_paths": sprite_paths,
+        "asset_contract_results": contract_results,
+    }
     if reasset_request:
         event = {
             **reasset_request,

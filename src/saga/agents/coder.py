@@ -17,6 +17,8 @@ still exercises gameplay), Sfx autoload calls, and a CPUParticles2D ambient
 effect.
 """
 
+import hashlib
+import json
 import re
 import shutil
 from pathlib import Path
@@ -403,9 +405,10 @@ func flash(sprite: Node2D, color: Color = Color(1, 0.4, 0.4)) -> void:
 # what happens.
 #
 # Two signals, both template-agnostic. Something in the scene must MOVE when a
-# direction is held, and the status Label - which every template is already
-# required to show game state in - must eventually say something different.
-# A game failing either is inert regardless of what it was trying to be.
+# direction is held, and a real HUD must expose a visible, nonempty Label at
+# HUD/HUDStatus. The probe observes the same control during both the baseline
+# and input windows. Text changes remain advisory because ordered puzzles may
+# be fully playable without random movement advancing their state.
 #
 # Deliberately not a win condition: reaching an objective needs skill this
 # cannot fake, so absence of progress here is not evidence of an unwinnable
@@ -416,31 +419,77 @@ const SETTLE_FRAMES := 20
 const BASELINE_FRAMES := 40
 const HOLD_FRAMES := 45
 const DIRECTIONS := ["ui_right", "ui_down", "ui_left", "ui_up"]
+const HUD_LAYER_NAME := "HUD"
+const HUD_CONTROL_NAME := "HUDStatus"
 
 var _frame := 0
 var _leg := -1
 var _held := ""
 var _labels := {}
+var _hud_states := {}
+var _hud_baseline := {}
+var _hud_input := {}
 var _previous := {}
 var _idle_motion := 0.0
 var _input_motion := 0.0
 var _active := false
+var _presentation := false
 
 func _ready() -> void:
-	_active = "--autoplay" in OS.get_cmdline_user_args()
+	var arguments := OS.get_cmdline_user_args()
+	_presentation = "--presentation-capture" in arguments
+	_active = "--autoplay" in arguments or _presentation
 	if _active:
 		process_priority = 500
 
-func _collect(node: Node, labels: Array, movers: Array) -> void:
+func _has_named_hud_ancestor(node: Node) -> bool:
+	var ancestor := node.get_parent()
+	while ancestor != null:
+		if ancestor is CanvasLayer:
+			return str(ancestor.name) == HUD_LAYER_NAME
+		ancestor = ancestor.get_parent()
+	return false
+
+func _is_visible_hud_control(node: Label) -> bool:
+	if str(node.name) != HUD_CONTROL_NAME or not _has_named_hud_ancestor(node):
+		return false
+	if not node.is_visible_in_tree() or node.text.strip_edges().is_empty():
+		return false
+	# CanvasItem exposes modulation as properties in Godot 4; Label has no
+	# callable accessor for a combined global modulation value.
+	if node.modulate.a <= 0.01 or node.self_modulate.a <= 0.01:
+		return false
+	var rect := node.get_global_rect()
+	return rect.size.x > 0.0 and rect.size.y > 0.0 and rect.intersects(node.get_viewport_rect())
+
+func _collect(node: Node, labels: Array, hud_controls: Array, movers: Array) -> void:
 	if node is Label:
 		labels.append(node)
+		if _is_visible_hud_control(node):
+			hud_controls.append(node)
 	elif node is Node2D and not (node is Sprite2D):
 		# Sprite2D is excluded on purpose: the Anim autoload writes a bob and a
 		# lean into every animated sprite's local position every frame, so
 		# measuring sprites measures the animation rather than the game.
 		movers.append(node)
 	for child in node.get_children():
-		_collect(child, labels, movers)
+		_collect(child, labels, hud_controls, movers)
+
+func _observe_hud(controls: Array, phase: int) -> void:
+	for control in controls:
+		var id: int = control.get_instance_id()
+		_hud_states[control.text] = true
+		if phase == 1:
+			_hud_baseline[id] = true
+		elif phase == 2:
+			_hud_input[id] = true
+
+func _persistent_hud_count() -> int:
+	var count := 0
+	for id in _hud_baseline:
+		if _hud_input.has(id):
+			count += 1
+	return count
 
 func _accumulate(movers: Array) -> float:
 	var total := 0.0
@@ -459,12 +508,17 @@ func _process(_delta: float) -> void:
 	if root == null:
 		return
 	var labels: Array = []
+	var hud_controls: Array = []
 	var movers: Array = []
-	_collect(root, labels, movers)
+	_collect(root, labels, hud_controls, movers)
 	for l in labels:
 		_labels[l.text] = true
 
 	_frame += 1
+	if _frame > SETTLE_FRAMES + 1 and _frame < SETTLE_FRAMES + BASELINE_FRAMES:
+		_observe_hud(hud_controls, 1)
+	elif _frame >= SETTLE_FRAMES + BASELINE_FRAMES:
+		_observe_hud(hud_controls, 2)
 	if _frame < SETTLE_FRAMES:
 		_accumulate(movers)
 		return
@@ -495,15 +549,21 @@ func _process(_delta: float) -> void:
 			return
 		_held = DIRECTIONS[_leg]
 		Input.action_press(_held)
+	if _presentation:
+		if _frame % 24 < 5:
+			Input.action_press("rpg_attack")
+		else:
+			Input.action_release("rpg_attack")
 
 func _report() -> void:
 	_active = false
 	if _held != "":
 		Input.action_release(_held)
+	Input.action_release("rpg_attack")
 	# Per-frame rates, since the two windows are different lengths.
 	var idle_rate := _idle_motion / float(BASELINE_FRAMES)
 	var input_rate := _input_motion / float(HOLD_FRAMES * DIRECTIONS.size())
-	print("[AUTOPLAY] idle_rate=%.3f input_rate=%.3f label_states=%d" % [idle_rate, input_rate, _labels.size()])
+	print("[AUTOPLAY] idle_rate=%.3f input_rate=%.3f label_states=%d hud_controls=%d hud_states=%d" % [idle_rate, input_rate, _labels.size(), _persistent_hud_count(), _hud_states.size()])
 	get_tree().quit()
 """
 
@@ -549,7 +609,7 @@ func _ready() -> void:
 	for argument in arguments:
 		if argument.begins_with("--objective-template="):
 			_template = argument.trim_prefix("--objective-template=")
-	_active = _active and _template not in ["ordered_switches", "survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal"]
+	_active = _active and _template not in ["ordered_switches", "survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal", "action_rpg"]
 	if _active:
 		process_priority = 600
 
@@ -2366,6 +2426,70 @@ func _run() -> void:
 	get_tree().quit()
 """
 
+ACTION_RPG_PROBE_GD = """extends Node
+
+var _active := false
+
+func _ready() -> void:
+	var arguments := OS.get_cmdline_user_args()
+	_active = "--objective-probe" in arguments and "--objective-template=action_rpg" in arguments
+	if _active:
+		process_priority = 750
+		call_deferred("_run")
+
+func _bool(value: bool) -> String:
+	return str(value).to_lower()
+
+func _run() -> void:
+	for frame in 12:
+		await get_tree().process_frame
+	var levels := get_tree().get_nodes_in_group("saga_action_rpg_level")
+	if levels.is_empty():
+		_fail("missing_level", [])
+		return
+	var level = levels[0]
+	if not bool(level.qa_reset_for_probe()):
+		_fail("reset_failed", [])
+		return
+	var narrative_fidelity := bool(level.qa_verify_narrative_identity())
+	var movement := bool(level.qa_verify_movement())
+	var melee_result: Dictionary = level.qa_verify_melee()
+	var pickup_result: Dictionary = level.qa_verify_pickup_inventory()
+	var dialogue_result: Dictionary = level.qa_verify_dialogue_quest()
+	var room_persistence := bool(level.qa_verify_room_persistence())
+	var world_graph := bool(level.qa_verify_world_graph())
+	var save_reload := bool(level.qa_verify_save_reload())
+	var loss_result: Dictionary = level.qa_verify_loss_restart()
+	var boss_result: Dictionary = level.qa_verify_boss_phases_and_win()
+	var flags: Array[bool] = [
+		movement, bool(melee_result.get("melee", false)), bool(melee_result.get("enemy_state", false)),
+		bool(pickup_result.get("pickup", false)), bool(pickup_result.get("inventory", false)),
+		bool(dialogue_result.get("dialogue", false)), bool(dialogue_result.get("quest", false)),
+		room_persistence, world_graph, save_reload, bool(loss_result.get("loss", false)),
+		bool(loss_result.get("restart", false)), bool(boss_result.get("boss_phase", false)),
+		bool(boss_result.get("win", false)), narrative_fidelity
+	]
+	print("[ACTION_RPG_METRICS] movement=%s melee=%s enemy_state=%s pickup=%s inventory=%s dialogue=%s quest=%s room=%s world_graph=%s save=%s loss=%s restart=%s boss_phase=%s win=%s narrative=%s" % [
+		_bool(flags[0]), _bool(flags[1]), _bool(flags[2]), _bool(flags[3]),
+		_bool(flags[4]), _bool(flags[5]), _bool(flags[6]), _bool(flags[7]),
+		_bool(flags[8]), _bool(flags[9]), _bool(flags[10]), _bool(flags[11]), _bool(flags[12]), _bool(flags[13]), _bool(flags[14])
+	])
+	var passed := not flags.has(false)
+	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=%d max_stall_frames=1 stuck=%s restart=%s deaths=1" % [
+		flags.count(true), _bool(not passed), "passed" if bool(loss_result.get("restart", false)) else "failed"
+	])
+	if passed:
+		print("[OBJECTIVE] status=passed template=action_rpg reason=none collected=15 total=15 remaining=0 frames=15")
+	else:
+		_fail("system_contract_failed", flags)
+	get_tree().quit()
+
+func _fail(reason: String, flags: Array) -> void:
+	print("[OBJECTIVE_METRICS] completion_seconds=0.2 progress_events=%d max_stall_frames=1 stuck=true restart=failed deaths=1" % flags.count(true))
+	print("[OBJECTIVE] status=failed template=action_rpg reason=%s collected=%d total=15 remaining=%d frames=15" % [reason, flags.count(true), 15 - flags.count(true)])
+	get_tree().quit()
+"""
+
 RUN_AND_GUN_PLAYTHROUGH_GD = """extends Node
 
 const FRAME_LIMIT := 10800
@@ -2534,6 +2658,409 @@ func _fail(reason: String) -> void:
 	get_tree().quit()
 """
 
+ACTION_RPG_PLAYTHROUGH_GD = """extends Node
+
+const FRAME_LIMIT := 9000
+const MAX_DEATHS := 3
+var _active := false
+var _frame := 0
+var _stage := "entry_spark"
+var _last_position := Vector2.ZERO
+var _distance_moved := 0.0
+var _attacks := 0
+var _interactions := 0
+var _deaths := 0
+var _over_counted := false
+var _movement := false
+var _melee := false
+var _pickup := false
+var _inventory := false
+var _dialogue := false
+var _quest := false
+var _checkpoint := false
+var _dash := false
+var _boss_phase := false
+var _branch := false
+var _shortcut := false
+var _visited := {}
+
+func _ready() -> void:
+	_active = "--action-rpg-playthrough" in OS.get_cmdline_user_args()
+	if _active:
+		process_priority = 720
+		for action in ["rpg_attack", "rpg_interact", "rpg_inventory", "rpg_dash"]:
+			if not InputMap.has_action(action):
+				InputMap.add_action(action)
+
+func _physics_process(_delta: float) -> void:
+	if not _active:
+		return
+	_frame += 1
+	if _frame >= FRAME_LIMIT:
+		_fail("timeout_%s" % _stage)
+		return
+	var levels := get_tree().get_nodes_in_group("saga_action_rpg_level")
+	if levels.is_empty():
+		_release_all()
+		return
+	var level: Node = levels[0]
+	var player := level.get("player") as Node2D
+	if not is_instance_valid(player):
+		_fail("player_missing")
+		return
+	var moved := player.global_position.distance_to(_last_position)
+	if _last_position != Vector2.ZERO:
+		_distance_moved += moved
+	_movement = _movement or _distance_moved > 120.0
+	_last_position = player.global_position
+	var player_velocity: Vector2 = player.get("velocity")
+	_dash = _dash or player_velocity.length() > float(player.get("move_speed")) * 1.5
+	var room := int(level.get("room_index"))
+	_visited[room] = true
+	_branch = _branch or room == 2
+	var used_shortcuts := level.get("used_shortcuts") as Array
+	_shortcut = _shortcut or "relic_return_shortcut" in used_shortcuts
+	var checkpoint_data := level.get("checkpoint_data") as Dictionary
+	_checkpoint = _checkpoint or (not checkpoint_data.is_empty() and int(checkpoint_data.get("room_index", -1)) >= 1)
+	var collected := level.get("collected_pickups") as Array
+	_pickup = _pickup or (
+		"entry_sparks" in collected and "vault_sparks" in collected
+		and "ember_charm" in collected and "optional_relic_branch" in collected
+	)
+	_dialogue = _dialogue or bool(level.get("dialogue_open"))
+	_quest = _quest or str(level.get("quest_stage")) in ["forge_open", "complete"]
+	var state := str(level.get("state"))
+	if _frame % 600 == 0:
+		print("[ACTION_RPG_PLAYTHROUGH_PROGRESS] frame=%d stage=%s room=%d x=%.1f y=%.1f hp=%d deaths=%d" % [_frame, _stage, room, player.position.x, player.position.y, int(player.get("health")), _deaths])
+	if state == "won":
+		_pass()
+		return
+	if state == "over":
+		_release_all()
+		if not _over_counted:
+			_over_counted = true
+			_deaths += 1
+			if _deaths > MAX_DEATHS:
+				_fail("death_budget_exceeded")
+				return
+		_pulse("ui_accept", 12)
+		return
+	_over_counted = false
+	if state != "playing":
+		_release_all()
+		return
+
+	if _stage not in ["inventory_open", "inventory_close", "hermit_dialogue", "boss"] and _defend(player):
+		return
+	_release_action("rpg_attack")
+
+	match _stage:
+		"entry_spark":
+			if "entry_sparks" in collected:
+				_stage = "enter_vault"
+			else:
+				_navigate(player, _pickup_target(level, "entry_sparks", Vector2(500, 330)))
+		"enter_vault":
+			if room == 1:
+				_stage = "vault_sparks"
+			else:
+				_navigate(player, Vector2(990, 330))
+		"vault_sparks":
+			if "vault_sparks" in collected:
+				_stage = "vault_charm"
+			else:
+				_navigate(player, _pickup_target(level, "vault_sparks", Vector2(500, 330)))
+		"vault_charm":
+			if "ember_charm" in collected:
+				_stage = "enter_branch"
+			else:
+				_navigate(player, _pickup_target(level, "ember_charm", Vector2(600, 180)))
+		"enter_branch":
+			if room == 2:
+				_branch = true
+				_stage = "branch_relic"
+			else:
+				_navigate(player, Vector2(512, 112))
+		"branch_relic":
+			if "optional_relic_branch" in collected:
+				_stage = "take_shortcut"
+			else:
+				_navigate(player, _pickup_target(level, "optional_relic_branch", Vector2(760, 430)))
+		"take_shortcut":
+			if room == 3:
+				_shortcut = true
+				_stage = "inventory_open"
+			else:
+				_navigate(player, Vector2(990, 320))
+		"inventory_open":
+			_release_movement()
+			if bool(level.get("inventory_open")):
+				_inventory = true
+				_stage = "inventory_close"
+			else:
+				_pulse_counted("rpg_inventory", 14, false)
+		"inventory_close":
+			_release_movement()
+			if not bool(level.get("inventory_open")):
+				_stage = "return_to_hermit"
+			else:
+				_pulse_counted("rpg_inventory", 14, false)
+		"return_to_hermit":
+			if room == 0:
+				_stage = "hermit_dialogue"
+			elif player.position.y < 410.0:
+				# Drop below the vault's central obstacle before heading west.
+				# A direct x-first line collides with its left face forever.
+				_navigate(player, Vector2(player.position.x, 430))
+			else:
+				_navigate(player, Vector2(34, 430))
+		"hermit_dialogue":
+			var npc := level.get("npc") as Node2D
+			if str(level.get("quest_stage")) == "forge_open":
+				_quest = true
+				_stage = "travel_to_forge"
+			elif not is_instance_valid(npc):
+				_fail("hermit_missing")
+			elif player.global_position.distance_to(npc.global_position) > 68.0:
+				_release_action("rpg_interact")
+				_navigate(player, npc.global_position)
+			else:
+				_release_movement()
+				_pulse_counted("rpg_interact", 14, true)
+		"travel_to_forge":
+			if room == _last_room(level):
+				_stage = "boss"
+			elif room == 0:
+				_navigate(player, Vector2(990, 270))
+				_try_dash()
+			else:
+				_navigate(player, Vector2(990, 320))
+				_try_dash()
+		"boss":
+			_fight_boss(player)
+
+func _last_room(level: Node) -> int:
+	var definition := level.get("_definition") as Dictionary
+	var room_plan := definition.get("room_plan", {}) as Dictionary
+	return maxi(0, (room_plan.get("rooms", []) as Array).size() - 1)
+
+func _nearest_enemy(player: Node2D) -> Node2D:
+	var nearest: Node2D = null
+	var nearest_distance := INF
+	for candidate in get_tree().get_nodes_in_group("action_rpg_enemies"):
+		if not is_instance_valid(candidate) or int(candidate.get("health")) <= 0:
+			continue
+		var distance := player.global_position.distance_to(candidate.global_position)
+		if distance < nearest_distance:
+			nearest = candidate
+			nearest_distance = distance
+	return nearest
+
+func _defend(player: Node2D) -> bool:
+	var enemy := _nearest_enemy(player)
+	if (
+		not is_instance_valid(enemy)
+		or player.global_position.distance_to(enemy.global_position) > 76.0
+		or not _line_clear(player.global_position, enemy.global_position)
+	):
+		return false
+	var before := int(enemy.get("health"))
+	_face_and_attack(player, enemy.global_position)
+	_melee = _melee or before < int(enemy.get("max_health"))
+	return true
+
+func _line_clear(origin: Vector2, target: Vector2) -> bool:
+	var query := PhysicsRayQueryParameters2D.create(origin, target, 1)
+	return get_tree().root.get_world_2d().direct_space_state.intersect_ray(query).is_empty()
+
+func _fight_boss(player: Node2D) -> void:
+	var bosses := get_tree().get_nodes_in_group("action_rpg_boss")
+	if bosses.is_empty():
+		_release_all()
+		return
+	var boss := bosses[0] as Node2D
+	if not is_instance_valid(boss):
+		return
+	_boss_phase = _boss_phase or int(boss.get("phase")) >= 2
+	_melee = _melee or int(boss.get("health")) < int(boss.get("max_health"))
+	var distance := player.global_position.distance_to(boss.global_position)
+	if str(boss.get("state")) == "slam_telegraph":
+		_release_action("rpg_attack")
+		var away := boss.global_position.direction_to(player.global_position)
+		_move_vector(away)
+		_try_dash()
+	elif distance > 72.0:
+		_release_action("rpg_attack")
+		_navigate(player, boss.global_position)
+	else:
+		_face_and_attack(player, boss.global_position)
+
+func _face_and_attack(player: Node2D, target: Vector2) -> void:
+	_move_vector(player.global_position.direction_to(target))
+	if _frame % 30 < 2:
+		Input.action_press("rpg_attack")
+		if _frame % 30 == 0:
+			_attacks += 1
+	else:
+		Input.action_release("rpg_attack")
+
+func _pickup_target(level: Node, pickup_id: String, fallback: Vector2) -> Vector2:
+	for candidate in (level.get("pickups") as Array):
+		if is_instance_valid(candidate) and str(candidate.get("pickup_id")) == pickup_id:
+			return (candidate as Node2D).global_position
+	return fallback
+
+func _navigate(player: Node2D, target: Vector2) -> void:
+	var waypoint := _navigation_waypoint(player, target)
+	var delta := waypoint - player.global_position
+	if delta.length() <= 7.0:
+		delta = target - player.global_position
+		if delta.length() <= 18.0:
+			_release_movement()
+			return
+	var desired := Vector2.ZERO
+	if absf(delta.x) >= absf(delta.y):
+		desired = Vector2(signf(delta.x), 0)
+	else:
+		desired = Vector2(0, signf(delta.y))
+	# ContentIR layouts are intentionally varied. Probe the real collision shape
+	# and steer around it instead of relying on coordinates from the v1 room.
+	if player.has_method("test_move") and bool(player.call("test_move", player.transform, desired * 18.0)):
+		if absf(desired.x) > 0.0:
+			desired = Vector2(0, -1 if player.global_position.y < 288.0 else 1)
+		else:
+			desired = Vector2(-1 if player.global_position.x < 512.0 else 1, 0)
+		if bool(player.call("test_move", player.transform, desired * 18.0)):
+			desired = -desired
+	_move_vector(desired)
+
+func _navigation_waypoint(player: Node2D, target: Vector2) -> Vector2:
+	var levels := get_tree().get_nodes_in_group("saga_action_rpg_level")
+	if levels.is_empty():
+		return target
+	var level: Node = levels[0]
+	var definition := level.get("_definition") as Dictionary
+	var room_plan := definition.get("room_plan", {}) as Dictionary
+	var rooms := room_plan.get("rooms", []) as Array
+	var room_index := int(level.get("room_index"))
+	if room_index < 0 or room_index >= rooms.size():
+		return target
+	var grid := AStarGrid2D.new()
+	grid.region = Rect2i(2, 3, 29, 14)
+	grid.cell_size = Vector2(32, 32)
+	grid.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_NEVER
+	grid.update()
+	for obstacle_value in ((rooms[room_index] as Dictionary).get("obstacles", []) as Array):
+		var obstacle := obstacle_value as Dictionary
+		var center_value := obstacle.get("position", []) as Array
+		var size_value := obstacle.get("size", []) as Array
+		if center_value.size() < 2 or size_value.size() < 2:
+			continue
+		var center := Vector2(float(center_value[0]), float(center_value[1]))
+		# Keep the route one full control step beyond the player's collision
+		# capsule. A 24 px margin could choose a cell that was mathematically
+		# open but left the live body touching a bevel and unable to turn.
+		var half_size := Vector2(float(size_value[0]), float(size_value[1])) * 0.5 + Vector2(38, 38)
+		for x in range(grid.region.position.x, grid.region.end.x):
+			for y in range(grid.region.position.y, grid.region.end.y):
+				var cell_center := Vector2(x * 32, y * 32)
+				if absf(cell_center.x - center.x) <= half_size.x and absf(cell_center.y - center.y) <= half_size.y:
+					grid.set_point_solid(Vector2i(x, y), true)
+	var start := Vector2i(clampi(roundi(player.global_position.x / 32.0), 2, 30), clampi(roundi(player.global_position.y / 32.0), 3, 16))
+	var finish := Vector2i(clampi(roundi(target.x / 32.0), 2, 30), clampi(roundi(target.y / 32.0), 3, 16))
+	grid.set_point_solid(start, false)
+	grid.set_point_solid(finish, false)
+	var path := grid.get_id_path(start, finish)
+	if path.size() < 2:
+		return target
+	var next: Vector2i = path[1]
+	return Vector2(next.x * 32, next.y * 32)
+
+func _move_vector(direction: Vector2) -> void:
+	_release_movement()
+	if absf(direction.x) >= absf(direction.y) and absf(direction.x) > 0.1:
+		Input.action_press("ui_right" if direction.x > 0.0 else "ui_left")
+	elif absf(direction.y) > 0.1:
+		Input.action_press("ui_down" if direction.y > 0.0 else "ui_up")
+
+func _try_dash() -> void:
+	if _frame % 50 < 2:
+		Input.action_press("rpg_dash")
+	else:
+		Input.action_release("rpg_dash")
+
+func _pulse_counted(action: String, period: int, interaction: bool) -> void:
+	if _frame % period < 2:
+		Input.action_press(action)
+		if _frame % period == 0 and interaction:
+			_interactions += 1
+	else:
+		Input.action_release(action)
+
+func _pulse(action: String, period: int) -> void:
+	if _frame % period < 2:
+		Input.action_press(action)
+	else:
+		Input.action_release(action)
+
+func _release_action(action: String) -> void:
+	Input.action_release(action)
+
+func _release_movement() -> void:
+	for action in ["ui_left", "ui_right", "ui_up", "ui_down"]:
+		Input.action_release(action)
+
+func _release_all() -> void:
+	_release_movement()
+	for action in ["ui_accept", "rpg_attack", "rpg_interact", "rpg_inventory", "rpg_dash"]:
+		Input.action_release(action)
+
+func _metrics(status: String, reason: String) -> void:
+	var levels := get_tree().get_nodes_in_group("saga_action_rpg_level")
+	var rooms_total := 0
+	if not levels.is_empty():
+		rooms_total = _last_room(levels[0]) + 1
+	var rooms := rooms_total >= 5 and _visited.size() >= rooms_total
+	var won := status == "passed"
+	print("[ACTION_RPG_PLAYTHROUGH] status=%s movement=%s melee=%s pickup=%s inventory=%s dialogue=%s quest=%s rooms=%s rooms_visited=%d rooms_total=%d branch=%s shortcut=%s checkpoint=%s dash=%s boss_phase=%s win=%s frames=%d attacks=%d interactions=%d deaths=%d reason=%s" % [
+		status, str(_movement).to_lower(), str(_melee).to_lower(), str(_pickup).to_lower(),
+		str(_inventory).to_lower(), str(_dialogue).to_lower(), str(_quest).to_lower(),
+		str(rooms).to_lower(), _visited.size(), rooms_total, str(_branch).to_lower(), str(_shortcut).to_lower(), str(_checkpoint).to_lower(), str(_dash).to_lower(),
+		str(_boss_phase).to_lower(), str(won).to_lower(), _frame, _attacks,
+		_interactions, _deaths, reason
+	])
+
+func _pass() -> void:
+	var missing := []
+	var levels := get_tree().get_nodes_in_group("saga_action_rpg_level")
+	var rooms_total := _last_room(levels[0]) + 1 if not levels.is_empty() else 0
+	var checks := {
+		"movement": _movement, "melee": _melee, "pickup": _pickup,
+		"inventory": _inventory, "dialogue": _dialogue, "quest": _quest,
+		"rooms": rooms_total >= 5 and _visited.size() >= rooms_total,
+		"branch": _branch, "shortcut": _shortcut, "checkpoint": _checkpoint,
+		"dash": _dash, "boss_phase": _boss_phase
+	}
+	for key in checks:
+		if not bool(checks[key]):
+			missing.append(key)
+	if not missing.is_empty():
+		_fail("missing_%s" % "_".join(missing))
+		return
+	_active = false
+	_release_all()
+	_metrics("passed", "none")
+	get_tree().quit()
+
+func _fail(reason: String) -> void:
+	if not _active:
+		return
+	_active = false
+	_release_all()
+	_metrics("failed", reason)
+	get_tree().quit()
+"""
+
 CAMPAIGN_PROBE_GD = """extends Node
 
 var _active := false
@@ -2613,14 +3140,14 @@ func _ready():
     add_child(particles)
 """
 
-# Harness-owned SFX autoload: loads the four synthesized cues written by
+# Harness-owned SFX autoload: loads the synthesized cues written by
 # saga.sfx and exposes Sfx.play(name). The LLM only ever calls play().
 SFX_GD = """extends Node
 
 var players = {}
 
 func _ready():
-    for sfx_name in ["pickup", "hit", "win", "lose"]:
+    for sfx_name in ["swing", "dash", "pickup", "hit", "phase", "win", "lose"]:
         var player = AudioStreamPlayer.new()
         player.stream = load("res://assets/sfx_%s.wav" % sfx_name)
         add_child(player)
@@ -2660,6 +3187,14 @@ def _write_harness_project(
             'CampaignProbe="*res://campaign_probe.gd"\n'
             'Music="*res://music.gd"',
         )
+    elif design_doc.get("mechanic_template") == "action_rpg":
+        project_config = project_config.replace(
+            'Music="*res://music.gd"',
+            'ActionRpgProfile="*res://archetypes/action_rpg/progression_profile.gd"\n'
+            'ActionRpgProbe="*res://action_rpg_probe.gd"\n'
+            'ActionRpgPlaythrough="*res://action_rpg_playthrough.gd"\n'
+            'Music="*res://music.gd"',
+        )
     (project_dir / "project.godot").write_text(project_config, encoding="utf-8")
     harness_files = {
         "screenshot.gd": SCREENSHOT_GD,
@@ -2675,7 +3210,9 @@ def _write_harness_project(
         "capture_probe.gd": CAPTURE_PROBE_GD,
         "herd_probe.gd": HERD_PROBE_GD,
         "run_and_gun_probe.gd": RUN_AND_GUN_PROBE_GD,
+        "action_rpg_probe.gd": ACTION_RPG_PROBE_GD,
         "run_and_gun_playthrough.gd": RUN_AND_GUN_PLAYTHROUGH_GD,
+        "action_rpg_playthrough.gd": ACTION_RPG_PLAYTHROUGH_GD,
         "campaign_probe.gd": CAMPAIGN_PROBE_GD,
         "music.gd": _build_music_gd(bgm_filename),
         "game.gd": _build_game_gd(
@@ -2777,8 +3314,10 @@ SYSTEM_PROMPT_BASE = (
     "a CollisionShape2D child, and every interactive object (pickup, hazard, "
     "switch, creature, zone) is also an Area2D with a CollisionShape2D child, "
     "detected via the area_entered (and area_exited where needed) signals - "
-    "never use physics bodies. Show the game state in a Label on a "
-    "CanvasLayer, and implement the design brief's win condition and lose "
+    "never use physics bodies. Show the game state in a Label named exactly "
+    "`HUDStatus`, inside a CanvasLayer named exactly `HUD`; give it nonempty "
+    "text in _ready so the runtime HUD probe can observe it on screen. "
+    "Implement the design brief's win condition and lose "
     "condition exactly. Your script controls ONE level of a multi-level "
     "game - the design brief names your level and its position, so scale "
     "difficulty numbers up for later levels. Structure play as four states "
@@ -3040,10 +3579,13 @@ func _ready():
         _spawn_coin(pos)
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
+    status_label.text = "Coins: 0 / %d" % total_coins
 
     if DisplayServer.get_name() == "headless" or Game.level > 0:
         state = "playing"
@@ -3161,8 +3703,10 @@ func _ready():
         _spawn_switch(positions[index], index)
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -3301,8 +3845,10 @@ func _ready():
         _spawn_hazard(starts[i], dirs[i])
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -3447,8 +3993,10 @@ func _ready():
         _spawn_zone(pos)
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -3592,8 +4140,10 @@ func _ready():
         _spawn_creature(pos)
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -3748,8 +4298,10 @@ func _ready():
     add_child(patroller)
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -3933,8 +4485,10 @@ func _ready():
         _spawn_hazard(hazard_starts[i], hazard_headings[i])
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -4163,8 +4717,10 @@ func _ready():
     add_child(patroller)
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -4358,8 +4914,10 @@ func _ready():
     _spawn_ghost(Vector2(515, 280), Color(0.6, 1.3, 0.7), [])
 
     var canvas = CanvasLayer.new()
+    canvas.name = "HUD"
     add_child(canvas)
     status_label = Label.new()
+    status_label.name = "HUDStatus"
     status_label.position = Vector2(20, 20)
     canvas.add_child(status_label)
 
@@ -4780,6 +5338,7 @@ PROBED_TEMPLATES = {
     "dot_maze",
     "maze_chase",
     "run_and_gun",
+    "action_rpg",
 }
 
 
@@ -4798,6 +5357,108 @@ def _objective_probe_for(project_dir, level_index: int, template: str):
     return run_probe
 
 
+def _assembly_contract(state: GraphState) -> str:
+    """Compact immutable composition context for generated-code builders."""
+    lock = state.get("assembly_lock") or {}
+    if not lock:
+        return ""
+    components = [
+        f"{component.get('id')}@{component.get('version')}"
+        for mode in lock.get("modes") or []
+        for component in mode.get("components") or []
+    ]
+    return (
+        "Immutable Game Assembly (do not add undeclared gameplay systems):\n"
+        f"- assembly_hash: {lock.get('assembly_hash')}\n"
+        f"- components: {', '.join(components)}\n"
+        f"- required QA evidence: {', '.join(lock.get('required_probes') or [])}\n"
+    )
+
+
+def _persist_assembly_lock(project_dir: Path, state: GraphState) -> None:
+    """Keep the exact runtime contract beside the project that QA executes."""
+    lock = state.get("assembly_lock")
+    if lock:
+        (project_dir / "assembly.lock.json").write_text(
+            json.dumps(lock, indent=2), encoding="utf-8"
+        )
+
+
+def _assert_pack_matches_assembly(
+    state: GraphState,
+    pack_id: str,
+    pack_root: Path | None = None,
+    pack_required_files: tuple[str, ...] | None = None,
+) -> None:
+    lock = state.get("assembly_lock") or {}
+    locked_manifests = {
+        component.get("manifest_id")
+        for mode in lock.get("modes") or []
+        for component in mode.get("components") or []
+    }
+    if locked_manifests and locked_manifests != {pack_id}:
+        raise ValueError(
+            f"assembly {lock.get('assembly_hash')} resolved manifests "
+            f"{sorted(locked_manifests)} but Coder selected pack {pack_id!r}"
+        )
+    if locked_manifests:
+        from saga.capabilities import profile_requests
+
+        expected_components = {
+            (request["id"], request["version"])
+            for request in profile_requests(pack_id)
+        }
+        locked_components = {
+            (component.get("id"), component.get("version"))
+            for mode in lock.get("modes") or []
+            for component in mode.get("components") or []
+        }
+        if locked_components != expected_components:
+            raise ValueError(
+                f"pack {pack_id!r} can currently scaffold only its complete profile; "
+                f"locked {sorted(locked_components)}, expected {sorted(expected_components)}"
+            )
+        if pack_required_files is not None:
+            locked_runtime_files = {
+                runtime_file
+                for mode in lock.get("modes") or []
+                for component in mode.get("components") or []
+                for runtime_file in component.get("runtime_files") or []
+            }
+            if locked_runtime_files != set(pack_required_files):
+                raise ValueError(
+                    f"pack {pack_id!r} copies files outside its locked components: "
+                    f"locked {sorted(locked_runtime_files)}, "
+                    f"pack {sorted(pack_required_files)}"
+                )
+    if pack_root is None:
+        return
+    resolved_root = pack_root.resolve()
+    for mode in lock.get("modes") or []:
+        for component in mode.get("components") or []:
+            if component.get("manifest_id") != pack_id:
+                continue
+            for runtime_file, expected_digest in (
+                component.get("runtime_digests") or {}
+            ).items():
+                runtime_path = (resolved_root / runtime_file).resolve()
+                if not runtime_path.is_relative_to(resolved_root):
+                    raise ValueError(
+                        f"locked runtime file escapes its pack: {runtime_file!r}"
+                    )
+                try:
+                    actual_digest = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+                except OSError as exc:
+                    raise ValueError(
+                        f"locked runtime file is unavailable: {runtime_path}: {exc}"
+                    ) from exc
+                if actual_digest != expected_digest:
+                    raise ValueError(
+                        f"locked runtime file changed after composition: {runtime_file!r} "
+                        f"expected {expected_digest}, got {actual_digest}"
+                    )
+
+
 def coder(state: GraphState) -> GraphState:
     design_doc = state["design_doc"]
     sprite_paths = state.get("sprite_paths") or []
@@ -4808,6 +5469,7 @@ def coder(state: GraphState) -> GraphState:
     project_dir = run_project_dir(state)
 
     project_dir.mkdir(parents=True, exist_ok=True)
+    _persist_assembly_lock(project_dir, state)
     assets_dir = project_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
 
@@ -4842,13 +5504,47 @@ def coder(state: GraphState) -> GraphState:
     assets_manifest = _asset_manifest(listed_assets, design_doc)
 
     template = design_doc.get("mechanic_template") or "collect"
-    if template == "run_and_gun":
-        from saga.archetypes import scaffold_run_and_gun_level
+    if template in {"run_and_gun", "action_rpg"}:
+        from saga.archetypes import (
+            load_pack,
+            scaffold_action_rpg_level,
+            scaffold_run_and_gun_level,
+        )
 
         _write_harness_project(project_dir, design_doc, current_level, bgm_filename)
-        pack = scaffold_run_and_gun_level(
-            project_dir, design_doc, current_level, asset_filenames
+        locked_pack = load_pack(template)
+        _assert_pack_matches_assembly(
+            state,
+            locked_pack.id,
+            locked_pack.root,
+            locked_pack.required_files,
         )
+        scaffold = (
+            scaffold_run_and_gun_level
+            if template == "run_and_gun"
+            else scaffold_action_rpg_level
+        )
+        content_plan = None
+        if template in {"action_rpg", "run_and_gun"}:
+            from saga.archetypes import (
+                build_action_rpg_plan,
+                build_run_and_gun_encounter_plan,
+            )
+
+            content_plan = (
+                build_action_rpg_plan(design_doc, current_level)
+                if template == "action_rpg"
+                else build_run_and_gun_encounter_plan(design_doc, current_level)
+            )
+            pack = scaffold(
+                project_dir,
+                design_doc,
+                current_level,
+                asset_filenames,
+                plan=content_plan,
+            )
+        else:
+            pack = scaffold(project_dir, design_doc, current_level, asset_filenames)
         print(
             f"[Coder] Scaffolded level {current_level + 1}/{total_levels} from "
             f"{pack.id}@{pack.version} ({len(pack.capabilities)} capabilities) "
@@ -4861,10 +5557,13 @@ def coder(state: GraphState) -> GraphState:
             "repair_rejected": False,
             "repair_validation_errors": [],
         }
+        if content_plan is not None:
+            result["content_plan"] = content_plan
         if not state.get("qa_errors") and not state.get("tune_notes"):
             result["coder_prompt"] = (
                 f"Archetype {pack.id}@{pack.version}; level "
-                f"{current_level + 1}; capabilities: {', '.join(pack.capabilities)}"
+                f"{current_level + 1}; capabilities: {', '.join(pack.capabilities)}; "
+                f"assembly: {(state.get('assembly_lock') or {}).get('assembly_hash', 'legacy')}"
             )
         return result
 
@@ -4887,6 +5586,7 @@ def coder(state: GraphState) -> GraphState:
     # which files exist) and tends to flail into fallback code instead.
     assets_line = f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
     blueprint_contract = _blueprint_contract(state)
+    assembly_contract = _assembly_contract(state)
     # Background knowledge leads; the script, the contract and the errors are
     # what the model must read most recently.
     skill_reference = _skill_reference(state)
@@ -4897,6 +5597,7 @@ def coder(state: GraphState) -> GraphState:
             f"{skill_reference}"
             f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
+            f"{assembly_contract}"
             f"{blueprint_contract}"
             f"Godot reported these errors:\n{errors_desc}\n"
         )
@@ -4908,6 +5609,7 @@ def coder(state: GraphState) -> GraphState:
             f"{skill_reference}"
             f"Previous script:\n```gdscript\n{previous_script}\n```\n\n"
             f"{assets_line}"
+            f"{assembly_contract}"
             f"{blueprint_contract}"
             f"Apply these tuning changes:\n{notes_desc}\n"
         )
@@ -4946,6 +5648,7 @@ def coder(state: GraphState) -> GraphState:
             f"This is level {current_level + 1} of {total_levels}: "
             f"{level['name']}: {level['description']}\n"
             f"{difficulty_line}"
+            f"{assembly_contract}"
             f"{blueprint_contract}"
             f"Available image assets (use these EXACT filenames):\n{assets_manifest}\n"
         )

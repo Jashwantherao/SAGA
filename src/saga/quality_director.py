@@ -14,8 +14,8 @@ from collections import defaultdict
 from saga.state import GraphState
 
 
-REPORT_VERSION = 1
-MINIMUM_SCORE = 75
+REPORT_VERSION = 5
+MINIMUM_SCORE = 80
 MINIMUM_DIMENSION_SCORE = 45
 MAX_POLISH_REPAIRS_PER_LEVEL = 1
 MAX_TOTAL_RETRIES_PER_LEVEL = 6
@@ -31,7 +31,9 @@ OBJECTIVE_TEMPLATES = {
     "dot_maze",
     "maze_chase",
     "run_and_gun",
+    "action_rpg",
 }
+PACKED_VISUAL_TEMPLATES = {"run_and_gun", "action_rpg"}
 
 
 def _clamp(value: float) -> int:
@@ -118,7 +120,20 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
     else:
         objective_score = 90 if passed else 0
 
+    narrative_enabled = template == "action_rpg"
+    narrative_score = 100
+    if narrative_enabled and objective.get("narrative_fidelity_verified") is not True:
+        narrative_score = 0
+        findings.append(_finding(
+            "narrative_fidelity", "composition_director", "high",
+            "narrative_identity_unproven",
+            "The runtime did not prove the authored game identity",
+            str(objective.get("narrative_fidelity_verified", "missing evidence")),
+            "Compile room, quest, NPC, currency, relic and boss identity into ContentIR and verify the rendered HUD/dialogue.",
+        ))
+
     vision_notes = [str(note) for note in (level.get("vision_notes") or [])]
+    vision_evaluated = level.get("vision_evaluated") is True
     visual_score = 100
     for note in vision_notes:
         hard = note.startswith("Vision (quality gate):")
@@ -139,6 +154,14 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
             "visual_presentation", "qa_agent", "info", "screenshot_missing",
             "No final gameplay screenshot was captured", "screenshot_path is empty",
             "Capture an active gameplay frame so visual quality can be inspected.",
+        ))
+    if template in PACKED_VISUAL_TEMPLATES and not vision_evaluated:
+        visual_score = min(visual_score, 30)
+        findings.append(_finding(
+            "visual_presentation", "qa_agent", "high", "visual_review_unavailable",
+            "Packed game has no valid visual-review verdict",
+            "vision_evaluated is false; a screenshot file alone does not prove visual quality",
+            "Restore the configured vision provider and rerun QA before considering this game ship-ready.",
         ))
     visual_score = _clamp(visual_score)
 
@@ -167,6 +190,126 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
             "Tighten asset consistency and verify the replacement in a new gameplay capture.",
         ))
 
+    # A technically clean clip is not automatically a good game. Packed games
+    # must show authored animation, readable encounters, combat feedback, and
+    # a cohesive presentation tier. The old report awarded full credit merely
+    # because no model happened to emit a warning; that is how a static sprite
+    # moving over debug geometry received 100/100.
+    experience_score = 100
+    if template in PACKED_VISUAL_TEMPLATES:
+        experience_fields = {
+            "animation": video.get("animation"),
+            "combat_feedback": video.get("combat_feedback"),
+            "encounter_readability": video.get("encounter_readability"),
+            "presentation_tier": video.get("presentation_tier"),
+        }
+        expected_values = {
+            "animation": "animated",
+            "combat_feedback": "clear",
+            "encounter_readability": "clear",
+            "presentation_tier": "polished",
+        }
+        missing = [name for name, value in experience_fields.items() if value is None]
+        if missing:
+            experience_score = 20
+            findings.append(_finding(
+                "player_experience", "qa_agent", "high", "experience_review_incomplete",
+                "Player-experience evidence is incomplete",
+                "missing structured video fields: " + ", ".join(missing),
+                "Capture combat-oriented gameplay and obtain a complete presentation verdict.",
+            ))
+        else:
+            value_scores = {
+                "animation": {"animated": 100, "indeterminate": 30, "sliding": 0},
+                "combat_feedback": {"clear": 100, "weak": 35, "not_observed": 20, "indeterminate": 20},
+                "encounter_readability": {"clear": 100, "cluttered": 30, "empty": 20, "indeterminate": 20},
+                "presentation_tier": {"polished": 100, "prototype": 25, "broken": 0, "indeterminate": 20},
+            }
+            scores = [
+                value_scores[name].get(str(value), 0)
+                for name, value in experience_fields.items()
+            ]
+            experience_score = _clamp(sum(scores) / len(scores))
+            labels = {
+                "animation": "Authored character animation is not proven",
+                "combat_feedback": "Combat lacks proven anticipation and impact feedback",
+                "encounter_readability": "Encounter readability is below the production bar",
+                "presentation_tier": "The build still reads as a prototype",
+            }
+            actions = {
+                "animation": "Use distinct idle/walk/attack/hurt frames and verify pose changes in motion.",
+                "combat_feedback": "Add visible enemy wind-ups, attack arcs, hit flashes, particles, health response, and sound.",
+                "encounter_readability": "Separate actors, threats, collision boundaries, and walkable space by shape and value.",
+                "presentation_tier": "Replace debug-like overlays and reconcile world, character, UI, motion, and audio presentation.",
+            }
+            owners = {
+                "animation": "coder",
+                "combat_feedback": "coder",
+                "encounter_readability": "art_director",
+                "presentation_tier": "studio_director",
+            }
+            for name, expected in expected_values.items():
+                actual = str(experience_fields[name])
+                if actual != expected:
+                    findings.append(_finding(
+                        "player_experience", owners[name], "high",
+                        f"experience_{name}", labels[name],
+                        f"video verdict: {name}={actual!r}; required={expected!r}",
+                        actions[name],
+                    ))
+
+    persona_score = 100
+    persona_results = objective.get("persona_results") or {}
+    persona_enabled = template in PACKED_VISUAL_TEMPLATES and (
+        template == "action_rpg" or bool(persona_results)
+    )
+    if persona_enabled:
+        telemetry = objective.get("content_telemetry") or {}
+        expected_personas = {"achiever", "explorer", "survivor", "speedrunner"}
+        if set(persona_results) != expected_personas:
+            persona_score = 0
+            findings.append(_finding(
+                "persona_playtests", "experience_director", "high", "persona_evidence_missing",
+                "The generated world lacks complete persona evidence",
+                f"reported personas: {sorted(persona_results)}",
+                "Run achiever, explorer, survivor and speedrunner critics before selection.",
+            ))
+        else:
+            failed_personas = [
+                name for name, verdict in persona_results.items()
+                if not bool(verdict.get("passed"))
+            ]
+            persona_score = _clamp(
+                100 * (len(expected_personas) - len(failed_personas)) / len(expected_personas)
+            )
+            for name in failed_personas:
+                findings.append(_finding(
+                    "persona_playtests", "experience_director", "high",
+                    f"persona_{name}_failed", f"The {name} route failed its experience contract",
+                    str(persona_results[name]),
+                    "Edit only the failed route or reward, then rescore every persona.",
+                ))
+        empty_rooms = int(telemetry.get("empty_room_count") or 0)
+        if empty_rooms > 0:
+            persona_score = min(persona_score, 60)
+            findings.append(_finding(
+                "persona_playtests", "composition_director", "medium", "empty_travel",
+                "The compiled journey contains empty travel",
+                f"empty_room_count={empty_rooms}",
+                "Add a discovery, encounter, narrative beat or recovery decision to every room.",
+            ))
+        if int(telemetry.get("actual_rooms_total") or 0) and (
+            int(telemetry.get("actual_rooms_visited") or 0)
+            != int(telemetry.get("actual_rooms_total") or 0)
+        ):
+            persona_score = 0
+            findings.append(_finding(
+                "persona_playtests", "qa_agent", "critical", "world_not_fully_traversed",
+                "Normal-input QA did not traverse the complete compiled world",
+                str(telemetry),
+                "Repair navigation or progression and rerun the full input playthrough.",
+            ))
+
     balance_notes = [str(note) for note in (level.get("balance_notes") or [])]
     balance_score = _clamp(100 - 20 * len(balance_notes))
     for note in balance_notes:
@@ -192,13 +335,39 @@ def review_level(state: GraphState, level_index: int | None = None) -> dict:
             "Add or repair the system-specific probe before treating the feature as verified.",
         ))
 
+    packed = template in PACKED_VISUAL_TEMPLATES
     dimensions = {
-        "playability": {"score": playability_score, "weight": 25, "confidence": "measured" if playability else "inferred"},
-        "objective": {"score": objective_score, "weight": 25, "confidence": "measured" if objective else "inferred"},
-        "visual_presentation": {"score": visual_score, "weight": 20, "confidence": "measured" if screenshot else "limited"},
-        "motion_presentation": {"score": motion_score, "weight": 15, "confidence": "measured" if video else "not_evaluated"},
-        "balance": {"score": balance_score, "weight": 10, "confidence": "static_analysis"},
-        "reliability": {"score": reliability_score, "weight": 5, "confidence": "measured"},
+        "playability": {"score": playability_score, "weight": 16 if narrative_enabled else (18 if persona_enabled else (20 if packed else 25)), "confidence": "measured" if playability else "inferred"},
+        "objective": {"score": objective_score, "weight": 16 if narrative_enabled else (18 if persona_enabled else (20 if packed else 25)), "confidence": "measured" if objective else "inferred"},
+        "visual_presentation": {
+            "score": visual_score,
+            "weight": 12 if narrative_enabled else (14 if persona_enabled else (15 if packed else 20)),
+            "confidence": "measured" if screenshot and vision_evaluated else "not_evaluated",
+        },
+        "motion_presentation": {"score": motion_score, "weight": 8 if persona_enabled else (10 if packed else 15), "confidence": "measured" if video else "not_evaluated"},
+        **({
+            "player_experience": {
+                "score": experience_score,
+                "weight": 18 if narrative_enabled else (22 if persona_enabled else 25),
+                "confidence": "measured" if video else "not_evaluated",
+            }
+        } if packed else {}),
+        **({
+            "persona_playtests": {
+                "score": persona_score,
+                "weight": 10 if narrative_enabled else 12,
+                "confidence": "measured" if objective.get("persona_results") else "not_evaluated",
+            }
+        } if persona_enabled else {}),
+        **({
+            "narrative_fidelity": {
+                "score": narrative_score,
+                "weight": 10,
+                "confidence": "measured" if objective else "not_evaluated",
+            }
+        } if narrative_enabled else {}),
+        "balance": {"score": balance_score, "weight": 4 if persona_enabled else (5 if packed else 10), "confidence": "static_analysis"},
+        "reliability": {"score": reliability_score, "weight": 6 if narrative_enabled else (4 if persona_enabled else 5), "confidence": "measured"},
     }
     overall = round(sum(
         item["score"] * item["weight"] / 100 for item in dimensions.values()
@@ -297,14 +466,48 @@ def _repair_target(state: GraphState, review: dict) -> tuple[str, str | None, st
     levels = design.get("levels") or []
     if "asset_maker" in owners:
         evidence = " ".join(str(item.get("evidence") or "") for item in actionable).lower()
-        if "hero" in evidence or "player" in evidence or "sprite" in evidence:
+        extras = design.get("extra_sprites") or []
+        role_tokens = {
+            "npc": ("npc", "archivist", "hermit", "keeper", "merchant", "guide"),
+            "boss": ("boss", "warden", "golem", "champion"),
+            "enemy": ("enemy", "sentinel", "skirmisher", "stalker", "bruiser", "guard", "creature"),
+        }
+        requested_role = next(
+            (role for role in ("npc", "boss", "enemy") if role in evidence),
+            None,
+        )
+        matching_extras = [
+            extra for extra in extras
+            if requested_role and any(
+                token in str(extra.get("name") or "").lower()
+                for token in role_tokens[requested_role]
+            )
+        ]
+        if matching_extras or (
+            any(word in evidence for word in ("role-readability", "enemy", "boss", "npc"))
+            and extras
+        ):
+            target = matching_extras[0] if matching_extras else extras[0]
+            field = f"extra:{target['name']}"
+            original = str(target.get("description") or target["name"])
+            value = original + "; unique high-contrast silhouette, visually distinct from hero and background, no text"
+        elif "hero" in evidence or "player" in evidence or "sprite" in evidence:
             field = "hero_description"
             original = str(design.get("hero_description") or "")
             value = original + "; high-contrast side-view game sprite, readable silhouette, facing left, no text"
         else:
             field = "level_background"
             original = str(levels[index].get("description") or "") if index < len(levels) else ""
-            value = original + "; strict side-view composition, clear gameplay plane, no isometric perspective, no UI text"
+            camera = (state.get("art_direction") or {}).get("camera_contract") or {}
+            projection = str(camera.get("projection") or "strict 2D side-view orthographic")
+            camera_angle = str(camera.get("camera") or "horizontal side elevation")
+            gameplay_plane = str(camera.get("gameplay_plane") or "clear gameplay plane")
+            forbidden = ", ".join(str(item) for item in camera.get("forbidden") or [])
+            value = (
+                original
+                + f"; {projection}; {camera_angle}; {gameplay_plane}; no UI text"
+                + (f"; forbid {forbidden}" if forbidden else "")
+            )
         return "asset_maker", field, value.strip("; ")
     return "coder", None, None
 
@@ -337,8 +540,16 @@ def quality_director(state: GraphState) -> GraphState:
     prior_failed_reviews = sum(
         not (item.get("gate") or {}).get("passed") for item in reviews[:-1]
     )
+    stable_pack = str(state.get("coder_model") or "").startswith("archetype/")
+    repairable_finding = any(
+        finding.get("owner") == "asset_maker"
+        or (finding.get("owner") == "coder" and not stable_pack)
+        for finding in review.get("findings") or []
+        if finding.get("severity") != "info"
+    )
     may_repair = (
         not review["gate"]["passed"]
+        and repairable_finding
         and prior_failed_reviews < MAX_POLISH_REPAIRS_PER_LEVEL
         and (state.get("retry_count") or 0) < MAX_TOTAL_RETRIES_PER_LEVEL
     )
@@ -366,7 +577,12 @@ def quality_director(state: GraphState) -> GraphState:
         return update
 
     if not review["gate"]["passed"]:
-        print("[Quality Director] Polish retry exhausted; truthful ship gate remains closed")
+        reason = (
+            "no safe automatic repair exists for this evidence"
+            if not repairable_finding
+            else "polish retry exhausted"
+        )
+        print(f"[Quality Director] {reason}; truthful release gate remains closed")
     return {
         "quality_results": quality_results,
         "quality_report": report,

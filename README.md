@@ -2,9 +2,14 @@
 
 Multi-agent LangGraph pipeline that turns a one-line prompt into a playable, multi-level 2D Godot game. Runs fully autonomously and entirely for free on local GPU inference; a cloud Claude path exists for every reasoning-heavy agent as a premium upgrade once the API is funded.
 
+Project completion is tracked against the concrete
+[`SAGA v1 release-readiness checklist`](docs/release-readiness.md), including a
+portable Windows build, a fully evidence-gated flagship game, and the public
+demo material required for a portfolio release.
+
 ```
-Studio Director -> Game Designer -> Systems Architect -> (Asset Maker, Audio Agent)
-    -> Coder <-> QA Agent -> Quality Director  (repeats per level, advancing through the design
+Studio Director -> Game Designer -> Systems Architect -> Composition Director
+    -> (Asset Maker, Audio Agent) -> Coder <-> QA Agent -> Quality Director  (repeats per level, advancing through the design
        doc's levels; every failure returns to the Studio Director, which
        triages it: fix / regenerate / new art)
     -> [--gate: human plays this level] -> [--playtest] -> done
@@ -14,6 +19,17 @@ The Systems Architect writes `blueprint.json` before any asset or code work.
 `run.json` records its version, provider status, errors, dependency-ordered
 build plan, and recommended specialist/fallback models. Use `--blueprint` to
 replay a reviewed contract without another architect call.
+
+The model-free Composition Director then translates the creative brief into a
+typed `game_spec.json` and resolves it against versioned capability manifests.
+It writes an immutable `assembly.lock.json` before art or audio begins. Missing
+dependencies, incompatible components, ambiguous ports, conflicting controls,
+unowned state, or unwired events stop production immediately. Downstream QA
+maps every component's mandatory probes back to observed runtime evidence; a
+missing proof blocks shipping and a false proof fails it. Use `--game-spec`
+together with its matching `--design-doc` to replay a reviewed GameSpec v2
+contract. See
+[`docs/composition-kernel.md`](docs/composition-kernel.md).
 
 Enable `SAGA_INCREMENTAL_BUILD=1` for protected quality mode. After the first
 complete level draft establishes a compiling Godot baseline, SAGA gives each
@@ -38,12 +54,22 @@ operations in Python while providing:
   follow/copy log console, and a session history of past generations;
 - a generated-game library with screenshots, search, and status filters;
 - a full run detail view: gameplay video player, evidence-based Quality
-  Director score, per-level QA ledger with objective metrics and Video-QA evidence, an asset gallery with lightbox,
+  Director score, assembly identity and per-capability proof coverage, per-level QA ledger with objective metrics and Video-QA evidence, an asset gallery with lightbox,
   background-music playback, the design document, and run deletion;
 - allow-listed start/stop/restart controls and a log viewer for Ollama,
   ComfyUI, and MusicGen (Ollama is launched with its D: models root); and
 - per-agent model routing for local Ollama, DeepSeek, NVIDIA, Anthropic, and
   OpenAI-compatible APIs without exposing saved keys to the frontend.
+
+Build the current self-starting D:-local portfolio executable with:
+
+```powershell
+D:\SAGA\scripts\saga_ui.ps1 -Mode package
+```
+
+The result is `D:\SAGA\release\SAGA-Studio-0.1.0.exe` with a matching SHA-256
+checksum. It launches and owns the loopback API automatically; no
+`npm run dev:stack` terminal is required.
 
 For frontend/API development, install dependencies and launch the browser
 version from PowerShell:
@@ -85,13 +111,14 @@ are intentionally locked while a generation is active.
 | Agent | Runs on | Does |
 |---|---|---|
 | Studio Director | local (shares the Coder's model) or cloud | Intake, then supervision: every QA failure comes back to it and it routes the failure to the cheapest plausible fix - hand the errors to the Coder (with a one-line diagnosis when the evidence supports one), discard the script and regenerate fresh (when its own history shows a repair that didn't take), or re-describe one art asset and rebuild on top of it. Any failure of the triage call falls back to the deterministic fix-then-regenerate policy it replaced; the graph still owns the retry budget |
-| Game Designer | local (`qwen3-coder:30b-a3b`) or cloud (`claude-sonnet-5`) | One-line idea -> structured design doc: picks one of 10 mechanic templates/archetypes, a hero description, key item (with a gameplay role), story, 3-5 levels each with its own background, an authored non-decreasing difficulty curve (`intensity` 1-10), which of the mechanic's tuning levers rise per level, and a narrative beat shown between levels |
+| Game Designer | local (`qwen3-coder:30b-a3b`) or cloud (`claude-sonnet-5`) | One-line idea -> structured design doc: picks one of 11 mechanic templates/archetypes, a hero description, key item (with a gameplay role), story, 3-5 levels each with its own background, an authored non-decreasing difficulty curve (`intensity` 1-10), which of the mechanic's tuning levers rise per level, and a narrative beat shown between levels |
 | Systems Architect | NVIDIA Nemotron 3 Super by default; deterministic fallback | Converts the creative design into a versioned `blueprint.json`: dependency-ordered gameplay systems, observable acceptance criteria, and benchmark-informed model recommendations for each future specialist build step. Canonical premise and win/loss rules cannot drift. The current Coder consumes the complete contract; protected one-system-at-a-time builders are the next migration step. Provider failure is recorded and falls back without blocking production |
+| Composition Director | deterministic, model-free | Converts the DesignDoc into typed GameSpec v2 data, validates bounded state/content/world rules, resolves exact capability versions and their dependency/event/port/state/input contracts, then writes `game_spec.json` and `assembly.lock.json` before production. A reviewed contract can be replayed with matching `--design-doc` and `--game-spec` files |
 | Asset Maker | local GPU, ComfyUI + Flux.1 schnell + rembg | The hero in a resting **and** a walking pose (sharing one seed, so they render the same character), the key-item icon, up to four `extra_sprites` the design doc asked for by name, and one background per level. Icons generate at 512x512 for reliable full-body framing, are background-removed via rembg since Flux can't emit alpha, then cropped to the alpha bounding box and downscaled to 128x128. Without `extra_sprites`, anything that isn't a hero, icon or background - platforms, enemies, walls - had no image and the Coder drew it as an untextured rectangle |
 | Audio Agent | local GPU, MusicGen (`transformers`) | Background music from the design doc's audio mood; loops continuously across level changes via a harness-owned autoload |
-| Coder | local GPU, hosted API, or deterministic archetype pack | Classic templates write one `Level_N.gd` from a template-matched few-shot. `run_and_gun` instead scaffolds a versioned multi-file Godot capability pack and writes only a compact level definition: the model cannot silently reimplement movement, projectiles, enemy AI, checkpoints or boss state. The harness also writes `project.godot`, scenes, procedural SFX, ambience, narrative interludes and Victory flow |
-| QA Agent | Godot 4.7, headless + optional NVIDIA video QA | Imports assets and runs each level, then **plays it**. Autoplay proves input-driven movement; ten deterministic mechanic probes cover the nine classic templates plus run-and-gun structure, weapons, waves, progression/save integrity, combat transitions and victory. Structured results and every artifact remain in the truthful per-level ledger |
-| Quality Director | deterministic evidence review | Reviews every technically passing level across playability, objective completion, visual and motion presentation, balance, and reliability. It assigns findings to the responsible agent, permits one bounded polish pass, and closes the ship gate when a release misses the measured quality floor |
+| Coder | local GPU, hosted API, or deterministic archetype pack | Classic templates write one `Level_N.gd` from a template-matched few-shot. `run_and_gun` and `action_rpg` instead scaffold versioned multi-file Godot capability packs and write only compact level definitions: the model cannot silently reimplement their stable controls, combat, AI, progression or boss state. Every built project receives the exact assembly lock, and a packed builder is rejected if it does not match the locked runtime manifest. The harness also writes `project.godot`, scenes, procedural SFX, ambience, narrative interludes and Victory flow |
+| QA Agent | Godot 4.7, headless + optional NVIDIA video QA | Imports assets and runs each level, then **plays it**. Autoplay proves input-driven movement; eleven deterministic mechanic probes cover the nine classic templates plus run-and-gun and action-RPG structure, combat, progression/save integrity, loss/restart and victory. It closes the assembly with a capability matrix: declared -> configured -> exercised -> observed -> passed. Structured results and every artifact remain in the truthful per-level ledger |
+| Quality Director | deterministic evidence review | Reviews every technically passing level across playability, objective completion, visual and motion presentation, player experience, balance, and reliability. Packed games must visibly prove authored animation, readable encounters, combat anticipation/impact, and cohesive presentation; absence of detected errors is no longer full credit. It assigns findings to the responsible agent, permits one bounded polish pass, and closes the automated release-candidate gate when evidence misses the measured floor |
 
 Coder repairs are transactional. SAGA preserves the previous gameplay script,
 rechecks corrected output for contracts, asset references, and unsafe APIs, then
@@ -117,9 +144,9 @@ Generated sprites are single still images — there is no sprite sheet anywhere 
 
 The Game Designer picks whichever of these best fits the one-line idea, instead of defaulting to "collect":
 
-`collect` · `survive_hazards` · `ordered_switches` · `depletion` · `herd_to_goal` · `capture_zones` · `survive_and_deplete` (escalating drain + finite-fuel refill zones + roaming hazards) · `maze_chase` (walled corridors via axis-separated collision, pickups, a patrolling hazard) · `dot_maze` (a dense corridor maze, dots, patrollers, a hunter and power reversal) · `run_and_gun` (side-view running/jumping, projectiles, patrol/chase enemies, checkpoint respawn and a multi-phase boss)
+`collect` · `survive_hazards` · `ordered_switches` · `depletion` · `herd_to_goal` · `capture_zones` · `survive_and_deplete` (escalating drain + finite-fuel refill zones + roaming hazards) · `maze_chase` (walled corridors via axis-separated collision, pickups, a patrolling hazard) · `dot_maze` (a dense corridor maze, dots, patrollers, a hunter and power reversal) · `run_and_gun` (side-view running/jumping, projectiles, patrol/chase enemies, checkpoint respawn and a multi-phase boss) · `action_rpg` (top-down exploration, frontal melee, inventory, NPC dialogue, a persistent quest, a compiled nonlinear 5–6-room world, checkpoint saving and a two-phase boss)
 
-The nine classic templates each have a worked few-shot example in `coder.py`, since showing a local model a complete example of the structure it's asked to produce remains its biggest reliability lever. The dedicated examples expose the stable mechanic state required by autonomous QA, including switch sequence, territory ownership, and permanent creature settlement. `dot_maze`'s few-shot is the largest (244 lines) and routes to a bigger model via `TEMPLATE_MODEL_OVERRIDES` - the 14B reliably dropped variable declarations at that length. `run_and_gun` deliberately bypasses that monolithic path and scaffolds the pack below.
+The nine classic templates each have a worked few-shot example in `coder.py`, since showing a local model a complete example of the structure it's asked to produce remains its biggest reliability lever. The dedicated examples expose the stable mechanic state required by autonomous QA, including switch sequence, territory ownership, and permanent creature settlement. `dot_maze`'s few-shot is the largest (244 lines) and routes to a bigger model via `TEMPLATE_MODEL_OVERRIDES` - the 14B reliably dropped variable declarations at that length. `run_and_gun` and `action_rpg` deliberately bypass that monolithic path and scaffold the packs below.
 
 ### Archetype packs
 
@@ -128,8 +155,8 @@ manifest and ten reusable Godot modules live under
 `src/saga/archetype_packs/run_and_gun/`. The level script is a small adapter;
 stable engine code owns player physics, firing, projectile collision, enemy
 patrol/chase, health and loss, checkpoint respawn, camera/HUD, boss phases and
-level completion. Pack v4 compiles each brief into a reproducible encounter
-plan: one of three stage topologies, traversal platforms, five paced encounter
+level completion. Pack v6 compiles each brief into a reproducible encounter
+plan: Candidate Studio searches 16 deterministic variations across three stage topologies, traversal platforms, five paced encounter
 beats, differentiated enemy roles, hazards, recovery pickups, checkpoint
 placement and a separate boss arena. The plan is validated before Godot runs.
 Its Combat Director adds pulse, spread and explosive weapon patterns, collectible
@@ -145,7 +172,41 @@ The deterministic blueprint exposes the runtime capabilities as separate,
 dependency-ordered systems. QA calls a stable pack interface and refuses to
 ship unless all seven core transitions, the encounter-structure contract, ten
 combat-depth assertions and seven progression/persistence assertions pass.
-This is the pattern future action RPG and creature-collection packs
+`action_rpg` is the second capability family. Pack v6 lives under
+`src/saga/archetype_packs/action_rpg/` and compiles a brief into a validated,
+reproducible 5–6-room adventure. Candidate Studio searches 24 world and encounter
+plans, runs four persona critics, applies only bounded data edits, and records the
+selected signature, repair ledger, and pacing telemetry. Stable modules own four-direction movement
+and collision, Z-key frontal melee, patrol/chase/attack/stagger enemy states,
+spark and gear pickups, a C-key inventory, X-key NPC dialogue, a ten-spark quest
+that unlocks Shift dash and the forge, persistent defeated/collected state,
+atomic checkpoint save/reload, clean loss/restart and a telegraphed two-phase
+boss. Authored hero, enemy, NPC, pickup, boss and top-down background assets are
+used when present, with procedural visuals retained only as a mechanics fallback.
+The deterministic objective probe uses a separate QA save namespace, so testing
+can never advance, corrupt, or erase the player's campaign profile.
+Pack v5 adds a Narrative Content Compiler: each design's quest title, currency,
+quest giver, enemy faction, relic, ability, six-room name bank, dialogue, objectives, boss and
+ending become validated ContentIR consumed verbatim by the stable runtime. Older
+reviewed designs are upgraded from their title, key item and named actor assets;
+they never fall back to the old Ember Hermit shell. Pack v6 compiles directional
+exits, a three-way junction, an optional relic room, a return shortcut, and a
+quest-gated boss route. Runtime travel consumes this graph directly and persists
+discovered rooms and shortcut use; room-array order no longer controls travel.
+QA refuses to ship until fifteen named RPG transitions pass: world-graph
+traversal, narrative fidelity, movement, melee,
+enemy state, pickup, inventory, dialogue, quest, room transition, save/reload,
+loss, clean restart, boss phase and final win. Production builds also require an
+authored hero and background and treat placeholder or perspective-mismatched art
+as a ship-gate failure. A second, independent Action-RPG playthrough must then
+visit every room, collect the optional relic, take the shortcut, and finish the
+adventure using only the public movement, attack, interact, inventory,
+dash and restart input actions. It may observe runtime state, but cannot invoke
+the pack's `qa_*` shortcuts. Its per-system results, frame count, attack and
+interaction counts, and death count are retained under `input_playthrough` in
+the level ledger.
+
+These packs are the pattern future creature-collection and deeper RPG families
 should extend instead of adding larger monolithic few-shots.
 
 ### Retrieval strategy
@@ -359,7 +420,11 @@ This is a real example, not a placeholder - it's what produced "The Clockwork He
 
 What happens, in order: Studio Director allocates an isolated `output/runs/<run-id>/` workspace and passes your prompt to the Game Designer, which returns a full design doc (title, mechanic, 3-5 levels with an authored difficulty curve and narrative beats) printed to the console and saved in that workspace; Asset Maker and Audio Agent then generate the hero/key-item/background art and the BGM in parallel; the Coder writes each level's GDScript and QA Agent builds and verifies it in Godot, with every failure triaged by the Studio Director - repair the script, regenerate it fresh, or regenerate a wrong asset - within `MAX_RETRIES` per level before moving to the next level. Total time for a 3-4 level game is typically several minutes, dominated by image generation and Coder retries.
 
-Final output reports sprite/BGM paths, the generated Godot project path, aggregate QA status, the latest screenshot, the latest mechanic-specific gameplay completion score, and—when enabled—the gameplay MP4. The isolated run directory also contains `design_doc.json`, `quality_report.json`, and a machine-readable versioned `run.json` manifest. Its `level_results` ledger retains every QA attempt, error, retry, advisory, objective metric, screenshot, video path and structured NVIDIA verdict per level; `quality_results` preserves each pre/post-polish review, while `quality_report` exposes the current 0–100 score, evidence confidence, findings, ownership, repair plan, and gate decision. `ship_ready` is true only when every designed level has a recorded clean pass and the Quality Director gate is open. When the Studio Director identifies an art-side defect, Asset Maker now regenerates only the named hero pose set, key item, extra sprite, or current-level background. The replaced file is backed up under `assets/revisions/`, and the old/new paths plus the Director's evidence are retained in both the affected level ledger and manifest. Advisory-only builds are labelled `passed_with_warnings`, and a required QA probe that cannot produce a verdict is labelled `blocked` rather than silently passing.
+Final output reports sprite/BGM paths, the generated Godot project path, aggregate QA status, the latest screenshot, the latest mechanic-specific gameplay completion score, and—when enabled—the gameplay MP4. The isolated run directory also contains `design_doc.json`, `blueprint.json`, `game_spec.json`, `assembly.lock.json`, `quality_report.json`, and a machine-readable versioned `run.json` manifest. Its `level_results` ledger retains every QA attempt, error, retry, advisory, objective metric, normal-input playthrough result, per-capability proof matrix, screenshot, video path, structured NVIDIA verdict, and whether screenshot vision actually returned a valid verdict; `quality_results` preserves each pre/post-polish review, while `quality_report` exposes the current 0–100 score, evidence confidence, findings, ownership, repair plan, and gate decision. The UI describes a passing automated build as a **release candidate**, not a finished game. `ship_ready` is true only when every designed level has a recorded clean pass, every locked capability has passing evidence, and the Quality Director gate is open. Packed games additionally need structured video proof of real pose animation, readable encounter composition, visible combat feedback, and a cohesive non-prototype presentation. They also fail when `vision_evaluated` is false—a screenshot file is not treated as proof that visual review succeeded, and infrastructure-only findings do not waste a Coder retry. When the Studio Director identifies an art-side defect, Asset Maker regenerates only the named hero pose set, key item, extra sprite, or current-level background. The replaced file is backed up under `assets/revisions/`, and the old/new paths plus the Director's evidence are retained in both the affected level ledger and manifest. Advisory-only builds are labelled `passed_with_warnings`, and a required QA probe that cannot produce a verdict is labelled `blocked` rather than silently passing.
+
+Manifest v19 also retains the exact selected `content_plan`: candidate scores,
+persona verdicts, pacing telemetry, stable content signature and bounded repair
+ledger. The UI exposes this under **Candidate Studio** in the QA view.
 
 To play the result:
 ```sh
@@ -386,9 +451,15 @@ settled, a completion score of 100, and zero QA retries. Screenshot review found
 no gating defect; NVIDIA Nemotron video QA verified visible animated movement,
 correct facing, a readable HUD, and a stable scene. The v11 run manifest ended
 with `status=passed` and `ship_ready=true`. The repository suite currently has
-**85 passing tests** plus a clean `compileall` run.
+more than **420 passing tests** plus a clean frontend production build.
 
 ## Known limitations
+
+SAGA's creation layer is being rebuilt around an experience-first candidate
+studio; see [the research-backed revamp](docs/agentic-studio-revamp.md). The
+Action-RPG and Run-and-Gun now use the experience-first Candidate Studio. The
+former searches 24 variable world/encounter plans; the latter searches 16 stage
+plans. Both publish four-persona evidence instead of accepting one happy path.
 
 - Generic autoplay still finds only the movement floor, but every one of SAGA's nine mechanic templates now also has a deterministic objective solver. Resource, territory, sequence, survival, maze, collection, and herding QA measure live behavior rather than trusting advertised rates or labels. The original motivating failure—a herding game whose creatures could never actually be pushed into the goal—is now explicitly gated through real flee displacement, goal progress, permanent settlement, and win verification.
 - Gameplay video QA observes the full deterministic right/down/left/up autoplay sequence, not an expert playthrough. It can catch temporal presentation defects such as reversed facing, rigid sliding, jitter and disappearing objects, but it cannot prove a template-specific objective is winnable; that remains the mechanic solver's job. The gate is opt-in because it uploads the generated MP4 to the configured NVIDIA endpoint.
@@ -399,5 +470,5 @@ with `status=passed` and `ship_ready=true`. The repository suite currently has
 - Large coder models are tight on a 16GB card, and the failure mode is ugly. `dot_maze`'s 35B model needs ~14.1GB; ComfyUI and MusicGen each keep holding VRAM for the entire run despite finishing their work up front, and that residency (measured: 1817 MiB with both alive vs 961 MiB without) leaves only ~354 MiB of headroom - the model dies mid-load with a Windows CUDA-init failure (`0xc0000409`) rather than reporting a clean out-of-memory. Set `SAGA_STOP_GPU_SERVICES=1` to have the Coder stop those services at the start of the code phase (assets and BGM are already generated by then), which raises headroom to ~1210 MiB and lets the model load reliably. Note this stops servers you started - restart them before the next run, or before a `--playtest` `reasset` cycle that needs ComfyUI again. The retry-with-backoff in `coder.py` remains as a safety net but is not the fix: no amount of retrying helps when the model cannot fit.
 - The cloud (`claude`) backends of the Game Designer, Studio Director, and Feedback Interpreter remain less exercised than the local paths while the Anthropic API is unfunded. Every role has a local or OpenAI-compatible path, so this no longer blocks autonomous or human-playtest runs.
 - The Studio Director's triage has been validated on synthetic failure evidence — fix on a first-time compile error, regenerate on an error that survived two repairs, reasset on an art-side defect: all three routed correctly on the local 14B — but not yet against a full autonomous run's real failure distribution. Targeted `reasset` repairs preserve approved art, but still need validation against naturally occurring art failures in full autonomous runs.
-- No Art Director agent yet — Asset Maker and Audio Agent read the design doc directly.
+- Art Director v1 now locks a camera, palette, silhouette, scale and layer-separation bible before image generation. Asset prompts quote their role-specific contracts, structural inspection rejects malformed/cropped cutouts before Godot, and screenshot QA must explicitly prove camera agreement, role readability and style coherence. The remaining limitation is semantic per-asset inspection before assembly: perspective and cross-asset style are currently judged from the composed gameplay frame rather than by a dedicated multi-image contact-sheet review.
 - Background art tends toward perspective rendering while gameplay is flat top-down, causing objects to visually "float" against the scene. Asset Maker's background prompt now explicitly requests a strict top-down orthographic view, which measurably helps (walls read as blocks with visible tops instead of a receding vanishing-point corridor) but doesn't fully eliminate it - Flux follows perspective instructions unreliably, a known limitation of diffusion image models generally, not something prompt wording alone can fully close.

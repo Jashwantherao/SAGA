@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { artifactUrl, formatBytes, formatDate, getJSON, statusLabel } from '../api'
-import type { DesignDoc, LevelAttempt, LevelResult, QualityReport, RunFiles, SagaRun, SystemBuildResult, VideoQaResult } from '../types'
+import type { ArtDirection, AssetContractResult, CapabilityCoverage, ContentPlan, DesignDoc, LevelAttempt, LevelResult, QualityReport, RunFiles, SagaRun, SystemBuildResult, VideoQaResult } from '../types'
 import Icon from './Icon'
 
 type Tab = 'qa' | 'assets' | 'design'
@@ -62,7 +62,7 @@ export default function RunDetail({ run, onClose, onOpen, onDelete, deletable }:
             <p className="detail-idea">{detail.idea}</p>
             <div className="detail-chips">
               <span className={`status ${detail.ship_ready ? 'passed' : detail.complete ? 'failed' : 'building'}`}>
-                {detail.ship_ready ? 'Ship ready' : statusLabel(detail.status)}
+                {detail.ship_ready ? 'Release candidate' : statusLabel(detail.status)}
               </span>
               {levels.length > 0 && <span className="chip">{passedLevels}/{levels.length} levels passed</span>}
               {detail.quality_report && (
@@ -72,6 +72,8 @@ export default function RunDetail({ run, onClose, onOpen, onDelete, deletable }:
               )}
               {detail.retry_count !== undefined && <span className="chip">{detail.retry_count} retries</span>}
               {detail.coder_model && <span className="chip mono">{detail.coder_model}</span>}
+              {detail.assembly_hash && <span className="chip mono" title={detail.assembly_hash}>Assembly {detail.assembly_hash.slice(0, 12)}</span>}
+              {detail.art_direction?.identity_hash && <span className="chip mono" title={detail.art_direction.identity_hash}>Art {detail.art_direction.identity_hash.slice(0, 12)}</span>}
               {files && <span className="chip">{formatBytes(files.total_bytes)} · {files.script_count} scripts</span>}
               <span className="chip">{formatDate(detail.updated_at)}</span>
             </div>
@@ -118,10 +120,16 @@ export default function RunDetail({ run, onClose, onOpen, onDelete, deletable }:
         {tab === 'qa' && (
           <>
             {detail.quality_report && <QualityReportCard report={detail.quality_report} />}
+            {detail.content_plan && <CandidateStudioCard plan={detail.content_plan} />}
             <QaLedger run={detail} levels={levels} />
           </>
         )}
-        {tab === 'assets' && <AssetGallery runId={run.id} files={files} onZoom={setLightbox} />}
+        {tab === 'assets' && (
+          <>
+            {detail.art_direction && <ArtDirectionCard direction={detail.art_direction} results={detail.asset_contract_results || []} />}
+            <AssetGallery runId={run.id} files={files} onZoom={setLightbox} />
+          </>
+        )}
         {tab === 'design' && design && <DesignView design={design} />}
       </section>
 
@@ -131,6 +139,72 @@ export default function RunDetail({ run, onClose, onOpen, onDelete, deletable }:
         </div>
       )}
     </div>
+  )
+}
+
+function CandidateStudioCard({ plan }: { plan: ContentPlan }) {
+  const search = plan.experience_search || {}
+  const personas = Object.entries(search.personas || {})
+  const telemetry = search.telemetry || {}
+  const narrative = plan.narrative
+  const world = plan.world_graph
+  const clean = personas.length === 4 && personas.every(([, result]) => result.passed)
+  const scope = (plan.rooms?.length || 0) > 0
+    ? `${plan.rooms!.length} rooms`
+    : telemetry.stage_width
+      ? `stage ${Math.round(telemetry.stage_width)} px wide`
+      : 'content plan'
+  return (
+    <section className={`quality-report ${clean ? 'passed' : 'failed'}`}>
+      <div className="quality-score">
+        <strong>{Math.round(search.score || 0)}</strong><span>/100</span>
+        <small>CONTENT SCORE</small>
+      </div>
+      <div className="quality-body">
+        <div className="quality-head">
+          <div>
+            <p className="eyebrow">CANDIDATE STUDIO · ENCOUNTER &amp; PROGRESSION</p>
+            <h3>{scope} selected from {search.candidates_evaluated || 0} candidates</h3>
+          </div>
+          <span className={`status ${clean ? 'passed' : 'failed'}`}>{clean ? 'Personas passed' : 'Critic failed'}</span>
+        </div>
+        <div className="detail-chips">
+          {personas.map(([name, result]) => <span className="chip" key={name}>{result.passed ? '✓' : '✗'} {name}</span>)}
+          <span className="chip">{search.repairs_evaluated || 0} bounded repairs</span>
+          {search.selected_signature && <span className="chip mono">{search.selected_signature}</span>}
+        </div>
+        {narrative && (
+          <div className="design-section">
+            <p className="eyebrow">NARRATIVE CONTENTIR · {narrative.source?.replaceAll('_', ' ') || 'compiled'}</p>
+            <div className="detail-chips">
+              {narrative.quest_title && <span className="chip">Quest · {narrative.quest_title}</span>}
+              {narrative.quest_giver_name && <span className="chip">NPC · {narrative.quest_giver_name}</span>}
+              {narrative.boss_name && <span className="chip">Boss · {narrative.boss_name}</span>}
+              {narrative.enemy_name && <span className="chip">Enemies · {narrative.enemy_name}</span>}
+              {narrative.currency_name && <span className="chip">Currency · {narrative.currency_name}</span>}
+              {narrative.source_fingerprint && <span className="chip mono">{narrative.source_fingerprint}</span>}
+            </div>
+            {(narrative.room_names?.length || 0) > 0 && <small>{narrative.room_names!.join(' → ')}</small>}
+          </div>
+        )}
+        {world && (world.edges?.length || 0) > 0 && (
+          <div className="design-section">
+            <p className="eyebrow">NONLINEAR WORLD · DIRECTIONAL GRAPH V{world.version || 1}</p>
+            <div className="detail-chips">
+              <span className="chip">{world.main_route?.length || 0} main-route rooms</span>
+              <span className="chip">{world.optional_rooms?.length || 0} optional rooms</span>
+              <span className="chip">{world.edges?.filter((edge) => edge.kind === 'shortcut').length || 0} shortcuts</span>
+            </div>
+            {(world.main_route?.length || 0) > 0 && <small>Main route · {world.main_route!.join(' → ')}</small>}
+          </div>
+        )}
+        <div className="metric-chips">
+          {['room_count', 'encounter_count', 'enemy_count', 'optional_rooms', 'shortcut_edges', 'estimated_completion_seconds'].map((name) => (
+            telemetry[name] !== undefined && <span key={name}><small>{name.replaceAll('_', ' ')}</small><b>{telemetry[name]}</b></span>
+          ))}
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -156,7 +230,7 @@ function QualityReportCard({ report }: { report: QualityReport }) {
         <div className="quality-head">
           <div>
             <p className="eyebrow">QUALITY DIRECTOR</p>
-            <h3>{report.gate.passed ? 'Production bar cleared' : 'Polish gate is closed'}</h3>
+            <h3>{report.gate.passed ? 'Automated experience bar cleared' : 'Player-experience gate is closed'}</h3>
           </div>
           <span className={`status ${report.gate.passed ? 'passed' : 'failed'}`}>
             {report.gate.passed ? 'Approved' : 'Needs improvement'}
@@ -194,7 +268,11 @@ function QualityReportCard({ report }: { report: QualityReport }) {
 function metricChips(objective?: Record<string, unknown>) {
   if (!objective) return []
   const chips: { key: string; value: string; good?: boolean }[] = []
-  for (const [key, value] of Object.entries(objective)) {
+  const entries = Object.entries(objective).sort(([left], [right]) => {
+    const priority = (key: string) => key.endsWith('_verified') || key === 'clean_restart' ? 0 : 1
+    return priority(left) - priority(right)
+  })
+  for (const [key, value] of entries) {
     if (HIDDEN_METRICS.has(key) || value === null || typeof value === 'object') continue
     if (typeof value === 'boolean') {
       // Only color-code positively phrased flags; "stuck: false" is healthy.
@@ -203,7 +281,51 @@ function metricChips(objective?: Record<string, unknown>) {
       chips.push({ key, value: key.includes('seconds') ? `${value.toFixed(1)}s` : String(Math.round(value * 100) / 100) })
     }
   }
-  return chips.slice(0, 10)
+  // Complex packs expose one independently verified chip per system. Keep the
+  // complete Action-RPG contract visible instead of hiding the final checks
+  // behind generic frame/accounting metrics.
+  return chips.slice(0, 16)
+}
+
+function ArtDirectionCard({ direction, results }: { direction: ArtDirection; results: AssetContractResult[] }) {
+  const passed = results.filter((result) => result.status === 'passed').length
+  const failed = results.filter((result) => result.status !== 'passed')
+  const clean = results.length > 0 && failed.length === 0
+  return (
+    <section className={`quality-report ${clean ? 'passed' : 'failed'}`}>
+      <div className="quality-score">
+        <strong>{passed}</strong><span>/{results.length}</span>
+        <small>ASSETS VERIFIED</small>
+      </div>
+      <div className="quality-body">
+        <div className="quality-head">
+          <div>
+            <p className="eyebrow">ART DIRECTOR · V{direction.art_direction_version || 1}</p>
+            <h3>{direction.rendering_language || 'Locked visual direction'}</h3>
+          </div>
+          <span className={`status ${clean ? 'passed' : 'failed'}`}>
+            {clean ? 'Contracts clean' : results.length === 0 ? 'Not inspected' : `${failed.length} failed`}
+          </span>
+        </div>
+        <div className="detail-chips">
+          {direction.camera_contract?.projection && <span className="chip">{direction.camera_contract.projection}</span>}
+          {Object.entries(direction.palette || {}).map(([role, color]) => (
+            <span className="chip mono" key={role} title={color}>{role} {color}</span>
+          ))}
+        </div>
+        {failed.length > 0 && (
+          <div className="quality-findings">
+            {failed.map((result) => (
+              <div key={result.logical_name}>
+                <span>asset maker</span>
+                <p><b>{result.logical_name}</b>{(result.errors || []).join(' · ')}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  )
 }
 
 function VideoQaCard({ result }: { result: VideoQaResult }) {
@@ -213,6 +335,12 @@ function VideoQaCard({ result }: { result: VideoQaResult }) {
         <span className={`status ${result.status === 'passed' ? 'passed' : 'failed'}`}>Video QA {result.status}</span>
         {result.model && <span className="chip mono">{result.model}</span>}
       </div>
+      <div className="detail-chips">
+        {result.animation && <span className="chip">animation · {result.animation}</span>}
+        {result.combat_feedback && <span className="chip">combat · {result.combat_feedback}</span>}
+        {result.encounter_readability && <span className="chip">readability · {result.encounter_readability}</span>}
+        {result.presentation_tier && <span className="chip">presentation · {result.presentation_tier}</span>}
+      </div>
       {result.evidence && <p>{result.evidence}</p>}
       {(result.code_defects?.length || 0) > 0 && result.code_defects!.map((defect) => <small className="note bad" key={defect}>{defect}</small>)}
       {(result.art_advisories?.length || 0) > 0 && result.art_advisories!.map((note) => <small className="note" key={note}>{note}</small>)}
@@ -220,8 +348,47 @@ function VideoQaCard({ result }: { result: VideoQaResult }) {
   )
 }
 
+function CapabilityCoverageCard({ coverage }: { coverage: CapabilityCoverage }) {
+  const capabilities = coverage.capabilities || []
+  const total = coverage.capabilities_total ?? capabilities.length
+  const passed = coverage.capabilities_passed ?? capabilities.filter((capability) => capability.status === 'passed').length
+  const incomplete = capabilities.filter((capability) => capability.status !== 'passed')
+  const passedStatus = coverage.status === 'passed'
+
+  return (
+    <div className="video-qa">
+      <div className="video-qa-head">
+        <span className={`status ${passedStatus ? 'passed' : 'failed'}`}>
+          Capability proof {coverage.status || 'unknown'}
+        </span>
+        <span className="chip">{passed}/{total} capabilities proven</span>
+        {coverage.assembly_hash && <span className="chip mono" title={coverage.assembly_hash}>{coverage.assembly_hash.slice(0, 12)}</span>}
+      </div>
+      {incomplete.map((capability, index) => {
+        const missing = (capability.probes || []).filter((probe) => probe.status === 'missing').map((probe) => probe.id || 'unnamed probe')
+        const failed = (capability.probes || []).filter((probe) => probe.status === 'failed').map((probe) => probe.id || 'unnamed probe')
+        return (
+          <small className="note bad" key={`${capability.mode || 'mode'}-${capability.capability_id || index}`}>
+            <b>{capability.capability_id || 'Unknown capability'}</b>
+            {capability.mode ? ` · ${capability.mode}` : ''}
+            {missing.length > 0 ? ` · missing: ${missing.join(', ')}` : ''}
+            {failed.length > 0 ? ` · failed: ${failed.join(', ')}` : ''}
+            {missing.length === 0 && failed.length === 0 ? ` · ${capability.status || 'unproven'}` : ''}
+          </small>
+        )
+      })}
+      {incomplete.length === 0 && passedStatus && <small className="note">Every locked capability has passing runtime evidence.</small>}
+    </div>
+  )
+}
+
 function AttemptCard({ attempt, runId }: { attempt: LevelAttempt; runId: string }) {
   const chips = metricChips(attempt.objective_result)
+  const inputPlaythrough = attempt.objective_result?.input_playthrough
+  const capabilityCoverage = attempt.objective_result?.capability_coverage
+  const inputChips = typeof inputPlaythrough === 'object' && inputPlaythrough !== null
+    ? metricChips(inputPlaythrough as Record<string, unknown>)
+    : []
   return (
     <div className="attempt">
       <div className="attempt-head">
@@ -238,6 +405,26 @@ function AttemptCard({ attempt, runId }: { attempt: LevelAttempt; runId: string 
             </span>
           ))}
         </div>
+      )}
+      {inputChips.length > 0 && (
+        <div className="video-qa">
+          <div className="video-qa-head">
+            <span className={`status ${inputPlaythrough && (inputPlaythrough as Record<string, unknown>).status === 'passed' ? 'passed' : 'failed'}`}>
+              Normal-input playthrough
+            </span>
+          </div>
+          <div className="metric-chips">
+            {inputChips.map((chip) => (
+              <span key={chip.key} className={chip.good === undefined ? '' : chip.good ? 'good' : 'bad'}>
+                <small>{chip.key.replaceAll('_', ' ')}</small><b>{chip.value}</b>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {capabilityCoverage && <CapabilityCoverageCard coverage={capabilityCoverage} />}
+      {attempt.vision_evaluated === false && (
+        <small className="note bad">Visual review was not evaluated for this attempt. Packed archetypes cannot pass release quality without it.</small>
       )}
       {(attempt.errors?.length || 0) > 0 && attempt.errors!.map((error) => <small className="note bad" key={error}>{error}</small>)}
       {(attempt.vision_notes?.length || 0) > 0 && attempt.vision_notes!.map((note) => <small className="note" key={note}>{note}</small>)}
@@ -278,6 +465,7 @@ function QaLedger({ run, levels }: { run: SagaRun; levels: LevelResult[] }) {
                   : <AttemptCard runId={run.id} attempt={{
                       attempt: 1, status: level.status, errors: level.qa_errors,
                       vision_notes: level.vision_notes, objective_result: level.objective_result,
+                      vision_evaluated: level.vision_evaluated,
                       screenshot_path: level.screenshot_path,
                     }} />}
               </div>
@@ -392,7 +580,7 @@ function DesignView({ design }: { design: DesignDoc }) {
               <div className="design-level-head">
                 <strong>{index + 1}. {level.name || 'Untitled level'}</strong>
                 {level.intensity !== undefined && (
-                  <span className="intensity" title={`Intensity ${level.intensity}/5`}>
+                  <span className="intensity" title={`Intensity ${level.intensity}/10`}>
                     {Array.from({ length: 5 }, (_, i) => <i key={i} className={i < (level.intensity || 0) ? 'on' : ''} />)}
                   </span>
                 )}

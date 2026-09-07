@@ -2,7 +2,9 @@ import subprocess
 
 from saga.agents.qa_agent import (
     _capture_gameplay_video,
+    _failed_attempt,
     _find_errors,
+    _parse_autoplay_verdict,
     _reconcile_visual_evidence,
     _record_attempt,
     _run_dot_maze_objective_probe,
@@ -11,9 +13,35 @@ from saga.agents.qa_agent import (
     _validate_video_verdict,
     _vision_prompt,
     _vision_review,
+    _vision_review_with_status,
     _video_review,
     qa_agent,
 )
+
+
+def test_autoplay_hud_evidence_ignores_arbitrary_and_legacy_labels():
+    arbitrary = _parse_autoplay_verdict(
+        "[AUTOPLAY] idle_rate=0.1 input_rate=2.0 label_states=9 "
+        "hud_controls=0 hud_states=0"
+    )
+    legacy = _parse_autoplay_verdict(
+        "[AUTOPLAY] idle_rate=0.1 input_rate=2.0 label_states=9"
+    )
+
+    assert arbitrary["hud_observed"] is False
+    assert legacy["hud_observed"] is False
+    assert legacy["hud_contract"] is False
+
+
+def test_autoplay_hud_evidence_accepts_persistent_named_control():
+    verdict = _parse_autoplay_verdict(
+        "[AUTOPLAY] idle_rate=0.1 input_rate=2.0 label_states=1 "
+        "hud_controls=1 hud_states=2"
+    )
+
+    assert verdict["hud_observed"] is True
+    assert verdict["hud_updated"] is True
+    assert verdict["hud_controls"] == 1
 
 
 def _objective_metrics(
@@ -177,6 +205,69 @@ def test_rejected_repair_records_ledger_without_running_godot(tmp_path, monkeypa
     ]
 
 
+def test_missing_project_assembly_lock_blocks_before_godot(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Godot must not run")
+        ),
+    )
+    result = qa_agent(
+        {
+            "godot_project_path": str(tmp_path),
+            "current_level": 0,
+            "retry_count": 0,
+            "design_doc": {"levels": [{"name": "Locked Level"}]},
+            "assembly_lock": {"assembly_hash": "expected", "modes": []},
+        }
+    )
+
+    assert result["ship_blocked"] is True
+    assert result["level_results"][0]["attempts"][-1]["stage"] == "assembly_integrity"
+    assert "assembly lock is unavailable" in result["qa_errors"][0]
+
+
+def _stable_assembly_state():
+    return {
+        "design_doc": {"levels": [{"name": "Stable Level"}]},
+        "current_level": 0,
+        "retry_count": 0,
+        "assembly_lock": {
+            "modes": [{
+                "id": "main",
+                "components": [{
+                    "id": "combat.stable",
+                    "implementation": "stable_pack",
+                }],
+            }],
+        },
+    }
+
+
+def test_stable_capability_objective_failure_is_terminal_after_one_verdict():
+    result = _failed_attempt(
+        _stable_assembly_state(),
+        stage="objective_completion",
+        errors=["stable combat failed"],
+        objective_result={"status": "failed"},
+        playability_result={"responsive": True},
+    )
+
+    assert result["qa_terminal"] is True
+    attempt = result["level_results"][0]["attempts"][-1]
+    assert attempt["playability_result"] == {"responsive": True}
+
+
+def test_stable_pack_import_failure_is_not_assumed_to_be_pack_owned():
+    result = _failed_attempt(
+        _stable_assembly_state(),
+        stage="import",
+        errors=["image asset failed to import"],
+    )
+
+    assert result["qa_terminal"] is False
+
+
 def test_unresolved_playability_failure_never_becomes_a_pass(monkeypatch, tmp_path):
     script = tmp_path / "Level_0.gd"
     script.write_text("extends Node2D", encoding="utf-8")
@@ -211,6 +302,9 @@ def test_unresolved_playability_failure_never_becomes_a_pass(monkeypatch, tmp_pa
     assert result["level_results"][0]["status"] == "failed"
     assert len(result["level_results"][0]["attempts"]) == 2
     assert result["level_results"][0]["attempts"][-1]["stage"] == "playability"
+    assert result["level_results"][0]["attempts"][-1]["playability_result"][
+        "responsive"
+    ] is False
 
 
 def test_harness_parse_error_blocks_without_coder_triage(monkeypatch, tmp_path):
@@ -835,6 +929,11 @@ def test_gameplay_capture_records_autoplay_and_transcodes_mp4(monkeypatch, tmp_p
     assert "libx264" in ffmpeg_calls[0]
     assert not (tmp_path / "gameplay_Level0.avi").exists()
 
+    _capture_gameplay_video(
+        str(tmp_path), "res://Level_0.tscn", 0, "action_rpg"
+    )
+    assert "--presentation-capture" in godot_calls[-1]
+
 
 def _video_verdict(**overrides):
     result = {
@@ -842,6 +941,9 @@ def _video_verdict(**overrides):
         "player_motion": "moves",
         "movement_facing": "correct",
         "animation": "animated",
+        "combat_feedback": "clear",
+        "encounter_readability": "clear",
+        "presentation_tier": "polished",
         "hud_readable": True,
         "scene_stable": True,
         "code_defects": [],
@@ -918,6 +1020,100 @@ def test_free_form_broken_visual_claim_is_advisory(monkeypatch):
     assert advisory == ["Vision (advisory): the composition feels unfinished"]
 
 
+def test_invalid_visual_verdict_is_recorded_as_not_evaluated(monkeypatch):
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._vision_raw",
+        lambda *_args: {"hero_visible": True},
+    )
+
+    gating, advisory, evaluated = _vision_review_with_status(
+        "frame.png", {"mechanic_template": "action_rpg"}
+    )
+
+    assert gating == []
+    assert advisory == []
+    assert evaluated is False
+
+
+def test_transient_visual_provider_failure_gets_a_bounded_retry(monkeypatch):
+    calls = {"count": 0}
+
+    def flaky_vision(*_args):
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise RuntimeError("503 ResourceExhausted: worker request limit reached")
+        return {
+            "hero_visible": True,
+            "background_fills_screen": True,
+            "text_clipped": False,
+            "placeholder_art": None,
+            "looks_broken": None,
+        }
+
+    monkeypatch.setattr("saga.agents.qa_agent._vision_raw", flaky_vision)
+    monkeypatch.setattr("saga.agents.qa_agent.time.sleep", lambda _seconds: None)
+
+    gating, advisory, evaluated = _vision_review_with_status("frame.png", {})
+
+    assert calls["count"] == 3
+    assert gating == []
+    assert advisory == []
+    assert evaluated is True
+
+
+def test_locked_art_contract_requires_and_gates_structured_visual_evidence(monkeypatch):
+    direction = {
+        "camera_contract": {
+            "projection": "strict 2D top-down orthographic",
+            "camera": "straight down",
+            "gameplay_plane": "flat rooms",
+            "forbidden": ["isometric angle"],
+        },
+        "palette": {"hero": "#F2C14E", "danger": "#E45756"},
+    }
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._vision_raw",
+        lambda *_args: {
+            "hero_visible": True,
+            "background_fills_screen": True,
+            "text_clipped": False,
+            "placeholder_art": None,
+            "perspective_mismatch": None,
+            "looks_broken": None,
+            "camera_contract_satisfied": False,
+            "actor_roles_distinguishable": False,
+            "style_coherent": True,
+            "contract_violation": "the environment is isometric and the enemy merges with the floor",
+        },
+    )
+
+    gating, advisory, evaluated = _vision_review_with_status(
+        "frame.png", {"mechanic_template": "action_rpg"}, direction
+    )
+
+    assert gating == []
+    assert evaluated is True
+    assert any("camera contract failed" in finding for finding in advisory)
+    assert any("role-readability contract failed" in finding for finding in advisory)
+
+
+def test_incomplete_locked_art_contract_verdict_is_not_treated_as_reviewed(monkeypatch):
+    monkeypatch.setattr(
+        "saga.agents.qa_agent._vision_raw",
+        lambda *_args: {
+            "hero_visible": True,
+            "background_fills_screen": True,
+            "text_clipped": False,
+        },
+    )
+
+    _gating, _advisory, evaluated = _vision_review_with_status(
+        "frame.png", {}, {"camera_contract": {}, "palette": {}}
+    )
+
+    assert evaluated is False
+
+
 def test_run_and_gun_placeholder_and_perspective_are_quality_gate_notes(monkeypatch):
     monkeypatch.setattr(
         "saga.agents.qa_agent._vision_raw",
@@ -948,6 +1144,7 @@ def test_vision_prompt_distinguishes_gameplay_symbols_from_placeholders():
     assert "weapon pickup" in prompt
     assert "hazard spikes" in prompt
     assert "merely because it uses clean geometric forms" in prompt
+    assert "HUD panels, title bars, room borders" in prompt
 
 
 def test_video_verdict_requires_complete_structured_evidence():

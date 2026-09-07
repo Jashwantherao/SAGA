@@ -39,6 +39,7 @@ MECHANIC_TEMPLATES = [
     "maze_chase",
     "dot_maze",
     "run_and_gun",
+    "action_rpg",
 ]
 
 KEY_ITEM_ROLES = ["pickup", "hazard", "switch", "creature", "zone_marker"]
@@ -103,6 +104,36 @@ DESIGN_DOC_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "narrative": {
+            "type": "object",
+            "properties": {
+                "quest_title": {"type": "string"},
+                "currency_name": {"type": "string"},
+                "quest_giver_name": {"type": "string"},
+                "boss_name": {"type": "string"},
+                "enemy_name": {"type": "string"},
+                "relic_name": {"type": "string"},
+                "ability_name": {"type": "string"},
+                "room_names": {
+                    "type": "array", "minItems": 6, "maxItems": 6,
+                    "items": {"type": "string"},
+                },
+                "dialogue_lines": {
+                    "type": "array", "minItems": 3, "maxItems": 3,
+                    "items": {"type": "string"},
+                },
+                "collect_objective": {"type": "string"},
+                "return_objective": {"type": "string"},
+                "boss_objective": {"type": "string"},
+                "victory_text": {"type": "string"},
+            },
+            "required": [
+                "quest_title", "currency_name", "quest_giver_name", "boss_name", "enemy_name",
+                "relic_name", "ability_name", "room_names", "dialogue_lines",
+                "collect_objective", "return_objective", "boss_objective", "victory_text",
+            ],
+            "additionalProperties": False,
+        },
     },
     "required": [
         "title",
@@ -136,7 +167,10 @@ SYSTEM_PROMPT = (
     "classic chase-and-chomp arcade fantasies), run_and_gun (a side-view action "
     "game built around jumping, three collectible weapons, mixed-role combat waves, checkpoints, persistent between-level upgrades and a "
     "multi-phase boss - prefer it for commando, blaster, siege or action-platform "
-    "fantasies), maze_chase (navigate walled "
+    "fantasies), action_rpg (a top-down exploration and melee-combat game with "
+    "inventory, NPC dialogue, an authored collectible-funded quest, persistent rooms, checkpoint "
+    "save/load and a two-phase boss - prefer it for quests, dungeons, villages, "
+    "loot, character growth or role-playing fantasies), maze_chase (navigate walled "
     "corridors collecting items while dodging a "
     "patroller - prefer it when the fantasy is about tight spaces, stealth, or "
     "labyrinths), survive_hazards (outlast moving dangers), ordered_switches "
@@ -152,6 +186,8 @@ SYSTEM_PROMPT = (
     "placement depth, lives. dot_maze: ghost speeds (patrollers and hunter), "
     "power-pickup duration, dot count, lives. run_and_gun: threat budget, enemy "
     "role mix, weapon-cache placement, player health, checkpoint spacing, upgrade rewards and boss phases. "
+    "action_rpg: enemy health and pursuit, quest-currency placement, quest cost, room order, "
+    "checkpoint spacing and boss attack cadence. "
     "collect: pickup count and how "
     "far apart they sit. "
     "ordered_switches: sequence length and switch spacing. herd_to_goal: flee "
@@ -186,7 +222,9 @@ SYSTEM_PROMPT = (
     "collect and ordered_switches place the final objectives at the map's "
     "far extremes so the closing route is the longest and most exposed; "
     "herd_to_goal shrinks the goal and quickens the creature; run_and_gun "
-    "introduces the boss arena after the last checkpoint and escalates its phases. The climax "
+    "introduces the boss arena after the last checkpoint and escalates its phases; "
+    "action_rpg seals the final room behind the completed quest and escalates the "
+    "authored guardian into its second phase. The climax "
     "should take away something earlier levels let the player rely on.\n"
     "- outro_beat: 1-2 sentences of story shown full-screen after the level "
     "is won, before the next loads. Write what JUST happened and what it "
@@ -197,14 +235,24 @@ SYSTEM_PROMPT = (
     "the same emotional register as audio_mood. The player reads these one "
     "at a time on an otherwise empty screen: make each one earn it.\n\n"
     "Hard constraints: every classic mechanic template is playable entirely with "
-    "HELD arrow-key movement and touch interactions. run_and_gun is the explicit "
-    "exception: left/right move, up jumps, ui_accept (Enter/Space) fires, and Tab cycles acquired weapons. "
+    "HELD arrow-key movement and touch interactions. Packed action templates are explicit "
+    "exceptions: run_and_gun uses left/right movement, up to jump, ui_accept to fire, "
+    "and Tab to cycle weapons; action_rpg uses arrows to move, Z for melee, X for "
+    "interaction/dialogue, C for inventory, and Shift for the quest-unlocked dash. "
     "Losing must freeze play and update the on-screen "
     "label - never remove the player from the scene. Keep each level's scope "
     "achievable for a compact game-specific adapter; reusable archetype code owns "
     "movement, weapon patterns, role-specific AI, combat waves, checkpoints and bosses. "
     "For run_and_gun, use extra_sprites for visually distinct scout/bruiser/flyer "
-    "enemies and the boss whenever the four-slot art budget allows.\n\n"
+    "enemies and the boss whenever the four-slot art budget allows. For action_rpg, "
+    "prioritize the stalker enemy, quest NPC, authored boss and one gear pickup. "
+    "For action_rpg, also return `narrative`: a completely game-specific player-facing "
+    "identity contract. Give it quest_title, a plural currency_name, quest_giver_name, "
+    "boss_name, enemy_name, relic_name, ability_name, exactly six unique room_names, exactly three "
+    "dialogue_lines, collect_objective, return_objective, boss_objective and victory_text. "
+    "These strings appear verbatim in Godot, so never reuse Ember Hermit, sparks, Hermit's "
+    "Court, Rust Vault, Heart Forge or Forge Warden unless the user's premise explicitly "
+    "names them. Other mechanic templates may omit narrative.\n\n"
     "Art the game needs: a hero sprite and one background per level are always "
     f"generated, plus the key_item icon. Use extra_sprites to ask for up to "
     f"{MAX_EXTRA_SPRITES} MORE things this specific game needs drawn - the "

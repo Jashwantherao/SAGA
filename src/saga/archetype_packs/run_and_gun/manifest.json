@@ -1,6 +1,7 @@
 {
+  "manifest_version": 2,
   "id": "run_and_gun",
-  "version": 6,
+  "version": 7,
   "mechanic_template": "run_and_gun",
   "capabilities": [
     "side_view_movement",
@@ -16,6 +17,8 @@
     "styled_environment_geometry",
     "combat_hud",
     "encounter_layout_grammar",
+    "experience_scored_stage_search",
+    "four_persona_experience_critics",
     "hazards_and_recovery",
     "three_weapon_arsenal",
     "role_specific_enemy_behavior",
@@ -40,5 +43,179 @@
     "weapon_pickup.gd",
     "progression_profile.gd",
     "run_and_gun_level.gd"
+  ],
+  "template_profiles": {
+    "run_and_gun": [
+      {"id": "movement.side_view", "version": 1},
+      {"id": "combat.ranged_arsenal", "version": 1},
+      {"id": "enemy_ai.run_and_gun", "version": 1},
+      {"id": "world.run_and_gun", "version": 1},
+      {"id": "checkpoint.run_and_gun", "version": 1},
+      {"id": "boss.run_and_gun", "version": 1},
+      {"id": "progression.run_and_gun", "version": 1},
+      {"id": "persistence.run_and_gun", "version": 1},
+      {"id": "hud.run_and_gun", "version": 1}
+    ]
+  },
+  "components": [
+    {
+      "id": "movement.side_view",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [],
+      "conflicts": ["movement.top_down"],
+      "provides": ["player.motion"],
+      "requires_ports": [],
+      "input_actions": [
+        {"action": "ui_left", "meaning": "move.left"},
+        {"action": "ui_right", "meaning": "move.right"},
+        {"action": "ui_up", "meaning": "move.jump"}
+      ],
+      "emits": ["player.moved", "player.jumped", "player.landed"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["player.motion"],
+      "runtime_files": ["player_controller.gd"],
+      "required_probes": ["playability.responsive", "objective.status"]
+    },
+    {
+      "id": "combat.ranged_arsenal",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [{"id": "movement.side_view", "version": 1}],
+      "conflicts": ["combat.melee"],
+      "provides": ["combat.damage"],
+      "requires_ports": ["player.motion"],
+      "input_actions": [
+        {"action": "ui_accept", "meaning": "combat.fire"},
+        {"action": "ui_focus_next", "meaning": "combat.weapon_cycle"}
+      ],
+      "emits": ["combat.fired", "combat.hit", "player.damaged", "player.defeated"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["combat.ranged_arsenal"],
+      "runtime_files": ["player_controller.gd", "projectile.gd", "weapon_pickup.gd"],
+      "required_probes": ["objective.fire_verified", "objective.pulse_weapon_verified", "objective.spread_weapon_verified", "objective.launcher_weapon_verified"]
+    },
+    {
+      "id": "enemy_ai.run_and_gun",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [
+        {"id": "movement.side_view", "version": 1},
+        {"id": "combat.ranged_arsenal", "version": 1}
+      ],
+      "conflicts": ["enemy_ai.action_rpg"],
+      "provides": ["enemy_ai.encounters"],
+      "requires_ports": ["player.motion", "combat.damage"],
+      "input_actions": [],
+      "emits": ["enemy.defeated", "wave.cleared"],
+      "consumes": ["combat.hit", "player.moved"],
+      "state_owners": ["enemy_ai.run_and_gun"],
+      "runtime_files": ["enemy.gd"],
+      "required_probes": ["objective.enemy_defeat_verified", "objective.enemy_roles_verified", "objective.wave_clear_verified"]
+    },
+    {
+      "id": "world.run_and_gun",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [
+        {"id": "movement.side_view", "version": 1},
+        {"id": "enemy_ai.run_and_gun", "version": 1}
+      ],
+      "conflicts": ["world.action_rpg"],
+      "provides": ["world.route"],
+      "requires_ports": ["player.motion", "enemy_ai.encounters"],
+      "input_actions": [],
+      "emits": ["encounter.started", "checkpoint.available", "boss.route_open"],
+      "consumes": ["player.moved", "enemy.defeated", "wave.cleared"],
+      "state_owners": ["world.run_and_gun"],
+      "runtime_files": ["run_and_gun_level.gd", "hazard.gd", "pickup.gd"],
+      "required_probes": ["objective.structure_verified", "objective.threat_budget_verified"]
+    },
+    {
+      "id": "checkpoint.run_and_gun",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [{"id": "world.run_and_gun", "version": 1}],
+      "conflicts": [],
+      "provides": ["checkpoint.service"],
+      "requires_ports": ["world.route"],
+      "input_actions": [],
+      "emits": ["checkpoint.activated", "checkpoint.restored"],
+      "consumes": ["checkpoint.available", "player.defeated"],
+      "state_owners": ["checkpoint.run_and_gun"],
+      "runtime_files": ["checkpoint.gd", "run_and_gun_level.gd"],
+      "required_probes": ["objective.checkpoint_verified", "objective.clean_restart"]
+    },
+    {
+      "id": "boss.run_and_gun",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [
+        {"id": "combat.ranged_arsenal", "version": 1},
+        {"id": "world.run_and_gun", "version": 1}
+      ],
+      "conflicts": ["boss.action_rpg"],
+      "provides": ["boss.encounter"],
+      "requires_ports": ["combat.damage", "world.route"],
+      "input_actions": [],
+      "emits": ["boss.phase_changed", "boss.defeated"],
+      "consumes": ["combat.hit", "boss.route_open"],
+      "state_owners": ["boss.run_and_gun"],
+      "runtime_files": ["boss.gd", "run_and_gun_level.gd"],
+      "required_probes": ["objective.boss_damage_verified", "objective.boss_phases_verified", "objective.boss_win_verified"]
+    },
+    {
+      "id": "progression.run_and_gun",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [{"id": "boss.run_and_gun", "version": 1}],
+      "conflicts": [],
+      "provides": ["progression.service"],
+      "requires_ports": ["boss.encounter"],
+      "input_actions": [],
+      "emits": ["progression.rewarded", "progression.upgraded"],
+      "consumes": ["boss.defeated"],
+      "state_owners": ["progression.run_and_gun"],
+      "runtime_files": ["progression_profile.gd", "run_and_gun_level.gd"],
+      "required_probes": ["objective.campaign_reward_verified", "objective.duplicate_reward_blocked", "objective.upgrade_application_verified"]
+    },
+    {
+      "id": "persistence.run_and_gun",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [
+        {"id": "progression.run_and_gun", "version": 1},
+        {"id": "checkpoint.run_and_gun", "version": 1}
+      ],
+      "conflicts": ["persistence.action_rpg"],
+      "provides": ["persistence.profile"],
+      "requires_ports": ["progression.service", "checkpoint.service"],
+      "input_actions": [],
+      "emits": ["profile.loaded"],
+      "consumes": ["progression.rewarded", "progression.upgraded", "checkpoint.activated"],
+      "state_owners": ["profile.run_and_gun"],
+      "runtime_files": ["progression_profile.gd"],
+      "required_probes": ["objective.save_reload_verified", "objective.cross_level_carryover_verified", "objective.corrupt_save_fallback_verified", "objective.profile_schema_verified"]
+    },
+    {
+      "id": "hud.run_and_gun",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [
+        {"id": "combat.ranged_arsenal", "version": 1},
+        {"id": "world.run_and_gun", "version": 1},
+        {"id": "boss.run_and_gun", "version": 1},
+        {"id": "progression.run_and_gun", "version": 1}
+      ],
+      "conflicts": ["hud.action_rpg"],
+      "provides": ["presentation.hud"],
+      "requires_ports": ["combat.damage", "world.route", "boss.encounter", "progression.service"],
+      "input_actions": [],
+      "emits": ["presentation.updated"],
+      "consumes": ["player.damaged", "encounter.started", "boss.phase_changed", "progression.rewarded"],
+      "state_owners": ["presentation.run_and_gun"],
+      "runtime_files": ["run_and_gun_level.gd"],
+      "required_probes": ["playability.hud_observed"]
+    }
   ]
 }

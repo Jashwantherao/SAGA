@@ -1,0 +1,220 @@
+{
+  "manifest_version": 2,
+  "id": "action_rpg",
+  "version": 6,
+  "mechanic_template": "action_rpg",
+  "capabilities": [
+    "top_down_four_direction_movement",
+    "wall_and_playfield_collision",
+    "frontal_melee_combat",
+    "damage_invulnerability_and_restart",
+    "patrol_chase_attack_enemy_states",
+    "distinct_enemy_role_behaviors",
+    "spark_and_item_pickups",
+    "inventory_panel_and_spending",
+    "npc_dialogue_and_movement_lock",
+    "quest_stage_and_ability_unlock",
+    "variable_world_persistence",
+    "encounter_progression_candidate_search",
+    "four_persona_experience_critics",
+    "bounded_content_repair",
+    "compiled_narrative_identity",
+    "directional_nonlinear_world_graph",
+    "optional_branch_and_return_shortcut",
+    "persistent_room_discovery",
+    "versioned_checkpoint_save",
+    "two_phase_boss",
+    "action_rpg_hud",
+    "deterministic_system_probe",
+    "input_driven_playthrough_gate",
+    "idle_walk_texture_animation",
+    "attack_dash_hurt_animation",
+    "telegraphed_enemy_attacks",
+    "combat_particles_health_bars_and_sfx",
+    "level_completion"
+  ],
+  "required_files": [
+    "inventory.gd",
+    "progression_profile.gd",
+    "player_controller.gd",
+    "enemy.gd",
+    "pickup.gd",
+    "npc.gd",
+    "boss.gd",
+    "action_rpg_level.gd"
+  ],
+  "template_profiles": {
+    "action_rpg": [
+      {"id": "movement.top_down", "version": 1},
+      {"id": "combat.melee", "version": 1},
+      {"id": "enemy_ai.action_rpg", "version": 1},
+      {"id": "inventory.action_rpg", "version": 1},
+      {"id": "quest.action_rpg", "version": 1},
+      {"id": "world.action_rpg", "version": 1},
+      {"id": "persistence.action_rpg", "version": 1},
+      {"id": "boss.action_rpg", "version": 1},
+      {"id": "hud.action_rpg", "version": 1}
+    ]
+  },
+  "components": [
+    {
+      "id": "movement.top_down",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [],
+      "conflicts": ["movement.side_view"],
+      "provides": ["player.motion"],
+      "requires_ports": [],
+      "input_actions": [
+        {"action": "ui_left", "meaning": "move.left"},
+        {"action": "ui_right", "meaning": "move.right"},
+        {"action": "ui_up", "meaning": "move.up"},
+        {"action": "ui_down", "meaning": "move.down"}
+      ],
+      "emits": ["player.moved"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["player.motion"],
+      "runtime_files": ["player_controller.gd"],
+      "required_probes": ["playability.responsive", "objective.movement_verified", "input.movement_verified"]
+    },
+    {
+      "id": "combat.melee",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [{"id": "movement.top_down", "version": 1}],
+      "conflicts": ["combat.ranged_arsenal"],
+      "provides": ["combat.damage"],
+      "requires_ports": ["player.motion"],
+      "input_actions": [{"action": "rpg_attack", "meaning": "combat.melee"}],
+      "emits": ["combat.swing", "combat.hit", "player.damaged", "player.defeated"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["combat.melee"],
+      "runtime_files": ["player_controller.gd", "action_rpg_level.gd"],
+      "required_probes": ["objective.melee_verified", "objective.lose_verified", "objective.clean_restart", "input.melee_verified"]
+    },
+    {
+      "id": "enemy_ai.action_rpg",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [
+        {"id": "movement.top_down", "version": 1},
+        {"id": "combat.melee", "version": 1}
+      ],
+      "conflicts": [],
+      "provides": ["enemy_ai.encounters"],
+      "requires_ports": ["player.motion", "combat.damage"],
+      "input_actions": [],
+      "emits": ["enemy.engaged", "enemy.defeated"],
+      "consumes": ["combat.swing", "player.moved"],
+      "state_owners": ["enemy_ai.action_rpg"],
+      "runtime_files": ["enemy.gd"],
+      "required_probes": ["objective.enemy_state_verified"]
+    },
+    {
+      "id": "inventory.action_rpg",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [{"id": "enemy_ai.action_rpg", "version": 1}],
+      "conflicts": [],
+      "provides": ["inventory.service"],
+      "requires_ports": ["enemy_ai.encounters"],
+      "input_actions": [{"action": "rpg_inventory", "meaning": "inventory.toggle"}],
+      "emits": ["inventory.changed", "pickup.collected"],
+      "consumes": ["enemy.defeated"],
+      "state_owners": ["inventory.action_rpg"],
+      "runtime_files": ["inventory.gd", "pickup.gd"],
+      "required_probes": ["objective.pickup_verified", "objective.inventory_verified", "input.pickup_verified", "input.inventory_verified"]
+    },
+    {
+      "id": "quest.action_rpg",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [{"id": "inventory.action_rpg", "version": 1}],
+      "conflicts": [],
+      "provides": ["quest.state"],
+      "requires_ports": ["inventory.service"],
+      "input_actions": [{"action": "rpg_interact", "meaning": "quest.interact"}],
+      "emits": ["dialogue.started", "quest.advanced", "ability.unlocked"],
+      "consumes": ["inventory.changed"],
+      "state_owners": ["quest.action_rpg"],
+      "runtime_files": ["npc.gd", "action_rpg_level.gd"],
+      "required_probes": ["objective.dialogue_verified", "objective.quest_verified", "objective.narrative_fidelity_verified", "input.dialogue_verified", "input.quest_verified"]
+    },
+    {
+      "id": "world.action_rpg",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [
+        {"id": "movement.top_down", "version": 1},
+        {"id": "quest.action_rpg", "version": 1}
+      ],
+      "conflicts": ["world.run_and_gun"],
+      "provides": ["world.rooms"],
+      "requires_ports": ["player.motion", "quest.state"],
+      "input_actions": [],
+      "emits": ["world.room_changed", "world.checkpoint_requested"],
+      "consumes": ["player.moved", "quest.advanced"],
+      "state_owners": ["world.action_rpg"],
+      "runtime_files": ["action_rpg_level.gd"],
+      "required_probes": ["objective.room_transition_verified", "objective.world_graph_verified", "input.rooms_verified", "input.branch_verified", "input.shortcut_verified"]
+    },
+    {
+      "id": "persistence.action_rpg",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [
+        {"id": "world.action_rpg", "version": 1},
+        {"id": "inventory.action_rpg", "version": 1},
+        {"id": "quest.action_rpg", "version": 1}
+      ],
+      "conflicts": ["persistence.run_and_gun"],
+      "provides": ["persistence.profile"],
+      "requires_ports": ["world.rooms", "inventory.service", "quest.state"],
+      "input_actions": [{"action": "ui_accept", "meaning": "checkpoint.restart"}],
+      "emits": ["profile.loaded", "checkpoint.restored"],
+      "consumes": ["world.checkpoint_requested", "player.defeated"],
+      "state_owners": ["profile.action_rpg"],
+      "runtime_files": ["progression_profile.gd", "action_rpg_level.gd"],
+      "required_probes": ["objective.save_reload_verified", "objective.clean_restart", "input.checkpoint_verified"]
+    },
+    {
+      "id": "boss.action_rpg",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [
+        {"id": "combat.melee", "version": 1},
+        {"id": "world.action_rpg", "version": 1}
+      ],
+      "conflicts": ["boss.run_and_gun"],
+      "provides": ["boss.encounter"],
+      "requires_ports": ["combat.damage", "world.rooms"],
+      "input_actions": [{"action": "rpg_dash", "meaning": "combat.dash"}],
+      "emits": ["boss.phase_changed", "boss.defeated"],
+      "consumes": ["combat.swing", "world.room_changed"],
+      "state_owners": ["boss.action_rpg"],
+      "runtime_files": ["boss.gd", "action_rpg_level.gd"],
+      "required_probes": ["objective.boss_phases_verified", "objective.boss_win_verified", "input.boss_phase_verified", "input.win_verified", "input.dash_verified"]
+    },
+    {
+      "id": "hud.action_rpg",
+      "version": 1,
+      "implementation": "stable_pack",
+      "requires": [
+        {"id": "combat.melee", "version": 1},
+        {"id": "inventory.action_rpg", "version": 1},
+        {"id": "quest.action_rpg", "version": 1},
+        {"id": "world.action_rpg", "version": 1},
+        {"id": "boss.action_rpg", "version": 1}
+      ],
+      "conflicts": ["hud.run_and_gun"],
+      "provides": ["presentation.hud"],
+      "requires_ports": ["combat.damage", "inventory.service", "quest.state", "world.rooms", "boss.encounter"],
+      "input_actions": [],
+      "emits": ["presentation.updated"],
+      "consumes": ["player.damaged", "inventory.changed", "quest.advanced", "world.room_changed", "boss.phase_changed"],
+      "state_owners": ["presentation.action_rpg"],
+      "runtime_files": ["action_rpg_level.gd"],
+      "required_probes": ["playability.hud_observed"]
+    }
+  ]
+}

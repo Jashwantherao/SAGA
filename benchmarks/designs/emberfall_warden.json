@@ -1,0 +1,50 @@
+{
+  "title": "Emberfall Warden",
+  "genre": "top-down action RPG",
+  "mechanic_template": "action_rpg",
+  "hero_description": "a masked lantern knight in amber and cobalt armor, clearly viewed from directly above",
+  "core_mechanics": [
+    "explore three persistent rooms",
+    "fight rust stalkers with frontal lantern melee",
+    "collect sparks and gear into an inventory",
+    "complete the hermit's quest to unlock a dash and the forge",
+    "defeat a telegraphed two-phase forge warden"
+  ],
+  "story_premise": "A lantern-bearing warden crosses a dimming keep to relight its heart-forge, trading sparks with the hermit who survived its fall.",
+  "theme_thread": "Every recovered spark restores a promise the ruined keep had forgotten.",
+  "win_condition": "Complete the hermit's quest, enter the heart-forge, defeat its warden, and relight the forge.",
+  "lose_condition": "Hero health reaches zero; restart from the latest room checkpoint.",
+  "levels": [
+    {
+      "name": "The Ember Keep",
+      "description": "Three connected top-down forge chambers: a blue hermit court, a violet rust vault, and a red heart-forge carved with luminous runes.",
+      "outro_beat": "The heart-forge answers the lantern with a living flame, and warmth returns through every wall of the keep.",
+      "intensity": 6,
+      "pressure_notes": "Use durable pursuit enemies, ten reachable quest sparks, a sealed final room, and a faster enraged boss phase."
+    }
+  ],
+  "art_style": "high-contrast painterly pixel art with amber light, deep cobalt shadows, and readable top-down silhouettes",
+  "audio_mood": "warm low strings, distant hammer percussion, and a rising forge pulse",
+  "key_item": {
+    "description": "a faceted golden forge spark with a white-hot center, viewed from above",
+    "role": "pickup"
+  },
+  "extra_sprites": [
+    {
+      "name": "rust_stalker",
+      "description": "a low four-legged red rust creature with a dark iron shell, viewed directly from above"
+    },
+    {
+      "name": "ember_hermit",
+      "description": "a soot-robed violet forge hermit holding a small brass staff, viewed directly from above"
+    },
+    {
+      "name": "forge_warden",
+      "description": "a massive iron furnace guardian with an orange vented chest and broad hammer arms, viewed directly from above"
+    },
+    {
+      "name": "ember_charm",
+      "description": "a small ornate cobalt charm surrounding a bright amber ember, viewed directly from above"
+    }
+  ]
+}

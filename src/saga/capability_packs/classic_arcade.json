@@ -1,0 +1,198 @@
+{
+  "manifest_version": 2,
+  "id": "classic_arcade_compatibility",
+  "version": 1,
+  "template_profiles": {
+    "collect": [{"id": "legacy.collect", "version": 1}],
+    "survive_hazards": [{"id": "legacy.survive_hazards", "version": 1}],
+    "ordered_switches": [{"id": "legacy.ordered_switches", "version": 1}],
+    "depletion": [{"id": "legacy.depletion", "version": 1}],
+    "herd_to_goal": [{"id": "legacy.herd_to_goal", "version": 1}],
+    "capture_zones": [{"id": "legacy.capture_zones", "version": 1}],
+    "survive_and_deplete": [{"id": "legacy.survive_and_deplete", "version": 1}],
+    "maze_chase": [{"id": "legacy.maze_chase", "version": 1}],
+    "dot_maze": [{"id": "legacy.dot_maze", "version": 1}]
+  },
+  "components": [
+    {
+      "id": "legacy.collect",
+      "version": 1,
+      "implementation": "legacy_generated",
+      "requires": [],
+      "conflicts": [],
+      "provides": ["gameplay.collect"],
+      "requires_ports": [],
+      "input_actions": [
+        {"action": "ui_left", "meaning": "move.left"},
+        {"action": "ui_right", "meaning": "move.right"},
+        {"action": "ui_up", "meaning": "move.up"},
+        {"action": "ui_down", "meaning": "move.down"}
+      ],
+      "emits": ["objective.progressed", "objective.completed"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["legacy.collect"],
+      "runtime_files": [],
+      "required_probes": ["playability.responsive", "objective.status"]
+    },
+    {
+      "id": "legacy.survive_hazards",
+      "version": 1,
+      "implementation": "legacy_generated",
+      "requires": [],
+      "conflicts": [],
+      "provides": ["gameplay.survive_hazards"],
+      "requires_ports": [],
+      "input_actions": [
+        {"action": "ui_left", "meaning": "move.left"},
+        {"action": "ui_right", "meaning": "move.right"},
+        {"action": "ui_up", "meaning": "move.up"},
+        {"action": "ui_down", "meaning": "move.down"}
+      ],
+      "emits": ["player.damaged", "objective.completed"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["legacy.survive_hazards"],
+      "runtime_files": [],
+      "required_probes": ["playability.responsive", "objective.status"]
+    },
+    {
+      "id": "legacy.ordered_switches",
+      "version": 1,
+      "implementation": "legacy_generated",
+      "requires": [],
+      "conflicts": [],
+      "provides": ["gameplay.ordered_switches"],
+      "requires_ports": [],
+      "input_actions": [
+        {"action": "ui_left", "meaning": "move.left"},
+        {"action": "ui_right", "meaning": "move.right"},
+        {"action": "ui_up", "meaning": "move.up"},
+        {"action": "ui_down", "meaning": "move.down"}
+      ],
+      "emits": ["switch.activated", "objective.completed"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["legacy.ordered_switches"],
+      "runtime_files": [],
+      "required_probes": ["playability.responsive", "objective.status"]
+    },
+    {
+      "id": "legacy.depletion",
+      "version": 1,
+      "implementation": "legacy_generated",
+      "requires": [],
+      "conflicts": [],
+      "provides": ["gameplay.depletion"],
+      "requires_ports": [],
+      "input_actions": [
+        {"action": "ui_left", "meaning": "move.left"},
+        {"action": "ui_right", "meaning": "move.right"},
+        {"action": "ui_up", "meaning": "move.up"},
+        {"action": "ui_down", "meaning": "move.down"}
+      ],
+      "emits": ["resource.changed", "objective.completed"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["legacy.depletion"],
+      "runtime_files": [],
+      "required_probes": ["playability.responsive", "objective.status"]
+    },
+    {
+      "id": "legacy.herd_to_goal",
+      "version": 1,
+      "implementation": "legacy_generated",
+      "requires": [],
+      "conflicts": [],
+      "provides": ["gameplay.herd_to_goal"],
+      "requires_ports": [],
+      "input_actions": [
+        {"action": "ui_left", "meaning": "move.left"},
+        {"action": "ui_right", "meaning": "move.right"},
+        {"action": "ui_up", "meaning": "move.up"},
+        {"action": "ui_down", "meaning": "move.down"}
+      ],
+      "emits": ["creature.settled", "objective.completed"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["legacy.herd_to_goal"],
+      "runtime_files": [],
+      "required_probes": ["playability.responsive", "objective.status"]
+    },
+    {
+      "id": "legacy.capture_zones",
+      "version": 1,
+      "implementation": "legacy_generated",
+      "requires": [],
+      "conflicts": [],
+      "provides": ["gameplay.capture_zones"],
+      "requires_ports": [],
+      "input_actions": [
+        {"action": "ui_left", "meaning": "move.left"},
+        {"action": "ui_right", "meaning": "move.right"},
+        {"action": "ui_up", "meaning": "move.up"},
+        {"action": "ui_down", "meaning": "move.down"}
+      ],
+      "emits": ["zone.captured", "objective.completed"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["legacy.capture_zones"],
+      "runtime_files": [],
+      "required_probes": ["playability.responsive", "objective.status"]
+    },
+    {
+      "id": "legacy.survive_and_deplete",
+      "version": 1,
+      "implementation": "legacy_generated",
+      "requires": [],
+      "conflicts": [],
+      "provides": ["gameplay.survive_and_deplete"],
+      "requires_ports": [],
+      "input_actions": [
+        {"action": "ui_left", "meaning": "move.left"},
+        {"action": "ui_right", "meaning": "move.right"},
+        {"action": "ui_up", "meaning": "move.up"},
+        {"action": "ui_down", "meaning": "move.down"}
+      ],
+      "emits": ["resource.changed", "player.damaged", "objective.completed"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["legacy.survive_and_deplete"],
+      "runtime_files": [],
+      "required_probes": ["playability.responsive", "objective.status"]
+    },
+    {
+      "id": "legacy.maze_chase",
+      "version": 1,
+      "implementation": "legacy_generated",
+      "requires": [],
+      "conflicts": [],
+      "provides": ["gameplay.maze_chase"],
+      "requires_ports": [],
+      "input_actions": [
+        {"action": "ui_left", "meaning": "move.left"},
+        {"action": "ui_right", "meaning": "move.right"},
+        {"action": "ui_up", "meaning": "move.up"},
+        {"action": "ui_down", "meaning": "move.down"}
+      ],
+      "emits": ["pickup.collected", "player.damaged", "objective.completed"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["legacy.maze_chase"],
+      "runtime_files": [],
+      "required_probes": ["playability.responsive", "objective.status"]
+    },
+    {
+      "id": "legacy.dot_maze",
+      "version": 1,
+      "implementation": "legacy_generated",
+      "requires": [],
+      "conflicts": [],
+      "provides": ["gameplay.dot_maze"],
+      "requires_ports": [],
+      "input_actions": [
+        {"action": "ui_left", "meaning": "move.left"},
+        {"action": "ui_right", "meaning": "move.right"},
+        {"action": "ui_up", "meaning": "move.up"},
+        {"action": "ui_down", "meaning": "move.down"}
+      ],
+      "emits": ["dot.collected", "power.activated", "objective.completed"],
+      "consumes": ["engine.physics_tick"],
+      "state_owners": ["legacy.dot_maze"],
+      "runtime_files": [],
+      "required_probes": ["playability.responsive", "objective.status"]
+    }
+  ]
+}

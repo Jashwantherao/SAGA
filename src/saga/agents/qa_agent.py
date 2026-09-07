@@ -15,6 +15,7 @@ single-frame findings before SAGA spends a Coder retry.
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from saga.balance import check_level
@@ -50,11 +51,17 @@ VIDEO_TIMEOUT = settings.video_timeout
 FFMPEG_EXE = settings.ffmpeg_exe
 VIDEO_CAPTURE_FPS = 30
 VIDEO_CAPTURE_MAX_FRAMES = 260
+ACTION_RPG_VIDEO_CAPTURE_FRAMES = 300
 VIDEO_REVIEW_FPS = 10
 
 ERROR_PATTERNS = re.compile(
     r"SCRIPT ERROR|Parse Error|Invalid call|Nonexistent function|ERROR:",
     re.IGNORECASE,
+)
+
+AUTOPLAY_VERDICT = re.compile(
+    r"\[AUTOPLAY\] idle_rate=([\d.]+) input_rate=([\d.]+) label_states=(\d+)"
+    r"(?: hud_controls=(\d+) hud_states=(\d+))?"
 )
 
 OBJECTIVE_VERDICT = re.compile(
@@ -122,6 +129,14 @@ RUN_AND_GUN_PROGRESSION = re.compile(
     r"upgrade=(true|false) save_reload=(true|false) carryover=(true|false) "
     r"corrupt_fallback=(true|false) schema=(true|false) currency=(\d+) xp=(\d+)"
 )
+ACTION_RPG_METRICS = re.compile(
+    r"\[ACTION_RPG_METRICS\] movement=(true|false) melee=(true|false) "
+    r"enemy_state=(true|false) pickup=(true|false) inventory=(true|false) "
+    r"dialogue=(true|false) quest=(true|false) room=(true|false) "
+    r"world_graph=(true|false) "
+    r"save=(true|false) loss=(true|false) restart=(true|false) "
+    r"boss_phase=(true|false) win=(true|false) narrative=(true|false)"
+)
 CAMPAIGN_METRICS = re.compile(
     r"\[CAMPAIGN_METRICS\] scene=(true|false) stats=(true|false) "
     r"weapon=(true|false) reload=(true|false) corrupt=(true|false) "
@@ -131,6 +146,16 @@ RUN_AND_GUN_PLAYTHROUGH = re.compile(
     r"\[RUN_AND_GUN_PLAYTHROUGH\] status=(passed|failed) entered_level=(-?\d+) "
     r"shots=(\d+) jumps=(\d+) deaths=(\d+) checkpoint=(true|false) "
     r"weapon=(true|false) wave=(true|false) frames=(\d+) reason=([a-z0-9_]+)"
+)
+ACTION_RPG_PLAYTHROUGH = re.compile(
+    r"\[ACTION_RPG_PLAYTHROUGH\] status=(passed|failed) movement=(true|false) "
+    r"melee=(true|false) pickup=(true|false) inventory=(true|false) "
+    r"dialogue=(true|false) quest=(true|false) rooms=(true|false) "
+    r"rooms_visited=(\d+) rooms_total=(\d+) "
+    r"branch=(true|false) shortcut=(true|false) "
+    r"checkpoint=(true|false) dash=(true|false) boss_phase=(true|false) "
+    r"win=(true|false) frames=(\d+) attacks=(\d+) interactions=(\d+) "
+    r"deaths=(\d+) reason=([a-z0-9_]+)"
 )
 MAX_COLLECT_SOLVER_SECONDS = 60.0
 MAX_SWITCH_SOLVER_SECONDS = 60.0
@@ -153,8 +178,8 @@ BENIGN_EXIT_NOISE = re.compile(
 
 HARNESS_SCRIPT_ERROR = re.compile(
     r"res://(?:autoplay|objective_probe|switch_probe|survival_probe|depletion_probe|hybrid_probe|capture_probe|herd_probe|screenshot|sfx|music|ambience|anim|game|"
-    r"run_and_gun_probe|run_and_gun_playthrough|campaign_probe|interlude|victory)\.gd|"
-    r"res://archetypes/run_and_gun/[^\s)]+\.gd",
+    r"run_and_gun_probe|action_rpg_probe|run_and_gun_playthrough|action_rpg_playthrough|campaign_probe|interlude|victory)\.gd|"
+    r"res://archetypes/(?:run_and_gun|action_rpg)/[^\s)]+\.gd",
     re.IGNORECASE,
 )
 
@@ -520,6 +545,30 @@ def _run_objective_probe(
             return result, [
                 "Run-and-gun progression: reward, duplicate protection, upgrade, persistence, carryover, corruption fallback, or schema verification failed."
             ], False
+    if template == "action_rpg":
+        rpg = ACTION_RPG_METRICS.search(output)
+        if not rpg:
+            return result, [
+                "QA infrastructure: action-RPG probe produced no capability metrics."
+            ], True
+        names = (
+            "movement_verified",
+            "melee_verified",
+            "enemy_state_verified",
+            "pickup_verified",
+            "inventory_verified",
+            "dialogue_verified",
+            "quest_verified",
+            "room_transition_verified",
+            "world_graph_verified",
+            "save_reload_verified",
+            "lose_verified",
+            "clean_restart",
+            "boss_phases_verified",
+            "boss_win_verified",
+            "narrative_fidelity_verified",
+        )
+        result.update({name: value == "true" for name, value in zip(names, rpg.groups())})
     blocked_positions = [
         [float(x), float(y)] for x, y in OBJECTIVE_DETAIL.findall(output)
     ]
@@ -562,10 +611,14 @@ def _run_objective_probe(
                                 "Firing, checkpoint activation, player loss/restart, enemy defeat, boss damage and boss victory must all use the stable archetype interface."
                                 if template == "run_and_gun"
                                 else (
+                                "Movement, melee/stagger, pickup/inventory, dialogue/quest, room persistence, save/reload, loss/restart and both boss phases must all pass through the stable action-RPG interface."
+                                if template == "action_rpg"
+                                else (
                                 "Creatures must stay calm outside panic range, flee toward the "
                                 "goal when approached, settle permanently, and all settled must win."
                                 if template == "herd_to_goal"
                                 else "Every pickup must be reachable and collecting all of them must set state to 'won'."
+                                )
                                 )
                             )
                         )
@@ -593,7 +646,7 @@ def _run_objective_probe(
     if int(remaining) != 0 or int(collected) < int(total):
         item = (
             "milestones"
-            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal", "run_and_gun"}
+            if template in {"survive_hazards", "depletion", "survive_and_deplete", "capture_zones", "herd_to_goal", "run_and_gun", "action_rpg"}
             else "objective items"
         )
         return (
@@ -801,6 +854,35 @@ def _run_objective_probe(
             return result, ["Objective completion: run-and-gun pass omitted: " + ", ".join(missing) + "."], True
         if result["restart_status"] != "passed" or result["deaths"] != 1:
             return result, ["Objective completion: run-and-gun loss/restart accounting is inconsistent."], True
+    if template == "action_rpg":
+        flags = [
+            "movement_verified",
+            "melee_verified",
+            "enemy_state_verified",
+            "pickup_verified",
+            "inventory_verified",
+            "dialogue_verified",
+            "quest_verified",
+            "room_transition_verified",
+            "world_graph_verified",
+            "save_reload_verified",
+            "lose_verified",
+            "clean_restart",
+            "boss_phases_verified",
+            "boss_win_verified",
+            "narrative_fidelity_verified",
+        ]
+        missing = [name for name in flags if not result[name]]
+        if missing:
+            return result, [
+                "Objective completion: action-RPG pass omitted: "
+                + ", ".join(missing)
+                + "."
+            ], True
+        if result["restart_status"] != "passed" or result["deaths"] != 1:
+            return result, [
+                "Objective completion: action-RPG loss/restart accounting is inconsistent."
+            ], True
     return result, [], False
 
 
@@ -913,6 +995,105 @@ def _run_run_and_gun_playthrough(
     return result, [], False
 
 
+def _run_action_rpg_playthrough(
+    project_dir: str,
+    scene: str,
+) -> tuple[dict | None, list[str], bool]:
+    """Complete the RPG through the same input actions available to a player."""
+    probe = _run(
+        [
+            "--headless",
+            "--path",
+            project_dir,
+            scene,
+            "--quit-after",
+            "40000",
+            "--",
+            "--action-rpg-playthrough",
+        ],
+        timeout=180,
+    )
+    output = probe.stdout + probe.stderr
+    process_errors = _find_errors(output)
+    if probe.returncode != 0 or process_errors:
+        errors = process_errors or [
+            f"Action-RPG input playthrough exited with code {probe.returncode}"
+        ]
+        return None, errors, _has_harness_error(errors)
+    match = ACTION_RPG_PLAYTHROUGH.search(output)
+    if not match:
+        return None, [
+            "QA infrastructure: Action-RPG input playthrough produced no verdict."
+        ], True
+    (
+        status,
+        movement,
+        melee,
+        pickup,
+        inventory,
+        dialogue,
+        quest,
+        rooms,
+        rooms_visited,
+        rooms_total,
+        branch,
+        shortcut,
+        checkpoint,
+        dash,
+        boss_phase,
+        win,
+        frames,
+        attacks,
+        interactions,
+        deaths,
+        reason,
+    ) = match.groups()
+    result = {
+        "status": status,
+        "normal_input_only": True,
+        "movement_verified": movement == "true",
+        "melee_verified": melee == "true",
+        "pickup_verified": pickup == "true",
+        "inventory_verified": inventory == "true",
+        "dialogue_verified": dialogue == "true",
+        "quest_verified": quest == "true",
+        "rooms_verified": rooms == "true",
+        "rooms_visited": int(rooms_visited),
+        "rooms_total": int(rooms_total),
+        "branch_verified": branch == "true",
+        "shortcut_verified": shortcut == "true",
+        "checkpoint_verified": checkpoint == "true",
+        "dash_verified": dash == "true",
+        "boss_phase_verified": boss_phase == "true",
+        "win_verified": win == "true",
+        "frames": int(frames),
+        "attacks": int(attacks),
+        "interactions": int(interactions),
+        "deaths": int(deaths),
+        "reason": reason,
+    }
+    missing = [
+        name
+        for name, value in result.items()
+        if name.endswith("_verified") and value is not True
+    ]
+    if (
+        status != "passed"
+        or missing
+        or result["attacks"] < 1
+        or result["interactions"] < 1
+        or result["deaths"] > 3
+    ):
+        detail = f"reason={reason}, deaths={deaths}/3"
+        if missing:
+            detail += ", missing=" + ",".join(missing)
+        return result, [
+            "Input-driven Action-RPG playthrough could not complete the quest and "
+            f"boss through normal controls ({detail})."
+        ], False
+    return result, [], False
+
+
 def _run_maze_objective_probe(
     project_dir: str,
     scene: str,
@@ -930,10 +1111,33 @@ def _run_dot_maze_objective_probe(
     return _run_objective_probe(project_dir, scene, "dot_maze")
 
 
-def _vision_prompt(design_doc) -> str:
+def _vision_prompt(design_doc, art_direction: dict | None = None) -> str:
     hero = (design_doc or {}).get("hero_description", "the player character")
     title = (design_doc or {}).get("title", "the game")
     template = (design_doc or {}).get("mechanic_template", "unknown")
+    contract_schema = ""
+    contract_instruction = ""
+    if art_direction:
+        camera = art_direction.get("camera_contract") or {}
+        palette = art_direction.get("palette") or {}
+        contract_schema = (
+            ', "camera_contract_satisfied": bool, '
+            '"actor_roles_distinguishable": bool, "style_coherent": bool, '
+            '"contract_violation": string or null'
+        )
+        contract_instruction = (
+            " This production has a locked Art Director contract. The required "
+            f"projection is {camera.get('projection')!r}, camera is "
+            f"{camera.get('camera')!r}, and gameplay plane is "
+            f"{camera.get('gameplay_plane')!r}. Forbidden views are "
+            f"{camera.get('forbidden')!r}. Palette roles are {palette!r}. "
+            "Set camera_contract_satisfied false only when the visible frame "
+            "contradicts that projection. Set actor_roles_distinguishable false "
+            "when the hero, enemies, boss, or rewards visibly merge into each "
+            "other or the background. Set style_coherent false when foreground "
+            "actors and environment visibly use incompatible rendering styles. "
+            "Use contract_violation for one short piece of visible evidence."
+        )
     return (
         f"This is a screenshot of an auto-generated 2D game called {title!r} "
         f"taken about one second into gameplay, at 1024x576. The hero is: "
@@ -941,27 +1145,40 @@ def _vision_prompt(design_doc) -> str:
         "invent problems. Answer ONLY with JSON matching: "
         '{"hero_visible": bool, "background_fills_screen": bool, '
         '"text_clipped": bool, "placeholder_art": string or null, '
+        '"placeholder_role": "hero" | "enemy" | "npc" | "boss" | '
+        '"pickup" | "environment" | null, '
         '"perspective_mismatch": string or null, '
-        '"looks_broken": string or null}. '
+        f'"looks_broken": string or null{contract_schema}}}. '
         "Set text_clipped true only if some text runs off the screen edge or "
         "is hidden behind another element. Set placeholder_art to a short "
         "description only when plain, unstyled boxes or slabs visibly stand in "
         "for a character, platform, or foreground scenery. Do not mark a shaped "
         "weapon pickup, hazard spikes, projectile, checkpoint beacon, HUD panel, "
         "or simple visual effect as placeholder art merely because it uses clean "
-        "geometric forms. Otherwise set it to null. Set looks_broken if a sprite is "
+        "geometric forms. Otherwise set it to null. When placeholder_art is not "
+        "null, set placeholder_role to the visible role it replaces; otherwise set "
+        "placeholder_role to null. Set looks_broken if a sprite is "
         "gigantic, cut off, or floating somewhere nonsensical, otherwise null. "
-        f"The mechanic template is {template!r}. For run_and_gun only, set "
+        "Set background_fills_screen false only when a visibly unintended blank "
+        "or solid-color gap exposes the viewport behind the game world. Deliberate "
+        "HUD panels, title bars, room borders, frames, and letterboxing do not count "
+        "as an unfilled background. "
+        f"The mechanic template is {template!r}. For run_and_gun, set "
         "perspective_mismatch to a short description when the gameplay is a flat "
         "side view but the background's main route is visibly top-down, isometric, "
-        "or diagonal; otherwise null. Do not count lightning, clouds, mountains, "
+        "or diagonal. For action_rpg, set it when the gameplay is top-down but the "
+        "background is visibly side-view, first-person, or strongly isometric; "
+        "otherwise null. Do not count lightning, clouds, mountains, "
         "or other obviously decorative distant scenery as a route."
+        + contract_instruction
     )
 
 
-def _vision_raw(screenshot_path: str, design_doc) -> dict:
+def _vision_raw(
+    screenshot_path: str, design_doc, art_direction: dict | None = None
+) -> dict:
     """Run the configured vision backend and return the parsed verdict."""
-    prompt = _vision_prompt(design_doc)
+    prompt = _vision_prompt(design_doc, art_direction)
 
     if VISION_BACKEND in ("nvidia", "remote", "openai"):
         import base64
@@ -994,7 +1211,11 @@ def _vision_raw(screenshot_path: str, design_doc) -> dict:
     return json.loads(resp["message"]["content"])
 
 
-def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[str]]:
+def _vision_review_with_status(
+    screenshot_path: str,
+    design_doc,
+    art_direction: dict | None = None,
+) -> tuple[list[str], list[str], bool]:
     """Review the screenshot and split findings by who can actually fix them.
 
     Returns (gating, advisory). Gating findings are defects the Coder can
@@ -1004,14 +1225,58 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
     Asset Maker never produced a suitable sprite, so failing QA over it would
     spend retries on a problem no rewrite can solve.
 
-    Any failure (model unavailable, timeout, unparseable reply) returns no
-    findings at all - the vision pass must never fail a build by breaking.
+    The third return value is truthful evidence that a complete structured
+    verdict was evaluated. A model failure still produces no speculative
+    findings, but packed-game release policy can distinguish that from a clean
+    visual review and keep the ship gate closed.
     """
-    try:
-        data = _vision_raw(screenshot_path, design_doc)
-    except Exception as e:
-        print(f"[QA Agent] Vision review skipped ({type(e).__name__}: {e})")
-        return [], []
+    data = None
+    for attempt in range(3):
+        try:
+            data = _vision_raw(screenshot_path, design_doc, art_direction)
+            break
+        except Exception as e:
+            detail = str(e).lower()
+            transient = any(
+                marker in detail
+                for marker in (
+                    "429", "503", "rate limit", "resourceexhausted",
+                    "service unavailable", "temporarily unavailable", "timeout",
+                )
+            )
+            if transient and attempt < 2:
+                delay = 2 * (attempt + 1)
+                print(
+                    f"[QA Agent] Vision provider temporarily unavailable; "
+                    f"retrying in {delay}s ({attempt + 1}/2)"
+                )
+                time.sleep(delay)
+                continue
+            print(f"[QA Agent] Vision review skipped ({type(e).__name__}: {e})")
+            return [], [], False
+
+    required_boolean_fields = (
+        "hero_visible",
+        "background_fills_screen",
+        "text_clipped",
+    )
+    if art_direction:
+        required_boolean_fields += (
+            "camera_contract_satisfied",
+            "actor_roles_distinguishable",
+            "style_coherent",
+        )
+    invalid = [
+        field for field in required_boolean_fields
+        if not isinstance(data.get(field), bool)
+    ] if isinstance(data, dict) else list(required_boolean_fields)
+    if invalid:
+        print(
+            "[QA Agent] Vision review skipped (invalid structured verdict: "
+            + ", ".join(invalid)
+            + ")"
+        )
+        return [], [], False
 
     gating, advisory = [], []
     if data.get("hero_visible") is False:
@@ -1038,13 +1303,39 @@ def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[st
         advisory.append(f"Vision (advisory): {data['looks_broken']}")
     template = (design_doc or {}).get("mechanic_template", "")
     if data.get("placeholder_art"):
-        prefix = "Vision (quality gate)" if template == "run_and_gun" else "Vision (advisory)"
-        advisory.append(f"{prefix}: placeholder art: {data['placeholder_art']}")
+        prefix = "Vision (quality gate)" if template in {"run_and_gun", "action_rpg"} else "Vision (advisory)"
+        role = str(data.get("placeholder_role") or "")
+        role_label = f" [{role}]" if role else ""
+        advisory.append(
+            f"{prefix}: placeholder art{role_label}: {data['placeholder_art']}"
+        )
     if data.get("perspective_mismatch"):
-        prefix = "Vision (quality gate)" if template == "run_and_gun" else "Vision (advisory)"
+        prefix = "Vision (quality gate)" if template in {"run_and_gun", "action_rpg"} else "Vision (advisory)"
         advisory.append(
             f"{prefix}: perspective mismatch: {data['perspective_mismatch']}"
         )
+    contract_detail = str(data.get("contract_violation") or "visible frame contradicts the locked visual bible")
+    if art_direction and data.get("camera_contract_satisfied") is False:
+        advisory.append(
+            f"Vision (quality gate): Art Director camera contract failed: {contract_detail}"
+        )
+    if art_direction and data.get("actor_roles_distinguishable") is False:
+        advisory.append(
+            f"Vision (quality gate): Art Director role-readability contract failed: {contract_detail}"
+        )
+    if art_direction and data.get("style_coherent") is False:
+        advisory.append(
+            f"Vision (quality gate): Art Director style-coherence contract failed: {contract_detail}"
+        )
+    return gating, advisory, True
+
+
+def _vision_review(screenshot_path: str, design_doc) -> tuple[list[str], list[str]]:
+    """Compatibility wrapper for callers that only need visual findings."""
+    gating, advisory, _evaluated = _vision_review_with_status(
+        screenshot_path,
+        design_doc,
+    )
     return gating, advisory
 
 
@@ -1093,6 +1384,7 @@ def _capture_gameplay_video(
     project_dir: str,
     scene: str,
     level_index: int,
+    template: str = "",
 ) -> tuple[str | None, list[str], bool]:
     """Record deterministic autoplay and convert Godot's AVI to compact MP4.
 
@@ -1107,6 +1399,14 @@ def _capture_gameplay_video(
     avi_path.unlink(missing_ok=True)
     mp4_path.unlink(missing_ok=True)
 
+    presentation_probe = (
+        "--presentation-capture" if template == "action_rpg" else "--autoplay"
+    )
+    capture_frames = (
+        ACTION_RPG_VIDEO_CAPTURE_FRAMES
+        if template == "action_rpg"
+        else VIDEO_CAPTURE_MAX_FRAMES
+    )
     capture = _run(
         [
             "--path",
@@ -1118,9 +1418,9 @@ def _capture_gameplay_video(
             str(VIDEO_CAPTURE_FPS),
             "--disable-vsync",
             "--quit-after",
-            str(VIDEO_CAPTURE_MAX_FRAMES),
+            str(capture_frames),
             "--",
-            "--autoplay",
+            presentation_probe,
         ],
         timeout=120,
     )
@@ -1187,18 +1487,28 @@ def _video_prompt(design_doc) -> str:
     title = (design_doc or {}).get("title", "the game")
     hero = (design_doc or {}).get("hero_description", "the player character")
     return (
-        f"Review this deterministic 8-second gameplay clip from {title!r}. "
-        f"The player character is: {hero}. After a short idle period, the harness "
-        "holds RIGHT, DOWN, LEFT, then UP. Judge only visible evidence across the "
+        f"Review this deterministic gameplay clip from {title!r}. "
+        f"The player character is: {hero}. The harness exercises movement and, for "
+        "combat-oriented games, travels toward encounters and attacks. Judge only visible evidence across the "
         "whole clip. Do not infer mechanics or defects that cannot be seen. "
         "For movement_facing, inspect the horizontal RIGHT and LEFT segments; use "
         "'reversed' only when the character clearly looks opposite its travel, and "
-        "'indeterminate' for frontal or symmetric art. For animation, use 'sliding' "
-        "only when the player visibly translates as a rigid still image. Return ONLY "
+        "'indeterminate' for frontal or symmetric art. For animation, use 'animated' "
+        "only when walking visibly changes pose, texture frame, limbs, or silhouette; "
+        "simple translation, bobbing, scaling, or leaning of one unchanged image is "
+        "'sliding'. Rate combat_feedback 'clear' only when an observed attack has "
+        "readable anticipation and impact feedback; use 'not_observed' if no attack "
+        "appears. Rate encounter_readability 'clear' only when actors, hazards, and "
+        "walkable space are immediately distinguishable. Rate presentation_tier "
+        "'polished' only when the clip resembles a cohesive authored game rather than "
+        "a debug scene or prototype assembled from overlays. Return ONLY "
         "JSON matching exactly: "
         '{"player_visible": bool, "player_motion": "moves|stationary|indeterminate", '
         '"movement_facing": "correct|reversed|indeterminate", '
         '"animation": "animated|sliding|indeterminate", "hud_readable": bool, '
+        '"combat_feedback": "clear|weak|not_observed|indeterminate", '
+        '"encounter_readability": "clear|cluttered|empty|indeterminate", '
+        '"presentation_tier": "polished|prototype|broken|indeterminate", '
         '"scene_stable": bool, "code_defects": [string], '
         '"art_advisories": [string], "evidence": string}. '
         "code_defects is only for obvious temporal failures fixable in gameplay code, "
@@ -1248,6 +1558,9 @@ def _validate_video_verdict(data: dict) -> list[str]:
         "player_motion": {"moves", "stationary", "indeterminate"},
         "movement_facing": {"correct", "reversed", "indeterminate"},
         "animation": {"animated", "sliding", "indeterminate"},
+        "combat_feedback": {"clear", "weak", "not_observed", "indeterminate"},
+        "encounter_readability": {"clear", "cluttered", "empty", "indeterminate"},
+        "presentation_tier": {"polished", "prototype", "broken", "indeterminate"},
     }
     for field, values in allowed.items():
         if data.get(field) not in values:
@@ -1312,6 +1625,7 @@ def _record_attempt(
     errors: list[str] | None = None,
     screenshot_path: str | None = None,
     vision_notes: list[str] | None = None,
+    vision_evaluated: bool = False,
     balance_notes: list[str] | None = None,
     objective_result: dict | None = None,
     gameplay_video_path: str | None = None,
@@ -1356,6 +1670,7 @@ def _record_attempt(
             "errors": errors,
             "screenshot_path": screenshot_path,
             "vision_notes": vision_notes,
+            "vision_evaluated": vision_evaluated,
             "balance_notes": balance_notes,
             "objective_result": objective_result,
             "gameplay_video_path": gameplay_video_path,
@@ -1363,6 +1678,7 @@ def _record_attempt(
             "video_notes": video_notes,
             "playability_result": playability_result,
             "coder_model": state.get("coder_model"),
+            "art_direction_hash": (state.get("art_direction") or {}).get("identity_hash"),
         }
     )
     entry = {
@@ -1375,6 +1691,7 @@ def _record_attempt(
         "qa_errors": errors,
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes,
+        "vision_evaluated": vision_evaluated,
         "balance_notes": balance_notes,
         "objective_result": objective_result,
         "gameplay_video_path": gameplay_video_path,
@@ -1382,6 +1699,7 @@ def _record_attempt(
         "video_notes": video_notes,
         "playability_result": playability_result,
         "coder_model": state.get("coder_model"),
+        "art_direction_hash": (state.get("art_direction") or {}).get("identity_hash"),
         "asset_replacements": asset_replacements,
     }
     if entry_index is None:
@@ -1398,25 +1716,50 @@ def _failed_attempt(
     errors: list[str],
     screenshot_path: str | None = None,
     vision_notes: list[str] | None = None,
+    vision_evaluated: bool = False,
     balance_notes: list[str] | None = None,
     objective_result: dict | None = None,
     gameplay_video_path: str | None = None,
     video_qa_result: dict | None = None,
     video_notes: list[str] | None = None,
+    playability_result: dict | None = None,
     blocked: bool = False,
 ) -> GraphState:
     retry_count = state.get("retry_count") or 0
+    terminal_stages = {
+        "playability",
+        "objective_completion",
+        "input_playthrough",
+        "campaign_persistence",
+        "capability_coverage",
+    }
+    locked_components = [
+        component
+        for mode in (state.get("assembly_lock") or {}).get("modes") or []
+        for component in mode.get("components") or []
+    ]
+    stable_owned_failure = (
+        not blocked
+        and stage in terminal_stages
+        and bool(locked_components)
+        and all(
+            component.get("implementation") == "stable_pack"
+            for component in locked_components
+        )
+    )
     return {
         "qa_passed": False,
         "qa_errors": errors,
         "retry_count": retry_count + 1,
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes or [],
+        "vision_evaluated": vision_evaluated,
         "balance_notes": balance_notes or [],
         "objective_result": objective_result,
         "gameplay_video_path": gameplay_video_path,
         "video_qa_result": video_qa_result,
         "video_notes": video_notes or [],
+        "playability_result": playability_result,
         "level_results": _record_attempt(
             state,
             passed=False,
@@ -1424,14 +1767,42 @@ def _failed_attempt(
             errors=errors,
             screenshot_path=screenshot_path,
             vision_notes=vision_notes,
+            vision_evaluated=vision_evaluated,
             balance_notes=balance_notes,
             objective_result=objective_result,
             gameplay_video_path=gameplay_video_path,
             video_qa_result=video_qa_result,
             video_notes=video_notes,
+            playability_result=playability_result,
             blocked=blocked,
         ),
         "ship_blocked": blocked,
+        "qa_terminal": stable_owned_failure,
+    }
+
+
+def _parse_autoplay_verdict(output: str) -> dict | None:
+    """Parse motion plus conservative, named runtime HUD evidence.
+
+    Older harness output remains usable for responsiveness, but cannot prove a
+    HUD: arbitrary label counts were the false-positive signal this contract
+    replaces.
+    """
+    match = AUTOPLAY_VERDICT.search(output)
+    if match is None:
+        return None
+    hud_contract = match.group(4) is not None
+    hud_controls = int(match.group(4)) if hud_contract else 0
+    hud_states = int(match.group(5)) if hud_contract else 0
+    return {
+        "idle_rate": float(match.group(1)),
+        "input_rate": float(match.group(2)),
+        "label_states": int(match.group(3)),
+        "hud_controls": hud_controls,
+        "hud_states": hud_states,
+        "hud_observed": hud_controls >= 1,
+        "hud_updated": hud_states >= 2,
+        "hud_contract": hud_contract,
     }
 
 
@@ -1441,6 +1812,21 @@ def qa_agent(state: GraphState) -> GraphState:
     current_level = state.get("current_level") or 0
     scene = f"res://Level_{current_level}.tscn"
     script_file = Path(project_dir) / f"Level_{current_level}.gd"
+
+    if state.get("assembly_lock"):
+        from saga.capabilities import CompositionError, verify_project_assembly
+
+        try:
+            verify_project_assembly(project_dir, state["assembly_lock"])
+        except CompositionError as exc:
+            error = f"Assembly integrity: {exc}"
+            print(f"[QA Agent] BLOCKED: {error}")
+            return _failed_attempt(
+                state,
+                stage="assembly_integrity",
+                errors=[error],
+                blocked=True,
+            )
 
     if state.get("repair_rejected"):
         errors = list(state.get("repair_validation_errors") or [
@@ -1462,7 +1848,20 @@ def qa_agent(state: GraphState) -> GraphState:
         return _failed_attempt(state, stage="safety", errors=[str(exc)])
 
     template = (state.get("design_doc") or {}).get("mechanic_template", "")
-    if template == "run_and_gun":
+    asset_contract_results = state.get("asset_contract_results") or []
+    failed_asset_contracts = [
+        result for result in asset_contract_results
+        if result.get("status") != "passed"
+    ]
+    if failed_asset_contracts:
+        errors = [
+            "Art contract: " + str(result.get("logical_name") or "asset") + ": "
+            + "; ".join(str(error) for error in (result.get("errors") or ["inspection failed"]))
+            for result in failed_asset_contracts
+        ]
+        print(f"[QA Agent] FAILED asset contract inspection: {errors}")
+        return _failed_attempt(state, stage="art_contract", errors=errors)
+    if template in {"run_and_gun", "action_rpg"}:
         asset_names = [Path(path).name.lower() for path in (state.get("sprite_paths") or [])]
         has_hero = any("hero_sprite" in name or name.startswith("hero") for name in asset_names)
         has_background = any(name.startswith(f"level_{current_level}_") for name in asset_names)
@@ -1471,6 +1870,34 @@ def qa_agent(state: GraphState) -> GraphState:
             missing_assets.append("authored hero sprite")
         if not has_background:
             missing_assets.append(f"level {current_level + 1} background")
+        if template == "action_rpg":
+            contracts = [
+                contract
+                for contract in (state.get("art_direction") or {}).get("asset_contracts") or []
+                if f"{str(contract.get('logical_name') or '').lower()}.png" in asset_names
+            ]
+            contract_roles = {str(contract.get("role") or "") for contract in contracts}
+            if contracts:
+                required_roles = {
+                    "enemy sprite": "enemy",
+                    "quest NPC sprite": "npc",
+                    "boss sprite": "boss",
+                    "spark or gear pickup sprite": "pickup",
+                }
+                for label, role in required_roles.items():
+                    if role not in contract_roles:
+                        missing_assets.append(label)
+            else:
+                # Compatibility for old runs without an Art Director contract.
+                role_assets = {
+                    "stalker enemy sprite": ("stalker", "enemy", "creature"),
+                    "quest NPC sprite": ("hermit", "npc", "keeper"),
+                    "forge boss sprite": ("boss", "warden", "golem"),
+                    "spark or gear pickup sprite": ("key_item", "spark", "charm"),
+                }
+                for label, needles in role_assets.items():
+                    if not any(any(needle in name for needle in needles) for name in asset_names):
+                        missing_assets.append(label)
         if missing_assets:
             errors = [
                 "Production art gate: missing " + ", ".join(missing_assets)
@@ -1538,12 +1965,13 @@ def qa_agent(state: GraphState) -> GraphState:
             blocked=blocked,
         )
     playability_result = None
-    verdict = re.search(
-        r"\[AUTOPLAY\] idle_rate=([\d.]+) input_rate=([\d.]+) label_states=(\d+)", play_out
-    )
+    verdict = _parse_autoplay_verdict(play_out)
     if verdict:
-        idle_rate, input_rate = float(verdict.group(1)), float(verdict.group(2))
-        label_states = int(verdict.group(3))
+        idle_rate = verdict["idle_rate"]
+        input_rate = verdict["input_rate"]
+        label_states = verdict["label_states"]
+        hud_controls = verdict["hud_controls"]
+        hud_states = verdict["hud_states"]
         # Held keys must move the world markedly more than it moves on its own.
         # The ratio handles games with busy ambient motion; the absolute floor
         # handles still ones, where a ratio against nearly zero means nothing.
@@ -1551,15 +1979,14 @@ def qa_agent(state: GraphState) -> GraphState:
         # 4.28 vs 0.97 against an identical idle rate of ~0.89.
         moved = input_rate > max(idle_rate * 1.5, 0.5)
         playability_result = {
+            **verdict,
             "status": "passed" if moved else "failed",
             "responsive": moved,
-            "idle_rate": idle_rate,
-            "input_rate": input_rate,
-            "label_states": label_states,
         }
         print(
             f"[QA Agent] Autoplay: idle={idle_rate:.2f} input={input_rate:.2f} "
-            f"responsive={moved} label_states={label_states}"
+            f"responsive={moved} label_states={label_states} "
+            f"hud_controls={hud_controls} hud_states={hud_states}"
         )
         play_errors = []
         if not moved:
@@ -1568,20 +1995,33 @@ def qa_agent(state: GraphState) -> GraphState:
                 "The player must move in response to ui_left/ui_right/ui_up/ui_down "
                 "while state is 'playing'."
             )
-        # Label change is NOT a gate. It assumes holding a direction advances
-        # the game, which is true of timers, drains and touch-collection but
-        # false of any puzzle: an ordered-switch level only updates its label
-        # when the right switch is hit in the right order, which random input
-        # will not achieve. Measured on a real build that was working fine.
-        if label_states <= 1:
+        if not verdict["hud_contract"]:
             print(
-                "[QA Agent] Autoplay note (advisory): the status label did not change "
-                "while arrow keys were held. Expected for a puzzle whose progress needs "
+                "[QA Agent] Autoplay note: legacy probe output cannot establish HUD "
+                "evidence; arbitrary Label counts are intentionally ignored."
+            )
+        elif not verdict["hud_observed"]:
+            print(
+                "[QA Agent] Autoplay note: no visible, nonempty HUD/HUDStatus control "
+                "remained on screen across the idle and input windows."
+            )
+        # HUD text change is NOT a gate. It assumes random movement advances
+        # state, which is false of ordered puzzles. Persisting across both
+        # phases is the observation contract; distinct text is useful detail.
+        elif not verdict["hud_updated"]:
+            print(
+                "[QA Agent] Autoplay note (advisory): HUD/HUDStatus stayed visible but "
+                "its text did not change. Expected for a puzzle whose progress needs "
                 "correct input; a problem for anything driven by a timer or resource."
             )
         if play_errors:
             print(f"[QA Agent] FAILED on {len(play_errors)} playability defect(s) - requesting a fix")
-            return _failed_attempt(state, stage="playability", errors=play_errors)
+            return _failed_attempt(
+                state,
+                stage="playability",
+                errors=play_errors,
+                playability_result=playability_result,
+            )
     else:
         # A silent required probe means QA did not establish playability. This
         # is a harness/infrastructure block, not generated code to send through
@@ -1592,6 +2032,7 @@ def qa_agent(state: GraphState) -> GraphState:
             state,
             stage="autoplay_probe",
             errors=[error],
+            playability_result=playability_result,
             blocked=True,
         )
 
@@ -1610,6 +2051,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "dot_maze",
         "maze_chase",
         "run_and_gun",
+        "action_rpg",
     }:
         objective_result, objective_errors, objective_blocked = _run_objective_probe(
             project_dir,
@@ -1624,6 +2066,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 stage="objective_probe" if objective_blocked else "objective_completion",
                 errors=objective_errors,
                 objective_result=objective_result,
+                playability_result=playability_result,
                 blocked=objective_blocked,
             )
         noun = {
@@ -1633,6 +2076,7 @@ def qa_agent(state: GraphState) -> GraphState:
             "survive_and_deplete": "hybrid milestones",
             "capture_zones": "capture milestones",
             "herd_to_goal": "herding milestones",
+            "action_rpg": "RPG system transitions",
         }.get(template, "pickups")
         print(
             f"[QA Agent] Objective: completed {objective_result['collected']}/"
@@ -1642,6 +2086,52 @@ def qa_agent(state: GraphState) -> GraphState:
             f"max_stall={objective_result['max_stall_frames']} frames)"
         )
         total_levels = len((state.get("design_doc") or {}).get("levels") or [{}])
+        content_plan = state.get("content_plan") or {}
+        candidate_studio = content_plan.get("experience_search") or {}
+        if candidate_studio:
+            objective_result["candidate_studio"] = candidate_studio
+            objective_result["persona_results"] = candidate_studio.get("personas") or {}
+            objective_result["content_telemetry"] = candidate_studio.get("telemetry") or {}
+        else:
+            from saga.experience import evaluate_objective_personas
+
+            persona_evidence = evaluate_objective_personas(template, objective_result)
+            objective_result["persona_results"] = persona_evidence["personas"]
+            objective_result["content_telemetry"] = persona_evidence["telemetry"]
+        if template == "action_rpg":
+            playthrough_result, playthrough_errors, playthrough_blocked = (
+                _run_action_rpg_playthrough(project_dir, scene)
+            )
+            objective_result["input_playthrough"] = playthrough_result
+            if candidate_studio:
+                objective_result["content_telemetry"] = {
+                    **(candidate_studio.get("telemetry") or {}),
+                    "actual_completion_frames": playthrough_result.get("frames"),
+                    "actual_deaths": playthrough_result.get("deaths"),
+                    "actual_rooms_visited": playthrough_result.get("rooms_visited"),
+                    "actual_rooms_total": playthrough_result.get("rooms_total"),
+                }
+            if playthrough_errors:
+                label = "BLOCKED" if playthrough_blocked else "FAILED"
+                print(f"[QA Agent] {label} input-driven Action-RPG: {playthrough_errors}")
+                return _failed_attempt(
+                    state,
+                    stage=(
+                        "playthrough_probe"
+                        if playthrough_blocked
+                        else "input_playthrough"
+                    ),
+                    errors=playthrough_errors,
+                    objective_result=objective_result,
+                    playability_result=playability_result,
+                    blocked=playthrough_blocked,
+                )
+            print(
+                "[QA Agent] Playthrough: normal inputs completed all "
+                f"{playthrough_result['rooms_total']} compiled rooms, "
+                f"the authored quest and boss in {playthrough_result['frames']} frames "
+                f"with {playthrough_result['deaths']} deaths"
+            )
         if template == "run_and_gun" and current_level == total_levels - 1:
             campaign_result, campaign_errors, campaign_blocked = _run_campaign_probe(
                 project_dir, "res://Level_0.tscn"
@@ -1654,6 +2144,7 @@ def qa_agent(state: GraphState) -> GraphState:
                     stage="campaign_probe" if campaign_blocked else "campaign_persistence",
                     errors=campaign_errors,
                     objective_result=objective_result,
+                    playability_result=playability_result,
                     blocked=campaign_blocked,
                 )
             objective_result["campaign_scene_probe"] = campaign_result
@@ -1674,6 +2165,7 @@ def qa_agent(state: GraphState) -> GraphState:
                     stage="playthrough_probe" if playthrough_blocked else "input_playthrough",
                     errors=playthrough_errors,
                     objective_result=objective_result,
+                    playability_result=playability_result,
                     blocked=playthrough_blocked,
                 )
             objective_result["input_playthrough"] = playthrough_result
@@ -1704,6 +2196,7 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=bal_gating,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
+                playability_result=playability_result,
             )
 
     # 5. Active-gameplay screenshot pass (a window flashes for ~1.5s). This is
@@ -1729,9 +2222,10 @@ def qa_agent(state: GraphState) -> GraphState:
     vision_notes = []
     vision_gating = []
     vision_advisory = []
+    vision_evaluated = False
     if screenshot_path:
-        vision_gating, vision_advisory = _vision_review(
-            screenshot_path, state.get("design_doc")
+        vision_gating, vision_advisory, vision_evaluated = _vision_review_with_status(
+            screenshot_path, state.get("design_doc"), state.get("art_direction")
         )
         vision_notes = vision_gating + vision_advisory
         if not VIDEO_QA_ENABLED:
@@ -1748,8 +2242,10 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=vision_gating,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
+                playability_result=playability_result,
             )
 
     # 7. Required gameplay video review when explicitly enabled. Unlike the
@@ -1763,6 +2259,7 @@ def qa_agent(state: GraphState) -> GraphState:
             project_dir,
             scene,
             current_level,
+            template,
         )
         if video_errors:
             label = "BLOCKED" if video_blocked else "FAILED"
@@ -1773,8 +2270,10 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=video_errors,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
+                playability_result=playability_result,
                 blocked=video_blocked,
             )
         print(f"[QA Agent] Gameplay video captured -> {gameplay_video_path}")
@@ -1791,9 +2290,11 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=[error],
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
                 gameplay_video_path=gameplay_video_path,
+                playability_result=playability_result,
                 blocked=True,
             )
         for note in video_gating + video_notes:
@@ -1806,11 +2307,13 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=video_gating,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
                 gameplay_video_path=gameplay_video_path,
                 video_qa_result=video_qa_result,
                 video_notes=video_notes,
+                playability_result=playability_result,
             )
         print(
             f"[QA Agent] NVIDIA video QA passed: "
@@ -1835,12 +2338,66 @@ def qa_agent(state: GraphState) -> GraphState:
                 errors=vision_gating,
                 screenshot_path=screenshot_path,
                 vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
                 balance_notes=balance_notes,
                 objective_result=objective_result,
                 gameplay_video_path=gameplay_video_path,
                 video_qa_result=video_qa_result,
                 video_notes=video_notes,
+                playability_result=playability_result,
             )
+
+    # 8. Close the assembly contract with actual runtime evidence. A declared
+    # capability with a false observation is a product failure; a capability
+    # with no observation is an infrastructure block. Neither can silently
+    # become a green ship badge merely because Godot launched.
+    assembly_lock = state.get("assembly_lock")
+    if assembly_lock:
+        from saga.capability_evidence import evaluate_capability_coverage
+
+        capability_coverage = evaluate_capability_coverage(
+            assembly_lock,
+            objective_result=objective_result,
+            playability_result=playability_result,
+            vision_evaluated=vision_evaluated,
+            video_qa_result=video_qa_result,
+        )
+        if objective_result is None:
+            objective_result = {}
+        objective_result["capability_coverage"] = capability_coverage
+        print(
+            "[QA Agent] Capability proof: "
+            f"{capability_coverage['capabilities_passed']}/"
+            f"{capability_coverage['capabilities_total']} "
+            f"({capability_coverage['status']})"
+        )
+        if capability_coverage["status"] != "passed":
+            blocked = capability_coverage["status"] == "blocked"
+            evidence = (
+                capability_coverage["missing_evidence"]
+                if blocked
+                else capability_coverage["failed_evidence"]
+            )
+            label = "missing" if blocked else "failed"
+            errors = [
+                f"Capability evidence {label}: {item}" for item in evidence
+            ] or [f"Capability coverage {capability_coverage['status']}"]
+            result = _failed_attempt(
+                state,
+                stage=("capability_coverage_probe" if blocked else "capability_coverage"),
+                errors=errors,
+                screenshot_path=screenshot_path,
+                vision_notes=vision_notes,
+                vision_evaluated=vision_evaluated,
+                balance_notes=balance_notes,
+                objective_result=objective_result,
+                gameplay_video_path=gameplay_video_path,
+                video_qa_result=video_qa_result,
+                video_notes=video_notes,
+                playability_result=playability_result,
+                blocked=blocked,
+            )
+            return result
 
     # This is the only point in the pipeline where a script is known-good
     # (compiled, ran, satisfied its template contract) - so it's where the
@@ -1874,6 +2431,7 @@ def qa_agent(state: GraphState) -> GraphState:
         "qa_errors": [],
         "screenshot_path": screenshot_path,
         "vision_notes": vision_notes,
+        "vision_evaluated": vision_evaluated,
         "balance_notes": balance_notes,
         "objective_result": objective_result,
         "gameplay_video_path": gameplay_video_path,
@@ -1886,6 +2444,7 @@ def qa_agent(state: GraphState) -> GraphState:
             stage="complete",
             screenshot_path=screenshot_path,
             vision_notes=vision_notes,
+            vision_evaluated=vision_evaluated,
             balance_notes=balance_notes,
             objective_result=objective_result,
             gameplay_video_path=gameplay_video_path,

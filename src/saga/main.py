@@ -74,6 +74,35 @@ def assess_ship_status(result: dict) -> tuple[str, bool]:
     if not result.get("qa_passed") or not all_passed:
         return "failed", False
 
+    # A Composition Kernel run is releasable only when every level closes
+    # every declared capability with observed evidence. This second check is
+    # deliberately independent from qa_passed so a malformed or manually
+    # edited ledger cannot erase the assembly contract.
+    if "assembly_lock" in result and result.get("assembly_lock") is not None:
+        from saga.capabilities import validate_assembly_lock
+        from saga.capability_evidence import validate_capability_coverage
+
+        assembly_lock = result["assembly_lock"]
+        if validate_assembly_lock(assembly_lock):
+            return "blocked", False
+        coverage = [
+            (by_index[index].get("objective_result") or {}).get(
+                "capability_coverage"
+            )
+            for index in range(expected_levels)
+        ]
+        if any(not isinstance(item, dict) for item in coverage):
+            return "blocked", False
+        if any(item.get("status") == "blocked" for item in coverage):
+            return "blocked", False
+        if any(item.get("status") == "failed" for item in coverage):
+            return "failed", False
+        if any(
+            validate_capability_coverage(assembly_lock, item)
+            for item in coverage
+        ):
+            return "blocked", False
+
     quality_report = result.get("quality_report")
     if quality_report and not (quality_report.get("gate") or {}).get("passed"):
         if quality_report.get("status") == "blocked":
@@ -81,10 +110,13 @@ def assess_ship_status(result: dict) -> tuple[str, bool]:
         return "failed", False
 
     # Presentation warnings are normally shippable and remain visible in the
-    # ledger. A production run-and-gun build is the exception: placeholder
-    # geometry or a top-down/isometric background behind flat side-view play
-    # is a known prototype-quality defect, not a subjective polish note.
-    if (result.get("design_doc") or {}).get("mechanic_template") == "run_and_gun":
+    # ledger. Production archetype-pack builds are the exception: placeholder
+    # geometry or a perspective mismatch is a known prototype-quality defect,
+    # not a subjective polish note.
+    if (result.get("design_doc") or {}).get("mechanic_template") in {
+        "run_and_gun",
+        "action_rpg",
+    }:
         quality_failures = [
             note
             for item in by_index.values()
@@ -158,11 +190,19 @@ def main() -> None:
         help="Use a reviewed Game Blueprint JSON contract instead of invoking the architect",
     )
     parser.add_argument(
+        "--game-spec",
+        type=Path,
+        help="Use a reviewed GameSpec v2 assembly contract instead of translating the design doc",
+    )
+    parser.add_argument(
         "--asset-pack",
         type=Path,
         help="Reuse sprite_paths and bgm_path from an existing SAGA run manifest",
     )
     args = parser.parse_args()
+
+    if args.game_spec and not args.design_doc:
+        parser.error("--game-spec currently requires its matching --design-doc")
 
     from saga.doctor import print_report, required_checks_pass, run_checks
 
@@ -201,6 +241,18 @@ def main() -> None:
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             parser.error(f"cannot read --blueprint: {exc}")
 
+    fixed_game_spec = None
+    if args.game_spec:
+        try:
+            from saga.game_spec import validate_game_spec
+
+            fixed_game_spec = json.loads(args.game_spec.read_text(encoding="utf-8"))
+            problems = validate_game_spec(fixed_game_spec)
+            if problems:
+                raise ValueError("; ".join(problems))
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            parser.error(f"cannot read --game-spec: {exc}")
+
     frozen_assets = {}
     if args.asset_pack:
         try:
@@ -222,6 +274,7 @@ def main() -> None:
                 "requested_levels": args.levels,
                 "design_doc": fixed_design,
                 "blueprint": fixed_blueprint,
+                "game_spec": fixed_game_spec,
                 "sprite_paths": frozen_assets.get("sprite_paths"),
                 "bgm_path": frozen_assets.get("bgm_path"),
             }
@@ -247,6 +300,23 @@ def main() -> None:
         print(
             f"Game Blueprint: {blueprint_path} "
             f"({result.get('blueprint_status')}, model={result.get('blueprint_model')})",
+            file=sys.stderr,
+        )
+    game_spec_path = Path(result["run_dir"]) / "game_spec.json"
+    assembly_lock_path = Path(result["run_dir"]) / "assembly.lock.json"
+    art_direction_path = Path(result["run_dir"]) / "art_direction.json"
+    if result.get("assembly_lock"):
+        print(
+            f"Game assembly: {assembly_lock_path} "
+            f"({result.get('game_spec_status')}, "
+            f"hash={result.get('assembly_hash', '')[:12]})",
+            file=sys.stderr,
+        )
+    if result.get("art_direction"):
+        print(
+            f"Art direction: {art_direction_path} "
+            f"({result.get('art_direction_status')}, "
+            f"hash={(result.get('art_direction') or {}).get('identity_hash', '')[:12]})",
             file=sys.stderr,
         )
 
@@ -309,7 +379,7 @@ def main() -> None:
             file=sys.stderr,
         )
     manifest = {
-        "manifest_version": 15,
+        "manifest_version": 20,
         "run_dir": result["run_dir"],
         "idea": args.idea,
         "title": (result.get("design_doc") or {}).get("title"),
@@ -319,6 +389,22 @@ def main() -> None:
         "blueprint_model": result.get("blueprint_model"),
         "blueprint_errors": result.get("blueprint_errors") or [],
         "blueprint_build_plan": result.get("blueprint_build_plan") or [],
+        "game_spec_version": (result.get("game_spec") or {}).get("game_spec_version"),
+        "game_spec_path": str(game_spec_path) if result.get("game_spec") else None,
+        "game_spec_status": result.get("game_spec_status"),
+        "game_spec_errors": result.get("game_spec_errors") or [],
+        "assembly_lock_path": (
+            str(assembly_lock_path) if result.get("assembly_lock") else None
+        ),
+        "assembly_hash": result.get("assembly_hash"),
+        "content_plan": result.get("content_plan"),
+        "art_direction_path": str(art_direction_path) if result.get("art_direction") else None,
+        "art_direction": result.get("art_direction"),
+        "art_direction_status": result.get("art_direction_status"),
+        "art_direction_errors": result.get("art_direction_errors") or [],
+        "assembly_required_probes": (
+            (result.get("assembly_lock") or {}).get("required_probes") or []
+        ),
         "system_build_results": result.get("system_build_results") or [],
         "unconfirmed_systems": unconfirmed_systems(result),
         "status": ship_status,
@@ -331,6 +417,7 @@ def main() -> None:
         "quality_report_path": str(quality_report_path) if quality_report else None,
         "godot_project_path": result.get("godot_project_path"),
         "sprite_paths": result.get("sprite_paths") or [],
+        "asset_contract_results": result.get("asset_contract_results") or [],
         "asset_replacements": result.get("asset_replacements") or [],
         "bgm_path": result.get("bgm_path"),
         "screenshot_path": result.get("screenshot_path"),

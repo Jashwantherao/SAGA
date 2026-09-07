@@ -1,6 +1,7 @@
 # Python-generated files
 __pycache__/
 .pytest_cache/
+.pytest_tmp/
 *.py[oc]
 build/
 dist/
@@ -17,6 +18,7 @@ wheels/
 ui/node_modules/
 ui/dist/
 ui/src-tauri/target/
+release/
 
 # Secrets
 .env
