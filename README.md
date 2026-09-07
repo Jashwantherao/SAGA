@@ -2,6 +2,11 @@
 
 Multi-agent LangGraph pipeline that turns a one-line prompt into a playable, multi-level 2D Godot game. Runs fully autonomously and entirely for free on local GPU inference; a cloud Claude path exists for every reasoning-heavy agent as a premium upgrade once the API is funded.
 
+Project completion is tracked against the concrete
+[`SAGA v1 release-readiness checklist`](docs/release-readiness.md), including a
+portable Windows build, a fully evidence-gated flagship game, and the public
+demo material required for a portfolio release.
+
 ```
 Studio Director -> Game Designer -> Systems Architect -> Composition Director
     -> (Asset Maker, Audio Agent) -> Coder <-> QA Agent -> Quality Director  (repeats per level, advancing through the design
@@ -55,6 +60,16 @@ operations in Python while providing:
   ComfyUI, and MusicGen (Ollama is launched with its D: models root); and
 - per-agent model routing for local Ollama, DeepSeek, NVIDIA, Anthropic, and
   OpenAI-compatible APIs without exposing saved keys to the frontend.
+
+Build the current self-starting D:-local portfolio executable with:
+
+```powershell
+D:\SAGA\scripts\saga_ui.ps1 -Mode package
+```
+
+The result is `D:\SAGA\release\SAGA-Studio-0.1.0.exe` with a matching SHA-256
+checksum. It launches and owns the loopback API automatically; no
+`npm run dev:stack` terminal is required.
 
 For frontend/API development, install dependencies and launch the browser
 version from PowerShell:

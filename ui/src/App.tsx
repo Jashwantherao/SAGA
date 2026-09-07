@@ -264,7 +264,7 @@ function App() {
         {apiDown && (
           <div className="error-banner">
             <Icon name="warning" />
-            <span>SAGA's local API is unreachable at 127.0.0.1:8765. Start it with <code>npm run dev:stack</code> or <code>saga-ui-api</code>.</span>
+            <span>SAGA's local studio could not start. Check <code>output/service_logs/studio-api.log</code>, then verify the checkout has a working <code>.venv</code>. If the project moved, set <code>SAGA_ROOT</code>.</span>
             <button onClick={() => void loadStatus()}>Retry</button>
           </div>
         )}
